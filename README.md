@@ -91,13 +91,14 @@ change required.
 ## Development
 
 ```bash
-cd hermes-plugin
+git clone git@github.com:imthatcarlos/sherwood-hermes-plugin.git
+cd sherwood-hermes-plugin
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest -v
 ```
 
-Refresh bundled skill pack from the Sherwood repo:
+Refresh bundled skill pack from a local Sherwood checkout:
 
 ```bash
 ./scripts/refresh_skill_pack.sh ../skill
