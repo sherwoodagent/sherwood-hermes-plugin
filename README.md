@@ -16,7 +16,7 @@ humans via Hermes' existing delivery channels.
 ## Install
 
 ```bash
-hermes plugins install imthatcarlos/sherwood-hermes-plugin
+hermes plugins install sherwoodagent/sherwood-hermes-plugin
 ```
 
 ## Configure
@@ -91,7 +91,7 @@ change required.
 ## Development
 
 ```bash
-git clone git@github.com:imthatcarlos/sherwood-hermes-plugin.git
+git clone git@github.com:sherwoodagent/sherwood-hermes-plugin.git
 cd sherwood-hermes-plugin
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
