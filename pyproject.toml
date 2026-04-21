@@ -12,6 +12,9 @@ license = { text = "MIT" }
 authors = [{ name = "Sherwood" }]
 dependencies = [
     "PyYAML>=6.0",
+    "eth-keys>=0.5",
+    "eth-utils>=4.0",
+    "eth-hash[pycryptodome]>=0.5",
 ]
 
 [project.optional-dependencies]
