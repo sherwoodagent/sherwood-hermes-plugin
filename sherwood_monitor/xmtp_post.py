@@ -1,39 +1,22 @@
-"""Fire-and-forget XMTP post helper."""
+"""Post markdown summaries to XMTP groups via the sidecar."""
 from __future__ import annotations
 
-import asyncio
 import logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .sidecar import Sidecar
 
 _log = logging.getLogger(__name__)
 
 
-async def post_summary(sherwood_bin: str, subdomain: str, markdown: str) -> None:
+async def post_summary(sidecar: "Sidecar", subdomain: str, markdown: str) -> None:
     """Post a markdown summary to the syndicate's XMTP group.
 
-    Runs `sherwood chat <subdomain> send --markdown "<markdown>"`.
-    Uses `communicate()` (not `wait()`) to drain both stdout and stderr,
-    preventing a pipe-buffer deadlock if the child writes more than the
-    OS pipe capacity (~64KB on Linux). All failures are logged and
-    swallowed; never raises.
+    Resolves subdomain→group_id via the sidecar, sends the text. All
+    failures logged and swallowed; never raises.
     """
     try:
-        proc = await asyncio.create_subprocess_exec(
-            sherwood_bin,
-            "chat",
-            subdomain,
-            "send",
-            "--markdown",
-            markdown,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _stdout, stderr = await proc.communicate()
-        rc = proc.returncode
-        if rc != 0:
-            _log.warning(
-                "xmtp post failed (rc=%s): %s",
-                rc,
-                stderr.decode("utf-8", "replace")[:500],
-            )
+        await sidecar.send_text(subdomain=subdomain, text=markdown, markdown=True)
     except Exception as exc:
-        _log.warning("xmtp post failed: %s", exc)
+        _log.warning("xmtp post failed for %s: %s", subdomain, exc)
