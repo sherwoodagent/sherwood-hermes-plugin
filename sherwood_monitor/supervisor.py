@@ -155,12 +155,18 @@ class Supervisor:
             state.exit_event.set()
 
     async def _run_once(self, state: _State) -> None:
+        # --no-xmtp: the plugin's own sidecar owns XMTP (send + subscribe).
+        # The CLI's session-check path would either duplicate that work or,
+        # on glibc-2.36 hosts where the CLI's @xmtp/node-bindings fails to
+        # load, block the subprocess entirely before any on-chain events
+        # emerge. Requires CLI >= 0.40.5 (enforced by preflight).
         proc = await asyncio.create_subprocess_exec(
             self._cfg.sherwood_bin,
             "session",
             "check",
             state.subdomain,
             "--stream",
+            "--no-xmtp",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

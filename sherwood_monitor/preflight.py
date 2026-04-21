@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .sidecar import Sidecar
 
-MIN_CLI_VERSION = "0.4.0"
+# 0.40.5 is the first CLI release with `sherwood session check --no-xmtp`,
+# which the supervisor passes unconditionally. Older CLIs reject the flag
+# and the supervisor subprocess fails to start — surface a clear preflight
+# warning before that happens.
+MIN_CLI_VERSION = "0.40.5"
 
 _log = logging.getLogger(__name__)
 

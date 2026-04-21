@@ -54,6 +54,10 @@ async def test_start_spawns_subprocess_and_routes_events():
         args = mock_spawn.call_args.args
         assert args[0] == "sherwood"
         assert "session" in args and "check" in args and "alpha" in args and "--stream" in args
+        # Regression: supervisor must pass --no-xmtp so the CLI skips its
+        # XMTP catch-up (the plugin's sidecar owns XMTP; the CLI's path
+        # would either duplicate work or block on broken glibc bindings).
+        assert "--no-xmtp" in args
         router.route.assert_called_once()
         called_sub, called_raw = router.route.call_args.args
         assert called_sub == "alpha"
