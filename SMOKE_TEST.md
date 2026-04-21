@@ -4,7 +4,7 @@
 
 ## What you're testing
 
-The `sherwood-monitor` plugin you're running. Your job is to prove it works end-to-end against a live Sherwood deployment and report with evidence. "Evidence" means logs, state files, and observed behavior — not assertions.
+The `sherwood-monitor` plugin you're running: on-chain event streaming + autonomous cron digests + risk guardrails + cross-syndicate exposure + XMTP subscribe/send via a bundled TypeScript sidecar. Your job is to prove it works end-to-end against a live Sherwood deployment and report with evidence. "Evidence" means logs, state files, and observed behavior — not assertions.
 
 ## Ground rules
 
@@ -109,6 +109,49 @@ Goal: prove the streaming supervisor spawns, reads, and stops a child process cl
 **Pass condition:** subprocess spawned, observed via ps, stopped cleanly, no zombies.
 
 **If fail:** inspect `$RUN_DIR/2-ps.txt` — if the subprocess never appeared, the plugin's `cfg.sherwood_bin` may be wrong. Report what you found.
+
+---
+
+## Phase 2.5 — Sidecar health + membership + send test
+
+Goal: confirm the XMTP sidecar is alive, the sidecar wallet is a member of the target syndicate's group, and a real XMTP post reaches the group.
+
+### Confirm sidecar process exists
+
+    ps aux | grep xmtp_sidecar | grep -v grep > "$RUN_DIR/2.5-ps-sidecar.txt"
+
+Expected: one process running something like `node .../xmtp_sidecar/dist/index.js`. Non-zero pid. If absent, the sidecar didn't spawn — check `/tmp/sherwood-monitor.log` for the reason (most common: `npm` missing at install time, or `~/.sherwood/config.json` missing).
+
+### Read the sidecar address
+
+Call `sherwood_monitor_status()` and look at the output (it should include a `sidecar_address` field after Phase 3 of this PR lands; alternatively read `~/.hermes/plugins/sherwood-monitor/sidecar.json`):
+
+    cat ~/.hermes/plugins/sherwood-monitor/sidecar.json > "$RUN_DIR/2.5-sidecar-json.txt"
+
+Save the 0x address as `$SIDECAR_ADDR`.
+
+### Confirm membership (or fix it)
+
+1. `sherwood chat $SUB members > "$RUN_DIR/2.5-members-before.txt"` — check if `$SIDECAR_ADDR` is listed.
+2. If not: as the syndicate creator, run:
+   ```
+   sherwood chat $SUB add $SIDECAR_ADDR
+   ```
+3. Re-check: `sherwood chat $SUB members > "$RUN_DIR/2.5-members-after.txt"` — `$SIDECAR_ADDR` should now appear.
+
+### Send a test message via the sidecar
+
+Call the tool (the agent can do this directly; the plugin exposes an LLM tool or the Sidecar can be invoked via `sherwood_monitor_status` first to confirm `sidecar_ok: true`).
+
+Without a direct send tool (by design — the agent posts via handlers, not on demand), simulate a send by triggering an event through the replay path in Phase 3, then re-read the group log:
+
+    sherwood chat $SUB log --limit 5 > "$RUN_DIR/2.5-chat-log-after-send.txt"
+
+Expected: a recent markdown message posted by `$SIDECAR_ADDR` (or at least a new message not from you) showing a proposal summary.
+
+**Pass condition:** sidecar process running; sidecar address is a group member; a test auto-post from the sidecar address appears in the group log.
+
+**Pass condition (fail-open):** if the sidecar never spawned (missing Node, skipped build), the plugin should have injected a clear warning explaining why. Save that warning text to `$RUN_DIR/2.5-sidecar-skipped-reason.txt` and mark this phase as YELLOW with a note.
 
 ---
 

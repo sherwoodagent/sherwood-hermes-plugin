@@ -39,9 +39,8 @@ async def test_proposal_created_injects_and_posts(cfg):
     assert 'type="ProposalCreated"' in call_content
     assert "Aero LP" in call_content
     post.assert_called_once()
-    assert post.call_args.args[0] == "sherwood"
-    assert post.call_args.args[1] == "alpha"
-    assert "Proposal #1" in post.call_args.args[2]
+    assert post.call_args.args[0] == "alpha"
+    assert "Proposal #1" in post.call_args.args[1]
 
 
 @pytest.mark.asyncio
@@ -55,7 +54,7 @@ async def test_proposal_settled_injects_and_posts(cfg):
     await handle_chain_event("alpha", ev, buffer, cfg, post)
     buffer.push.assert_called_once()
     post.assert_called_once()
-    assert "pnl" in post.call_args.args[2].lower()
+    assert "pnl" in post.call_args.args[1].lower()
 
 
 @pytest.mark.asyncio

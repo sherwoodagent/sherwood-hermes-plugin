@@ -10,7 +10,7 @@ from .models import ChainEvent, SessionMessage
 
 _log = logging.getLogger(__name__)
 
-PostFn = Callable[[str, str, str], Awaitable[None]]
+PostFn = Callable[[str, str], Awaitable[None]]  # (subdomain, markdown)
 
 # Events we inject as context but don't auto-post
 CHAIN_INJECT_ONLY = {
@@ -123,7 +123,7 @@ async def handle_chain_event(
         formatter = _CHAIN_SUMMARY_FORMATTERS.get(ev.type)
         if formatter is not None:
             summary = formatter(ev)
-            await post_fn(cfg.sherwood_bin, subdomain, summary)
+            await post_fn(subdomain, summary)
 
 
 # XMTP message types that always get injected with specific priority
