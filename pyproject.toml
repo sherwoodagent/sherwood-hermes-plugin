@@ -30,6 +30,7 @@ sherwood-monitor = "sherwood_monitor"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sherwood_monitor*"]
+exclude = ["xmtp_sidecar*", "tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

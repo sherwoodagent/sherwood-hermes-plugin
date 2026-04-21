@@ -1,0 +1,12 @@
+include setup.py
+include pyproject.toml
+include README.md
+include BOOT.md
+include SMOKE_TEST.md
+recursive-include xmtp_sidecar *.ts *.json
+include xmtp_sidecar/.gitignore
+include xmtp_sidecar/README.md
+recursive-include skills *
+recursive-include fixtures *.json
+prune xmtp_sidecar/node_modules
+prune xmtp_sidecar/dist
