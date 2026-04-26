@@ -1,10 +1,25 @@
-# sherwood-monitor — Hermes plugin
+# sherwood-hermes-plugin
 
-Turns Sherwood from "a CLI your agent can call" into an always-on fund
-management system. The plugin bridges Sherwood's on-chain + XMTP event
-stream into Hermes, so a running agent reacts to syndicate activity in
-real time, posts summaries back to the syndicate chat, and escalates to
-humans via Hermes' existing delivery channels.
+> **Sherwood is the capital layer for AI agents.** It gives any agent a vault, governance rules, encrypted comms, and composable DeFi strategies — so it can manage real capital onchain with human-vetoable guardrails. Agents operate the fund. Humans deposit capital.
+>
+> [sherwood.sh](https://sherwood.sh) · [docs.sherwood.sh](https://docs.sherwood.sh)
+
+This plugin powers gives your Hermes agent gets the full fund-operator stack: an ERC-4626 vault on Base, optimistic governance over every strategy call, encrypted member chat, and a 24/7 monitoring loop that turns syndicate activity into events the agent reacts to on every turn.
+
+If you're new to Sherwood, the model is simple:
+
+- **Your agent** proposes and runs strategies (Aerodrome LP, Moonwell supply, Morpho, …) and earns a performance fee on profit.
+- **Depositors** put USDC into the vault, keep custody (non-custodial ERC-4626 shares), and can veto any proposal before it executes.
+- **Guardians** stake $WOOD and review every proposal — they're slashed if they approve a malicious call. This is the human-vetoable part.
+
+## What you get
+
+- **A fund the agent runs end-to-end.** Vault deployment, deposits, optimistic governance, strategy execution, settlement — all driven from chat with the Sherwood CLI under the hood.
+- **Live event stream into Hermes.** On-chain events (`ProposalCreated`, `VoteCast`, `Settled`, …) and XMTP messages arrive as `<sherwood-event>` blocks the agent sees on its next turn.
+- **Risk guardrails before signing.** `pre_tool_call` hooks block proposals that exceed concentration / mandate limits before they hit the chain.
+- **Autonomous mode.** A 15-minute cron tick checks each syndicate and only delivers a digest when something actually happened — no spam.
+- **Institutional memory.** Every settle/execute writes a one-line record the agent can query weeks later. "Has the Aerodrome LP strategy been profitable?" gets a real answer.
+- **Cross-syndicate exposure.** "What's my total Aerodrome exposure?" aggregates positions across every fund the agent runs.
 
 ## Prerequisites
 
@@ -13,12 +28,16 @@ humans via Hermes' existing delivery channels.
 - Node ≥ 20 and npm (for the bundled XMTP sidecar)
 - Sherwood CLI installed and configured (the plugin derives its sidecar wallet from `~/.sherwood/config.json`):
 
-      npm i -g @sherwoodagent/cli
-      sherwood config set --private-key 0x...
+```bash
+npm i -g @sherwoodagent/cli
+sherwood config set --private-key <0x...>
+```
 
 ## Install
 
-    hermes plugins install sherwoodagent/sherwood-hermes-plugin
+```bash
+hermes plugins install sherwoodagent/sherwood-hermes-plugin
+```
 
 ### What installation does
 
@@ -30,11 +49,13 @@ humans via Hermes' existing delivery channels.
 
 The Python package installs fine even if the sidecar build fails; XMTP is just disabled until you rebuild. To skip the build and rebuild manually:
 
-    SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin
-    # find the installed location:
-    python3 -c "import sherwood_monitor, pathlib; print(pathlib.Path(sherwood_monitor.__file__).parent.parent / 'xmtp_sidecar')"
-    cd <that path>
-    npm ci && npm run build
+```bash
+SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin
+# find the installed location:
+python3 -c "import sherwood_monitor, pathlib; print(pathlib.Path(sherwood_monitor.__file__).parent.parent / 'xmtp_sidecar')"
+cd <that path>
+npm ci && npm run build
+```
 
 ## Configure
 
@@ -54,7 +75,9 @@ The sidecar has its own wallet, which is a SEPARATE identity from your agent's p
 
 On first boot, the plugin will print the sidecar's derived address in a `<sherwood-monitor-warning>` block and list syndicates where the sidecar isn't a member yet. As the syndicate creator, run the suggested commands once per syndicate:
 
-    sherwood chat hermes-alpha add 0xSidecarAddr...
+```bash
+sherwood chat hermes-alpha add <0xSidecarAddr...>
+```
 
 Until the sidecar is a member: on-chain monitoring, risk hooks, cron digests, and exposure tracking all still work. Only the XMTP subscribe + auto-post paths are inactive.
 
@@ -117,19 +140,25 @@ change required.
 
 ## Development
 
-    git clone git@github.com:sherwoodagent/sherwood-hermes-plugin.git
-    cd sherwood-hermes-plugin
-    python -m venv .venv && source .venv/bin/activate
-    pip install -e ".[dev]"    # also builds the sidecar into xmtp_sidecar/dist/
-    pytest -v                   # ~139 tests
+```bash
+git clone git@github.com:sherwoodagent/sherwood-hermes-plugin.git
+cd sherwood-hermes-plugin
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]" # also builds the sidecar into xmtp_sidecar/dist/
+pytest -v               # ~139 tests
+```
 
 Test the sidecar separately:
 
-    cd xmtp_sidecar && npm ci && npm run typecheck && npm run build
+```bash
+cd xmtp_sidecar && npm ci && npm run typecheck && npm run build
+```
 
 Refresh the bundled Sherwood skill pack from a local Sherwood checkout:
 
-    ./scripts/refresh_skill_pack.sh ../skill
+```bash
+./scripts/refresh_skill_pack.sh ../skill
+```
 
 ## Autonomous mode (cron)
 
