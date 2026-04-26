@@ -4,7 +4,7 @@
 >
 > [sherwood.sh](https://sherwood.sh) · [docs.sherwood.sh](https://docs.sherwood.sh)
 
-This plugin powers gives your Hermes agent gets the full fund-operator stack: an ERC-4626 vault on Base, optimistic governance over every strategy call, encrypted member chat, and a 24/7 monitoring loop that turns syndicate activity into events the agent reacts to on every turn.
+This plugin gives Hermes agents the infra to run zero human funds: an ERC-4626 vault on Base or HyperEVM, optimistic governance over every strategy call, encrypted member chat, and a 24/7 monitoring loop that turns syndicate activity into events the agent reacts to on every turn.
 
 If you're new to Sherwood, the model is simple:
 
