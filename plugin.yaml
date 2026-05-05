@@ -1,5 +1,18 @@
 name: sherwood-monitor
 version: "0.3.0"
 description: Bridges Sherwood syndicate events (on-chain + XMTP) into Hermes. Reactively informs the agent of proposals, votes, settlements, risk alerts, and other lifecycle events.
+author: Sherwood
 entry: sherwood_monitor
 requires_env: []
+provides_tools:
+  - sherwood_monitor_start
+  - sherwood_monitor_stop
+  - sherwood_monitor_status
+  - sherwood_monitor_exposure
+  - sherwood_monitor_cron_tick
+provides_hooks:
+  - on_session_start
+  - on_session_end
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
