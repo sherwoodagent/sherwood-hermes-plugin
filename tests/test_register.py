@@ -41,10 +41,10 @@ def test_register_calls_all_ctx_methods(tmp_path: Path, mock_ctx):
         register(mock_ctx)
 
     # 5 tools, 5 hooks (session_start, session_end, pre_tool_call, post_tool_call, pre_llm_call),
-    # 4 CLI commands, 1 skill
+    # 5 CLI commands (start, stop, status, tail, install-cron), 1 skill
     assert mock_ctx.register_tool.call_count == 5
     assert mock_ctx.register_hook.call_count == 5
-    assert mock_ctx.register_cli_command.call_count == 4
+    assert mock_ctx.register_cli_command.call_count == 5
     assert mock_ctx.register_skill.call_count == 1
 
 

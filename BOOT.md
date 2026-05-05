@@ -16,9 +16,12 @@ syndicates are configured and remind the user how to add one:
 
 ## Cron setup (one-time)
 
-If no `sherwood-monitor` cron is registered:
+The preferred path is the CLI: `hermes sherwood install-cron` (idempotent;
+checks for an existing entry and creates one if absent). If the user hasn't
+run that yet, fall back to registering the cron from chat:
+
 1. Call `cronjob(action="list")` to check.
-2. If absent, call:
+2. If no `sherwood-monitor` entry exists, call:
    ```
    cronjob(
      action="create",

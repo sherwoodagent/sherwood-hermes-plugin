@@ -105,7 +105,9 @@ CLI outside chat:
 ```bash
 hermes sherwood status
 hermes sherwood start alpha-fund
+hermes sherwood stop alpha-fund
 hermes sherwood tail alpha-fund
+hermes sherwood install-cron        # one-time: register the 15-min autonomous-digest cron
 ```
 
 ## What the plugin does
@@ -171,7 +173,21 @@ ticks return empty events and no concentration alerts, nothing is delivered.
 
 Cursor state is persisted at `~/.hermes/plugins/sherwood-monitor/cron_cursor.json`.
 
-The cron job is set up once from the BOOT.md routine:
+### Register the cron (recommended: one-shot CLI)
+
+```bash
+hermes sherwood install-cron
+```
+
+Idempotent — re-runs report `{ "installed": false, "reason": "already_registered" }`
+and exit 0. Hermes does not expose a plugin-side cron-registration API, so the
+plugin can't declare crons in `plugin.yaml`; this CLI subcommand is the
+deterministic equivalent.
+
+### Fallback: BOOT.md prompts the agent on session start
+
+If you don't run `install-cron`, `BOOT.md` instructs the agent at session start
+to call the built-in `cronjob` tool itself:
 
 ```python
 cronjob(
@@ -181,6 +197,9 @@ cronjob(
     name="sherwood-monitor"
 )
 ```
+
+LLM-driven, so it's not deterministic across cold sessions — `install-cron` is
+preferred when you can run it.
 
 ## Cross-syndicate exposure
 
