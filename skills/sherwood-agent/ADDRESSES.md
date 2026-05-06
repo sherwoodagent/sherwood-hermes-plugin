@@ -60,8 +60,8 @@ These are also available in `cli/src/lib/addresses.ts` (resolved at runtime base
 | BatchExecutorLib | `0x2c454bEF1b09c8a306a7058b8B510bF0DfF7179D` |
 | SyndicateVaultImpl | `0x2cbBe36Cf907A2BB410bacB0e4Fd632C7b012846` |
 | USDC | `0xb88339CB7199b77E23DB6E890353E22632Ba630f` (6 decimals) |
-| HyperliquidPerpStrategy | `0x2C128810F881055AE186EBBE5bcF33031D325dA1` |
-| HyperliquidGridStrategy | `0x0D62944862996791a9BCE992872F9Fa8E3162B49` |
+| HyperliquidPerpStrategy | `0xC0fA169fdbBb3638AdE917A5B8A9A87caf90d91e` |
+| HyperliquidGridStrategy | `0x20348e428050031647d671F0e24752C01D4b7379` |
 
 HyperEVM has no Moonwell, Uniswap, Venice, Aerodrome, ENS, or ERC-8004 — the factory accepts `address(0)` for `ensRegistrar` and `agentRegistry`. Beta-mode deploy uses `MinimalGuardianRegistry` (no WOOD, no review/slashing) — full GuardianRegistry will replace it via owner-only `setGuardianRegistry()` once WOOD ships.
 
@@ -84,17 +84,17 @@ ERC-1167 clonable singletons. Use `sherwood strategy list` to see current addres
 
 | Template | Address |
 |----------|---------|
-| MoonwellSupplyStrategy | _pending V1.5 redeploy against new factory_ |
-| AerodromeLPStrategy | _pending V1.5 redeploy against new factory_ |
-| VeniceInferenceStrategy | _pending V1.5 redeploy against new factory_ |
-| WstETHMoonwellStrategy | _pending V1.5 redeploy against new factory_ |
-| MamoYieldStrategy | _pending V1.5 redeploy against new factory_ |
-| PortfolioStrategy | _pending V1.5 redeploy against new factory_ |
+| MoonwellSupplyStrategy | `0xb9Cd6d6720fc224508A07f0e43254A3cD65770E0` |
+| AerodromeLPStrategy | `0x6fba9a6D3F40AA1848Ad196564B27a430D29FdB0` |
+| VeniceInferenceStrategy | `0x0dDFf301F8AeB9B95627277f70bb6824CEFf5dF3` |
+| WstETHMoonwellStrategy | `0x23d145Bd100599C7418164FEae235bcE391Ae032` |
+| MamoYieldStrategy | `0x73b9cdC8cAf8853AfE299E144A40e3D51E399463` |
+| PortfolioStrategy | _pending separate redeploy (Portfolio + UniswapSwapAdapter)_ |
 | UniswapSwapAdapter | `0x121AaC2B96Ec365e457fcCc1C2ED5a6142064069` |
 
-V1.5 added `IStrategy.onLiveDeposit`. The V1 Base templates do not implement it — cloning them against the new factory `0xAC74…3c82` would revert on the first live deposit. Old V1 addresses (kept on-chain for in-flight settle-out only): MoonwellSupply `0x649f…9F00`, AerodromeLP `0x6ccd…26CE`, VeniceInference `0x49BF…E41b`, WstETHMoonwell `0xA318…D1e6`, MamoYield `0x9ca8…DF42`, Portfolio `0x7865…3f64`.
+These V1.5 templates implement `IStrategy.onLiveDeposit` + `_positionValue`. MoonwellSupply, WstETHMoonwell, and the Hyperliquid templates report live NAV (`valid=true`) — the vault stays unlocked at fair NAV during their active proposals. Aerodrome / Venice / Mamo report `valid=false` and route through the async-redeem queue (live NAV deferred per pre-mainnet punchlist).
 
-All clonable strategy singletons expose the `positionValue() → (uint256, bool)` view (shipped in #218).
+Old V1 addresses (kept on-chain for in-flight settle-out only): MoonwellSupply `0x649f…9F00`, AerodromeLP `0x6ccd…26CE`, VeniceInference `0x49BF…E41b`, WstETHMoonwell `0xA318…D1e6`, MamoYield `0x9ca8…DF42`, Portfolio `0x7865…3f64`.
 
 ## Strategy Templates (Base Sepolia)
 
