@@ -89,8 +89,8 @@ ERC-1167 clonable singletons. Use `sherwood strategy list` to see current addres
 | VeniceInferenceStrategy | `0x0dDFf301F8AeB9B95627277f70bb6824CEFf5dF3` |
 | WstETHMoonwellStrategy | `0x23d145Bd100599C7418164FEae235bcE391Ae032` |
 | MamoYieldStrategy | `0x73b9cdC8cAf8853AfE299E144A40e3D51E399463` |
-| PortfolioStrategy | _pending separate redeploy (Portfolio + UniswapSwapAdapter)_ |
-| UniswapSwapAdapter | `0x121AaC2B96Ec365e457fcCc1C2ED5a6142064069` |
+| PortfolioStrategy | `0x42069e51c415f4BF4442D80F1532Bd38140Bd135` |
+| UniswapSwapAdapter | `0x679400a781A66d801C20DfD9E0020704e21e9d54` |
 
 These V1.5 templates implement `IStrategy.onLiveDeposit` + `_positionValue`. MoonwellSupply, WstETHMoonwell, and the Hyperliquid templates report live NAV (`valid=true`) — the vault stays unlocked at fair NAV during their active proposals. Aerodrome / Venice / Mamo report `valid=false` and route through the async-redeem queue (live NAV deferred per pre-mainnet punchlist).
 
