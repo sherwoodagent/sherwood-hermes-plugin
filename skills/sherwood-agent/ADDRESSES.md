@@ -8,9 +8,11 @@ These are also available in `cli/src/lib/addresses.ts` (resolved at runtime base
 
 | Contract | Address |
 |----------|---------|
-| SyndicateFactory | `0x4a761D4C101a3aaDE53C7aA2b5c3278b217B6C29` |
-| SyndicateGovernor | `0x2F7C27007AC5Bad8400EaDBcdaa767597cfE186a` |
-| BatchExecutorLib | `0x4DB19b6F8A0B299fD73c40A72B265cfBCF64664a` |
+| SyndicateFactory | `0xAC74EC56858d7F1f7618c8e77F65Fc26aDf33c82` |
+| SyndicateGovernor | `0x9Fd3c87B34F254e3c5652A0394B9780c2F05d367` |
+| GuardianRegistry | `0x49E4163b5e4b23F8f3d469Cf6fa197FB6b06A26E` |
+| BatchExecutorLib | `0xbC79FbD5036C1Cc4A9d10BDf8628BF09a558496E` |
+| SyndicateVaultImpl | `0xfce4bcE08E9C047E4736f75C2B8557e2754Ce36A` |
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (6 decimals) |
 | WETH | `0x4200000000000000000000000000000000000006` |
 | Moonwell Comptroller | `0xfBb21d0380beE3312B33c4353c8936a0F13EF26C` |
@@ -52,16 +54,18 @@ These are also available in `cli/src/lib/addresses.ts` (resolved at runtime base
 
 | Contract | Address |
 |----------|---------|
-| SyndicateFactory | `0x7e7F8Ee0f451aA70be3dda66D9eeecbfc7FA48d3` |
-| SyndicateGovernor | `0x915Fc671F4b96420266200ec21Af8dD69Ec97C21` |
-| GuardianRegistry (stub, beta) | `0x121AaC2B96Ec365e457fcCc1C2ED5a6142064069` |
-| BatchExecutorLib | `0xbEDa41DD59828CBfEd50bd03E0833C7dCc279F5E` |
-| SyndicateVaultImpl | `0xB45419FACcd2173D9c8B2Ad845277f56d1e7ECba` |
+| SyndicateFactory | `0xd05Ae0E8bcf13075C29817c805d6Cc14F214393a` |
+| SyndicateGovernor | `0x67AD3D5F3d127Ef923Fd6f67b178633c408D3fd3` |
+| GuardianRegistry (stub, beta) | `0x8b5710EB4e2fA639F364Dcc3F3B30c8f12F460b9` |
+| BatchExecutorLib | `0x2c454bEF1b09c8a306a7058b8B510bF0DfF7179D` |
+| SyndicateVaultImpl | `0x2cbBe36Cf907A2BB410bacB0e4Fd632C7b012846` |
 | USDC | `0xb88339CB7199b77E23DB6E890353E22632Ba630f` (6 decimals) |
-| HyperliquidPerpStrategy | `0xa2B8Ad8695FdE05bf1DA4aBaef1608045A53Ba4E` |
-| HyperliquidGridStrategy | `0x649f8d24096a5eb17b8C73ee5113825AcA259F00` |
+| HyperliquidPerpStrategy | `0x2C128810F881055AE186EBBE5bcF33031D325dA1` |
+| HyperliquidGridStrategy | `0x0D62944862996791a9BCE992872F9Fa8E3162B49` |
 
 HyperEVM has no Moonwell, Uniswap, Venice, Aerodrome, ENS, or ERC-8004 — the factory accepts `address(0)` for `ensRegistrar` and `agentRegistry`. Beta-mode deploy uses `MinimalGuardianRegistry` (no WOOD, no review/slashing) — full GuardianRegistry will replace it via owner-only `setGuardianRegistry()` once WOOD ships.
+
+V1.5 redeploy (PR #282 / `chore/redeploy-beta-v1.5`): old proxies (factory `0x7e7F…48d3`, governor `0x915F…7C21`, registry `0x121A…4069`, vault impl `0xB454…ECba`, executor `0xbEDa…9F5E`) remain on-chain for historical / settle-out access but are no longer surfaced through the CLI or dashboard.
 
 ## EAS (Ethereum Attestation Service)
 
@@ -80,15 +84,17 @@ ERC-1167 clonable singletons. Use `sherwood strategy list` to see current addres
 
 | Template | Address |
 |----------|---------|
-| MoonwellSupplyStrategy | `0x649f8d24096a5eb17b8C73ee5113825AcA259F00` |
-| AerodromeLPStrategy | `0x6ccdD48C6A83cCdD6712DEB02E85FbEA8CF426CE` |
-| VeniceInferenceStrategy | `0x49BFDae8353ba15954924274573D427211CCe41b` |
-| WstETHMoonwellStrategy | `0xA31851Ab35F9992b0411749ec02Df053e904D1e6` |
-| MamoYieldStrategy | `0x9ca8A9B75a46261F107B610b634ecE69D7E6DF42` |
-| PortfolioStrategy | `0x7865eEA4063c22d0F55FdD412D345495c7b73f64` |
+| MoonwellSupplyStrategy | _pending V1.5 redeploy against new factory_ |
+| AerodromeLPStrategy | _pending V1.5 redeploy against new factory_ |
+| VeniceInferenceStrategy | _pending V1.5 redeploy against new factory_ |
+| WstETHMoonwellStrategy | _pending V1.5 redeploy against new factory_ |
+| MamoYieldStrategy | _pending V1.5 redeploy against new factory_ |
+| PortfolioStrategy | _pending V1.5 redeploy against new factory_ |
 | UniswapSwapAdapter | `0x121AaC2B96Ec365e457fcCc1C2ED5a6142064069` |
 
-All clonable strategy singletons expose the `positionValue() → (uint256, bool)` view (shipped in #218). Existing clones deployed before this redeploy lack the view; frontend callers should wrap in try/catch.
+V1.5 added `IStrategy.onLiveDeposit`. The V1 Base templates do not implement it — cloning them against the new factory `0xAC74…3c82` would revert on the first live deposit. Old V1 addresses (kept on-chain for in-flight settle-out only): MoonwellSupply `0x649f…9F00`, AerodromeLP `0x6ccd…26CE`, VeniceInference `0x49BF…E41b`, WstETHMoonwell `0xA318…D1e6`, MamoYield `0x9ca8…DF42`, Portfolio `0x7865…3f64`.
+
+All clonable strategy singletons expose the `positionValue() → (uint256, bool)` view (shipped in #218).
 
 ## Strategy Templates (Base Sepolia)
 
