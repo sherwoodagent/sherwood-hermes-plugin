@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "plugin.yaml"
+      - ".github/workflows/release.yml"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_exists: ${{ steps.check_tag.outputs.exists }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          VERSION=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/version = "(.+)"/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not parse version from pyproject.toml"
+            exit 1
+          fi
+          echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify pyproject.toml and plugin.yaml versions agree
+        run: |
+          PY_VERSION=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/version = "(.+)"/\1/')
+          YAML_VERSION=$(grep -E '^version: ' plugin.yaml | head -1 | sed -E 's/version: "?([^"]+)"?$/\1/')
+          if [ "$PY_VERSION" != "$YAML_VERSION" ]; then
+            echo "::error::Version mismatch — pyproject.toml=${PY_VERSION} plugin.yaml=${YAML_VERSION}"
+            exit 1
+          fi
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tag ${{ steps.version.outputs.version }} already exists — skipping release"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub release
+        if: steps.check_tag.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
