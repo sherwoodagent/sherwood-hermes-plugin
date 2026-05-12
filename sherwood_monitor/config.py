@@ -15,6 +15,14 @@ sherwood_bin: sherwood
 backoff_max_seconds: 30
 inject_mentions_only: true
 concentration_threshold_pct: 30.0
+
+# Watchdog thresholds (no_agent crons registered by `hermes sherwood install-cron`).
+# Each watchdog stays silent unless its condition is breached, so changing a
+# threshold here only affects when the corresponding alert fires.
+aum_alert_threshold_pct: 5.0       # alert when |Δ TVL| since last tick exceeds N% of prior reading
+gas_alert_min_eth: 0.002           # alert when agent wallet ETH balance falls below this floor
+stream_stale_minutes: 30           # alert when a syndicate's supervisor hasn't produced an event in N minutes
+proposal_reasoning_enabled: true   # if false, the agent-driven `sherwood-proposal-reasoning` cron is NOT registered
 """
 
 
@@ -27,6 +35,10 @@ class Config:
     backoff_max_seconds: int = 30
     inject_mentions_only: bool = True
     concentration_threshold_pct: float = 30.0
+    aum_alert_threshold_pct: float = 5.0
+    gas_alert_min_eth: float = 0.002
+    stream_stale_minutes: int = 30
+    proposal_reasoning_enabled: bool = True
 
 
 def load_config(path: Path) -> Config:
@@ -49,6 +61,10 @@ def load_config(path: Path) -> Config:
     if backoff_max <= 0:
         raise ValueError("backoff_max_seconds must be positive")
 
+    stream_stale = int(raw.get("stream_stale_minutes", 30))
+    if stream_stale <= 0:
+        raise ValueError("stream_stale_minutes must be positive")
+
     return Config(
         syndicates=[str(s) for s in syndicates],
         auto_start=bool(raw.get("auto_start", False)),
@@ -57,4 +73,8 @@ def load_config(path: Path) -> Config:
         backoff_max_seconds=backoff_max,
         inject_mentions_only=bool(raw.get("inject_mentions_only", True)),
         concentration_threshold_pct=float(raw.get("concentration_threshold_pct", 30.0)),
+        aum_alert_threshold_pct=float(raw.get("aum_alert_threshold_pct", 5.0)),
+        gas_alert_min_eth=float(raw.get("gas_alert_min_eth", 0.002)),
+        stream_stale_minutes=stream_stale,
+        proposal_reasoning_enabled=bool(raw.get("proposal_reasoning_enabled", True)),
     )

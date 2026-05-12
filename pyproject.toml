@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sherwood-monitor"
-version = "0.4.0"
+version = "0.5.0"
 description = "Hermes plugin for Sherwood syndicate monitoring and auto-response"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,9 @@ dev = [
 
 [project.entry-points."hermes_agent.plugins"]
 sherwood-monitor = "sherwood_monitor"
+
+[project.scripts]
+sherwood-monitor-watchdog = "sherwood_monitor.cli_watchdog:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
