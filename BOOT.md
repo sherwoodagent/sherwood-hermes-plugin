@@ -16,17 +16,26 @@ syndicates are configured and remind the user how to add one:
 
 ## Cron setup (one-time)
 
-The preferred path is the CLI: `hermes sherwood install-cron` (idempotent;
-checks for an existing entry and creates one if absent). If the user hasn't
-run that yet, fall back to registering the cron from chat:
+Run `hermes sherwood install-cron` from the shell. It idempotently registers
+five crons:
 
-1. Call `cronjob(action="list")` to check.
-2. If no `sherwood-monitor` entry exists, call:
-   ```
-   cronjob(
-     action="create",
-     prompt="For each syndicate in ~/.hermes/plugins/sherwood-monitor/config.yaml, call sherwood_monitor_cron_tick(subdomain, include_exposure=true). Compose a concise digest of any returned events and concentration alerts. If all ticks returned empty events and no alerts, say nothing (deliver no message). Otherwise deliver the digest.",
-     schedule="*/15 * * * *",
-     name="sherwood-monitor"
-   )
-   ```
+- Four **no_agent** watchdogs (zero LLM tokens — Hermes runs the script and
+  delivers any stdout verbatim):
+  - `sherwood-monitor-digest` (every 15m) — bullet-formats new
+    proposals/settlements/risk alerts
+  - `sherwood-aum-watchdog` (every 15m) — alerts when TVL Δ exceeds threshold
+  - `sherwood-gas-watchdog` (every 30m) — alerts when agent wallet ETH is low
+  - `sherwood-stream-watchdog` (every 5m) — alerts when a syndicate's
+    supervisor stream goes stale or its supervisor PID dies
+- One **agent** cron (`sherwood-proposal-reasoning`, every 6h) — the only
+  cron that costs LLM tokens. It lists open proposals and returns a vote
+  recommendation per proposal; silent when no proposals are open.
+
+If the user hasn't run `install-cron` yet, suggest it. The chat-fallback
+path (registering crons via the built-in `cronjob` tool) is no longer
+practical now that we register five entries; tell the user to run the
+shell command instead.
+
+`install-cron` is idempotent — output JSON lists which entries were
+`installed`, `skipped` (already registered or disabled in config), or
+returned an `error`.

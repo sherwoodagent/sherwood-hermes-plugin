@@ -164,42 +164,65 @@ Refresh the bundled Sherwood skill pack from a local Sherwood checkout:
 
 ## Autonomous mode (cron)
 
-Every 15 minutes, a fresh isolated Hermes session runs a cron job that calls
-`sherwood_monitor_cron_tick` for each configured syndicate. The tick checks for
-new interesting events (proposals created, settled, executed, cancelled; risk
-alerts; approval requests) since the last run, advances a cursor, and delivers a
-concise digest via Hermes' configured gateway (Telegram, Discord, etc.). If all
-ticks return empty events and no concentration alerts, nothing is delivered.
+`hermes sherwood install-cron` registers five crons. Four are **no_agent**
+script-only crons (zero LLM tokens — Hermes runs the script and delivers
+stdout verbatim; empty stdout → silent tick) and one is an agent-driven
+reasoning cron.
 
-Cursor state is persisted at `~/.hermes/plugins/sherwood-monitor/cron_cursor.json`.
+| Name | Mode | Schedule | What it does |
+|---|---|---|---|
+| `sherwood-monitor-digest` | no_agent | `*/15 * * * *` | Bullets new proposals / settlements / risk alerts via `cron_tick`. Same cadence as the old agent digest, no tokens. |
+| `sherwood-aum-watchdog` | no_agent | `*/15 * * * *` | Alerts when total syndicate TVL has moved by more than `aum_alert_threshold_pct` (default 5%) since the previous reading. |
+| `sherwood-gas-watchdog` | no_agent | `*/30 * * * *` | Alerts when the agent wallet's ETH balance on any chain configured in `~/.sherwood/config.json` falls below `gas_alert_min_eth` (default 0.002 ETH). |
+| `sherwood-stream-watchdog` | no_agent | `*/5 * * * *` | Alerts when a configured syndicate's supervisor stream has gone stale (`last_event_at` older than `stream_stale_minutes`, default 30m) or its PID is dead. |
+| `sherwood-proposal-reasoning` | **agent** | `0 */6 * * *` | The only cron that costs LLM tokens. Reads open proposals and returns a vote recommendation with one-sentence rationale per proposal. Silent when no proposals are open. Disable by setting `proposal_reasoning_enabled: false` in `config.yaml`. |
 
-### Register the cron (recommended: one-shot CLI)
+### Why the status/reasoning split
+
+Hermes' [no_agent script mode](https://hermes-agent.nousresearch.com/docs/guides/cron-script-only)
+runs a shell script on a schedule and delivers any stdout verbatim — no LLM,
+no agent loop, no tokens. The plugin uses this for everything where the alert
+text is deterministic given the input (event lists, TVL deltas, balance
+checks, stream-liveness). Reasoning crons stay agent-driven because vote
+recommendations and risk analysis need actual judgment.
+
+Watchdog state lives at `~/.hermes/plugins/sherwood-monitor/watchdog_state.json`
+(separate from `cron_cursor.json` so the digest's cursor doesn't share a lock
+with the alert-suppression bookkeeping).
+
+### Register the crons
 
 ```bash
 hermes sherwood install-cron
 ```
 
-Idempotent — re-runs report `{ "installed": false, "reason": "already_registered" }`
-and exit 0. Hermes does not expose a plugin-side cron-registration API, so the
-plugin can't declare crons in `plugin.yaml`; this CLI subcommand is the
+Idempotent — outputs JSON with per-entry `installed` / `skipped` / `errors`
+lists.
+
+Hermes doesn't expose a plugin-side cron-registration API, so the plugin
+can't declare crons in `plugin.yaml`; this CLI subcommand is the
 deterministic equivalent.
 
-### Fallback: BOOT.md prompts the agent on session start
+### Configure watchdog thresholds
 
-If you don't run `install-cron`, `BOOT.md` instructs the agent at session start
-to call the built-in `cronjob` tool itself:
+In `~/.hermes/plugins/sherwood-monitor/config.yaml`:
 
-```python
-cronjob(
-    action="create",
-    prompt="For each syndicate in ~/.hermes/plugins/sherwood-monitor/config.yaml, call sherwood_monitor_cron_tick(subdomain, include_exposure=true). Compose a concise digest of any returned events and concentration alerts. If all ticks returned empty events and no alerts, say nothing (deliver no message). Otherwise deliver the digest.",
-    schedule="*/15 * * * *",
-    name="sherwood-monitor"
-)
+```yaml
+aum_alert_threshold_pct: 5.0       # default 5%
+gas_alert_min_eth: 0.002           # default 0.002 ETH
+stream_stale_minutes: 30           # default 30 minutes
+proposal_reasoning_enabled: true   # set false to skip registering the agent cron
 ```
 
-LLM-driven, so it's not deterministic across cold sessions — `install-cron` is
-preferred when you can run it.
+All have safe defaults — existing configs keep working without edits.
+
+### Not yet implemented: proposal-deadline watchdog
+
+A "proposal voting window closing in <N hours" alert is intentionally
+out of scope until the Sherwood CLI ships a `sherwood proposal list --json`
+subcommand. Building it on the current `session check` event stream would
+race the digest cron's cursor and miss events; we'll add it cleanly once
+proposals are directly enumerable.
 
 ## Cross-syndicate exposure
 
