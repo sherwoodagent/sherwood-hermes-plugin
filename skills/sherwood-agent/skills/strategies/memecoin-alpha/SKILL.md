@@ -56,7 +56,7 @@ sherwood strategy propose venice-inference \
   --vault <vault> --amount 100 --asset USDC \
   --name "Venice inference funding" \
   --description "Fund Venice inference for memecoin signal analysis" \
-  --performance-fee 0 --duration 30d
+  --duration 30d
 ```
 
 After execution, provision your API key:

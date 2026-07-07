@@ -75,7 +75,6 @@ sherwood proposal create \
   --vault <vault-address> \
   --name "Venice Inference Loan" \
   --description "Loan 500 USDC for VVV staking + private inference. Will repay principal + trading profit." \
-  --performance-fee 0 \
   --duration 7d \
   --execute-calls ./venice-calls/execute.json \
   --settle-calls ./venice-calls/settle.json
@@ -87,7 +86,7 @@ Or submit directly (skip `--write-calls`):
 sherwood strategy propose venice-inference \
   --vault <vault-address> \
   --amount 500 --asset USDC --min-vvv 900 \
-  --name "Venice Inference Loan" --performance-fee 0 --duration 7d
+  --name "Venice Inference Loan" --duration 7d
 ```
 
 ### Step 3: Provision API key
