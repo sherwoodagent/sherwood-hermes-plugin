@@ -25,7 +25,7 @@ Common errors, causes, and fixes when using the Sherwood CLI.
 | `Simulation failed` | Batch would revert on-chain | Check caps, allowlist, token balances |
 | `ERC721InvalidReceiver` | Vault can't receive NFTs | Vault includes ERC721Holder — redeploy if on old version |
 | `Could not read decimals` | Invalid token address | Verify address is a valid ERC20 on Base |
-| `Pinata upload failed` | IPFS metadata upload error | Check network; override with `PINATA_API_KEY` env var |
+| `IPFS upload failed` | Hosted Sherwood pinning API unreachable or errored | Non-fatal — CLI falls back to inline `data:` metadata; check network or set `SHERWOOD_API_URL` |
 
 ## Governance Errors
 

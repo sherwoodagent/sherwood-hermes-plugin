@@ -72,7 +72,6 @@ sherwood proposal create \
   --vault <vault-address> \
   --name "Moonwell USDC Yield" \
   --description "Supply 100 USDC to Moonwell for 7 days" \
-  --performance-fee 1000 \
   --duration 7d \
   --execute-calls ./moonwell-calls/execute.json \
   --settle-calls ./moonwell-calls/settle.json
@@ -84,7 +83,7 @@ Or submit directly (skip `--write-calls`):
 sherwood strategy propose moonwell-supply \
   --vault <vault-address> \
   --amount 100 --min-redeem 99.5 --token USDC \
-  --name "Moonwell USDC Yield" --performance-fee 1000 --duration 7d
+  --name "Moonwell USDC Yield" --duration 7d
 ```
 
 ### Step 4: Proposal lifecycle

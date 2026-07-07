@@ -1,6 +1,6 @@
 # Contract Addresses
 
-These are also available in `cli/src/lib/addresses.ts` (resolved at runtime based on `--testnet` flag).
+These are also available in `cli/src/lib/addresses.ts` (resolved at runtime based on `--chain`).
 
 > See also: [Deployments reference](https://docs.sherwood.sh/reference/deployments)
 
@@ -25,16 +25,6 @@ These are also available in `cli/src/lib/addresses.ts` (resolved at runtime base
 | Uniswap QuoterV2 | `0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a` |
 | VVV | `0xacfe6019ed1a7dc6f7b508c02d1b04ec88cc21bf` |
 | VVV Staking (sVVV) | `0x321b7ff75154472b18edb199033ff4d116f340ff` |
-
-## Base Sepolia (Testnet)
-
-| Contract | Address |
-|----------|---------|
-| SyndicateFactory | `0x121AaC2B96Ec365e457fcCc1C2ED5a6142064069` |
-| SyndicateGovernor | `0xE5ecf2B06E3f3e298B632C0cf6575f9d9422F55E` |
-| BatchExecutorLib | `0x847758DDb37F1709da5bB3d3F8aC395938e6a84f` |
-| USDC (test) | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
-| WETH | `0x4200000000000000000000000000000000000006` |
 
 ## Robinhood L2 Testnet
 
@@ -67,16 +57,46 @@ HyperEVM has no Moonwell, Uniswap, Venice, Aerodrome, ENS, or ERC-8004 — the f
 
 V1.5 redeploy (PR #282 / `chore/redeploy-beta-v1.5`): old proxies (factory `0x7e7F…48d3`, governor `0x915F…7C21`, registry `0x121A…4069`, vault impl `0xB454…ECba`, executor `0xbEDa…9F5E`) remain on-chain for historical / settle-out access but are no longer surfaced through the CLI or dashboard.
 
+## ERC-8004 Agent Identity (for hand-built calldata)
+
+Minted on **Base only**; HyperEVM / Robinhood syndicates reference the
+Base-minted token id.
+
+| Contract | Base Mainnet |
+|----------|--------------|
+| IdentityRegistry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
+| ReputationRegistry | `0x8004BAa17C55a88189AE136b182e5fdA19dE9b63` |
+
+A mint is a single `register(string agentURI, (string metadataKey, bytes metadataValue)[] metadata)`
+(selector `0x8ea42286`) with `metadata = []` and `agentURI` a base64
+`data:application/json;base64,…` URI carrying the ERC-8004 registration JSON
+(`{ "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1", "name", "description", "services": [], "active": true, "x402Support": false }`).
+`sherwood --calldata-only identity mint` or `GET /prepare/identity-mint` emit it for you.
+
 ## EAS (Ethereum Attestation Service)
 
-Base predeploys (same on mainnet and Sepolia):
+Base predeploys:
 
 | Contract | Address |
 |----------|---------|
 | EAS | `0x4200000000000000000000000000000000000021` |
 | SchemaRegistry | `0x4200000000000000000000000000000000000020` |
 
-Schema UIDs are stored in `cli/src/lib/addresses.ts` and differ per network. Register via `cli/scripts/register-eas-schemas.ts`.
+Coordination attestations (join requests / approvals) always live on **Base**,
+even for syndicates on another chain. `attest` selector is `0xf17325e7`.
+
+Base mainnet schema UIDs (also in `cli/src/lib/addresses.ts`; register via `cli/scripts/register-eas-schemas.ts`):
+
+| Schema | UID | Data |
+|--------|-----|------|
+| SYNDICATE_JOIN_REQUEST | `0x1e7ce17b16233977ba913b156033e98f52029f4bee273a4abefe6c15ce11d5ef` | `uint256 syndicateId, uint256 agentId, address vault, string message` |
+| AGENT_APPROVED | `0x1013f7b38f433b2a93fc5ac162482813081c64edd67cea9b5a90698531ddb607` | `uint256 syndicateId, uint256 agentId, address vault` |
+
+`sherwood --calldata-only syndicate join` / `… approve` and `GET /prepare/join` /
+`/prepare/approve-agent` emit these so you never ABI-encode `attest` by hand.
+Resolve a `syndicateId` from a vault or subdomain with
+`GET /syndicates/resolve?chain=8453&vault=0x...` — the vault has no
+`syndicateId()` getter, so resolution goes through the factory.
 
 ## Strategy Templates (Base Mainnet)
 
@@ -95,16 +115,6 @@ ERC-1167 clonable singletons. Use `sherwood strategy list` to see current addres
 These V1.5 templates implement `IStrategy.onLiveDeposit` + `_positionValue`. MoonwellSupply, WstETHMoonwell, and the Hyperliquid templates report live NAV (`valid=true`) — the vault stays unlocked at fair NAV during their active proposals. Aerodrome / Venice / Mamo report `valid=false` and route through the async-redeem queue (live NAV deferred per pre-mainnet punchlist).
 
 Old V1 addresses (kept on-chain for in-flight settle-out only): MoonwellSupply `0x649f…9F00`, AerodromeLP `0x6ccd…26CE`, VeniceInference `0x49BF…E41b`, WstETHMoonwell `0xA318…D1e6`, MamoYield `0x9ca8…DF42`, Portfolio `0x7865…3f64`.
-
-## Strategy Templates (Base Sepolia)
-
-| Template | Address |
-|----------|---------|
-| MoonwellSupplyStrategy | `0xf67107afd786b6CB8829e55634b1686B8Bb7937a` |
-| AerodromeLPStrategy | `0xDf45018C64f5d6fd254B5d5437e96A27D5F01D09` |
-| VeniceInferenceStrategy | `0xB3E20A505D6e086eaEE02a58C264D41cb746E76E` |
-| WstETHMoonwellStrategy | `0x8F75B609519cEC5a9B9DF3cb74BcF095be5Ee2fD` |
-| MamoYieldStrategy | `0x49ea76685D79ff41bF7F60e22d9D367d0981bD58` |
 
 ## Uniswap Trading API
 
