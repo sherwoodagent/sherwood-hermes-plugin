@@ -11,7 +11,7 @@ _log = logging.getLogger(__name__)
 
 
 async def post_summary(sidecar: "Sidecar", subdomain: str, markdown: str) -> None:
-    """Post a markdown summary to the syndicate's XMTP group.
+    """Post a markdown summary to the fund's XMTP group.
 
     Resolves subdomain→group_id via the sidecar, sends the text. All
     failures logged and swallowed; never raises.

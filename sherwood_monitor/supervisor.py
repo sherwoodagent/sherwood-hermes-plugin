@@ -1,4 +1,4 @@
-"""Supervisor: manages one `sherwood session check --stream` subprocess per syndicate."""
+"""Supervisor: manages one `sherwood session check --stream` subprocess per fund."""
 from __future__ import annotations
 
 import asyncio
@@ -115,7 +115,7 @@ class Supervisor:
                     "stderr_tail": list(state.stderr_tail)[-10:],
                 }
             )
-        return {"syndicates": out}
+        return {"funds": out}
 
     def stderr_tail(self, subdomain: str) -> list[str]:
         s = self._states.get(subdomain)
@@ -159,7 +159,8 @@ class Supervisor:
         # The CLI's session-check path would either duplicate that work or,
         # on glibc-2.36 hosts where the CLI's @xmtp/node-bindings fails to
         # load, block the subprocess entirely before any on-chain events
-        # emerge. Requires CLI >= 0.40.5 (enforced by preflight).
+        # emerge. The `--no-xmtp` flag landed in CLI 0.40.5; the effective
+        # floor is MIN_CLI_VERSION in preflight (enforced on load).
         proc = await asyncio.create_subprocess_exec(
             self._cfg.sherwood_bin,
             "session",

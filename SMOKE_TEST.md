@@ -4,11 +4,11 @@
 
 ## What you're testing
 
-The `sherwood-monitor` plugin you're running: on-chain event streaming + autonomous cron digests + risk guardrails + cross-syndicate exposure + XMTP subscribe/send via a bundled TypeScript sidecar. Your job is to prove it works end-to-end against a live Sherwood deployment and report with evidence. "Evidence" means logs, state files, and observed behavior — not assertions.
+The `sherwood-monitor` plugin you're running: on-chain event streaming + autonomous cron digests + risk guardrails + cross-fund exposure + XMTP subscribe/send via a bundled TypeScript sidecar. Your job is to prove it works end-to-end against a live Sherwood deployment and report with evidence. "Evidence" means logs, state files, and observed behavior — not assertions.
 
 ## Ground rules
 
-- **Default target is `alpha-fund` on Base mainnet.** The user has designated this as the test subject. Do NOT create new syndicates, do NOT test against production funds other than this one. If `sherwood config get` shows a different network or wallet than expected, confirm with the user before proceeding.
+- **Default target is `alpha-fund` on Base mainnet.** The user has designated this as the test subject. Do NOT create new funds, do NOT test against production funds other than this one. If `sherwood config get` shows a different network or wallet than expected, confirm with the user before proceeding.
 - **Mainnet means real capital.** Any command that writes state on-chain (proposals, votes, executes, settles) costs gas and commits funds. The default mode of this runbook is **observation-only** — validate the plugin by watching activity that's already happening, not by creating synthetic activity. Any phase that requires a write asks for explicit user approval first, with a single-line "are you sure?" prompt.
 - **Quiet is a valid pass.** If a layer produces "no output, no events, no complaints" — that can be correct. Log the absence; don't assume failure.
 - **One phase at a time.** Do not run ahead. Each phase's prerequisites depend on prior phases passing.
@@ -45,14 +45,14 @@ The `sherwood-monitor` plugin you're running: on-chain event streaming + autonom
 
 4. **Verify preconditions:**
    ```bash
-   sherwood --version      # must be >= 0.40.5
+   sherwood --version      # must be >= 0.68.0
    sherwood config get     # note the network + wallet address
    sherwood vault info $SUB --json > "$RUN_DIR/0-vault-info.json" || true
    sherwood proposal list $SUB --json > "$RUN_DIR/0-proposals-before.json" || true
    ```
    Save the first two outputs to `$RUN_DIR/preflight.txt`. The last two snapshot the current on-chain state so you can diff later.
 
-**Pass condition:** `$SUB` resolves to a real vault, `$RUN_DIR` exists, sherwood CLI version ≥ 0.40.5, network matches user expectation, vault info + proposal list are readable.
+**Pass condition:** `$SUB` resolves to a real vault, `$RUN_DIR` exists, sherwood CLI version ≥ 0.68.0, network matches user expectation, vault info + proposal list are readable.
 
 ---
 
@@ -60,7 +60,7 @@ The `sherwood-monitor` plugin you're running: on-chain event streaming + autonom
 
 Goal: confirm every tool + hook is wired correctly.
 
-1. Call `sherwood_monitor_status()`. Expected: `{"syndicates": []}` if none started, or a list. Save response to `$RUN_DIR/1-status-before.json`.
+1. Call `sherwood_monitor_status()`. Expected: `{"funds": []}` if none started, or a list. Save response to `$RUN_DIR/1-status-before.json`.
 
 2. Call `sherwood_monitor_exposure()`. This will aggregate across whatever is in `~/.hermes/plugins/sherwood-monitor/config.yaml`. Save response to `$RUN_DIR/1-exposure-initial.json`.
 
@@ -68,7 +68,7 @@ Goal: confirm every tool + hook is wired correctly.
    ```bash
    cat ~/.hermes/plugins/sherwood-monitor/config.yaml > "$RUN_DIR/1-config.yaml"
    ```
-   If `$SUB` is not in the `syndicates` list, append it (do not overwrite other syndicates):
+   If `$SUB` is not in the `funds` list, append it (do not overwrite other funds):
    ```bash
    # Use yq or python to insert — ask user if unsure.
    ```
@@ -104,7 +104,7 @@ Goal: prove the streaming supervisor spawns, reads, and stops a child process cl
    ps -p <pid> > "$RUN_DIR/2-ps-after-stop.txt" || echo "process gone (expected)"
    ```
 
-6. `sherwood_monitor_status()` should return empty syndicates or no pid. Save to `$RUN_DIR/2-status-after-stop.json`.
+6. `sherwood_monitor_status()` should return empty funds or no pid. Save to `$RUN_DIR/2-status-after-stop.json`.
 
 **Pass condition:** subprocess spawned, observed via ps, stopped cleanly, no zombies.
 
@@ -114,7 +114,7 @@ Goal: prove the streaming supervisor spawns, reads, and stops a child process cl
 
 ## Phase 2.5 — Sidecar health + membership + send test
 
-Goal: confirm the XMTP sidecar is alive, the sidecar wallet is a member of the target syndicate's group, and a real XMTP post reaches the group.
+Goal: confirm the XMTP sidecar is alive, the sidecar wallet is a member of the target fund's group, and a real XMTP post reaches the group.
 
 ### Confirm sidecar process exists
 
@@ -133,7 +133,7 @@ Save the 0x address as `$SIDECAR_ADDR`.
 ### Confirm membership (or fix it)
 
 1. `sherwood chat $SUB members > "$RUN_DIR/2.5-members-before.txt"` — check if `$SIDECAR_ADDR` is listed.
-2. If not: as the syndicate creator, run:
+2. If not: as the fund creator, run:
    ```
    sherwood chat $SUB add $SIDECAR_ADDR
    ```
@@ -163,7 +163,7 @@ Goal: prove events arriving from the subprocess actually reach you on the next t
 
 ### Strategy: replay-via-cursor-reset
 
-The Sherwood CLI stores a per-syndicate cursor at `~/.sherwood/sessions/`. Resetting it to a block ~1000 blocks back (≈33 min on Base) causes the next `session check --stream` to re-emit every event since then as if fresh. The events have already happened on-chain — this is read-only.
+The Sherwood CLI stores a per-fund cursor at `~/.sherwood/sessions/`. Resetting it to a block ~1000 blocks back (≈33 min on Base) causes the next `session check --stream` to re-emit every event since then as if fresh. The events have already happened on-chain — this is read-only.
 
 ### Setup
 
@@ -202,7 +202,7 @@ The Sherwood CLI stores a per-syndicate cursor at `~/.sherwood/sessions/`. Reset
 
 2. **Your own response to that turn is the evidence.** If the `pre_llm_call` hook injected `<sherwood-event>` blocks, they appear in your context this turn:
    ```
-   <sherwood-event syndicate="$SUB" source="chain" type="..." ...>
+   <sherwood-event fund="$SUB" source="chain" type="..." ...>
    ```
 
 3. Record in `$RUN_DIR/3-injection-evidence.md`:
@@ -350,7 +350,7 @@ You will NOT create a new proposal. Instead, manually rewind the cron cursor and
 
 ### Concentration alert
 
-If the user has multiple syndicates configured and one exceeds the threshold, `concentration_alerts` should appear in the tick response. If single syndicate, this will be empty — note that in the report.
+If the user has multiple funds configured and one exceeds the threshold, `concentration_alerts` should appear in the tick response. If single fund, this will be empty — note that in the report.
 
 **Pass condition:** cursor advances, second-call returns empty, third-call (after new event) returns exactly the new event.
 
@@ -391,8 +391,8 @@ Precondition: `sherwood proposal list $SUB --json` includes at least one already
 ### Observe the settlement block
 
 1. On the turn after the settle (Path A) or the replay (Path B), look for an injection block:
-   - Path A: `<sherwood-settlement syndicate="..." action="settle" proposal_id="X" pnl_usd="..." tx="0x...">` — pushed by `post_tool_call`.
-   - Path B: `<sherwood-event syndicate="..." source="chain" type="ProposalSettled" ...>` — pushed by the event handler.
+   - Path A: `<sherwood-settlement fund="..." action="settle" proposal_id="X" pnl_usd="..." tx="0x...">` — pushed by `post_tool_call`.
+   - Path B: `<sherwood-event fund="..." source="chain" type="ProposalSettled" ...>` — pushed by the event handler.
 
 2. Save what you saw to `$RUN_DIR/6-settlement-injection.md` — paste the exact block.
 
@@ -404,7 +404,7 @@ Only meaningful under Path A (Path B lacks the explicit REMEMBER THIS marker).
 
 2. Follow its instructions: call your `memory` tool with a structured record extracted from the block. Example:
    ```
-   memory(action="add", content="Syndicate $SUB — strategy '<name>' settled <pnl_usd> on <date>. Proposal #<id>. Tx <short>.")
+   memory(action="add", content="Fund $SUB — strategy '<name>' settled <pnl_usd> on <date>. Proposal #<id>. Tx <short>.")
    ```
 
 3. Verify the memory write landed:
@@ -439,7 +439,7 @@ After all 6 phases complete (or on first failure), produce a report and deliver 
 # Sherwood-Monitor Smoke Test Report
 
 **Run dir:** $RUN_DIR
-**Syndicate:** $SUB
+**Fund:** $SUB
 **Network:** <from preflight>
 **Started:** <timestamp>
 **Completed:** <timestamp>

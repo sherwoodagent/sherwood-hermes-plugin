@@ -1,4 +1,4 @@
-"""One-shot autonomous tick: catch interesting events + concentration alerts per syndicate."""
+"""One-shot autonomous tick: catch interesting events + concentration alerts per fund."""
 from __future__ import annotations
 
 import asyncio
@@ -15,9 +15,9 @@ _log = logging.getLogger(__name__)
 CURSOR_PATH = Path.home() / ".hermes" / "plugins" / "sherwood-monitor" / "cron_cursor.json"
 
 # Serializes the load-modify-save window for the shared cursor file. Two
-# concurrent cron_tick invocations (different syndicates, or tool + background
+# concurrent cron_tick invocations (different funds, or tool + background
 # driver) would otherwise each read the file, modify their own entry, and
-# race on write — the second writer clobbering the first syndicate's cursor
+# race on write — the second writer clobbering the first fund's cursor
 # advance and causing duplicate event emission on the next tick.
 _CURSOR_LOCK = asyncio.Lock()
 
@@ -143,11 +143,11 @@ async def cron_tick(
     subdomain: str,
     *,
     include_exposure: bool = False,
-    syndicates_for_exposure: list[str] | None = None,
+    funds_for_exposure: list[str] | None = None,
     concentration_threshold_pct: float = 30.0,
 ) -> dict:
-    # Read the per-syndicate cursor snapshot under the lock. We release before
-    # the awaitable session check so unrelated syndicates aren't blocked on
+    # Read the per-fund cursor snapshot under the lock. We release before
+    # the awaitable session check so unrelated funds aren't blocked on
     # network I/O. Re-acquire before the save to serialize the write.
     async with _CURSOR_LOCK:
         cursors_snapshot = _load_cursors()
@@ -168,7 +168,7 @@ async def cron_tick(
     }
 
     # Reload-modify-save under the lock so concurrent invocations for other
-    # syndicates don't clobber our write (and we don't clobber theirs).
+    # funds don't clobber our write (and we don't clobber theirs).
     async with _CURSOR_LOCK:
         cursors = _load_cursors()
         cursors[subdomain] = new_entry
@@ -180,12 +180,12 @@ async def cron_tick(
         "cursor": new_entry,
     }
 
-    if include_exposure and syndicates_for_exposure:
+    if include_exposure and funds_for_exposure:
         from .exposure import aggregate_exposure, check_concentration
-        report = await aggregate_exposure(sherwood_bin, syndicates_for_exposure)
+        report = await aggregate_exposure(sherwood_bin, funds_for_exposure)
         alerts = check_concentration(report, concentration_threshold_pct)
         result["concentration_alerts"] = [
-            {"protocol": a.protocol, "pct": a.pct, "syndicates": a.syndicates_exposed}
+            {"protocol": a.protocol, "pct": a.pct, "funds": a.funds_exposed}
             for a in alerts
         ]
 

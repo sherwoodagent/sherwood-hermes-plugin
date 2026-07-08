@@ -42,7 +42,7 @@ def make_handlers(sup: Supervisor, cfg: Config | None = None) -> dict[str, ToolH
     async def exposure(args: dict, **_: Any) -> str:
         try:
             _cfg = cfg or Config()
-            report = await aggregate_exposure(_cfg.sherwood_bin, _cfg.syndicates)
+            report = await aggregate_exposure(_cfg.sherwood_bin, _cfg.funds)
             alerts = check_concentration(report, _cfg.concentration_threshold_pct)
             return json.dumps({
                 "total_aum_usd": report.total_aum_usd,
@@ -52,7 +52,7 @@ def make_handlers(sup: Supervisor, cfg: Config | None = None) -> dict[str, ToolH
                     {
                         "protocol": a.protocol,
                         "pct": a.pct,
-                        "syndicates_exposed": a.syndicates_exposed,
+                        "funds_exposed": a.funds_exposed,
                     }
                     for a in alerts
                 ],
@@ -70,7 +70,7 @@ def make_handlers(sup: Supervisor, cfg: Config | None = None) -> dict[str, ToolH
                 _cfg.sherwood_bin,
                 sub,
                 include_exposure=args.get("include_exposure", False),
-                syndicates_for_exposure=_cfg.syndicates,
+                funds_for_exposure=_cfg.funds,
                 concentration_threshold_pct=_cfg.concentration_threshold_pct,
             )
             return json.dumps(result)

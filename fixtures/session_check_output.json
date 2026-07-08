@@ -1,5 +1,5 @@
 {
-  "syndicate": "alpha-fund",
+  "fund": "alpha-fund",
   "messages": [
     {
       "source": "xmtp",

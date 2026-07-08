@@ -43,7 +43,7 @@ def _format_catchup_injection(subdomain: str, payload: dict) -> str:
     new_msgs = meta.get("newMessages", 0)
     new_events = meta.get("newEvents", 0)
     return (
-        f'<sherwood-catchup syndicate="{subdomain}">\n'
+        f'<sherwood-catchup fund="{subdomain}">\n'
         f"{new_msgs} new messages, {new_events} new events since last check.\n"
         f"{json.dumps(payload, indent=2)}\n"
         f"</sherwood-catchup>"
@@ -54,7 +54,7 @@ def make_session_hooks(
     cfg: Config, buffer: EventBuffer, supervisor: Supervisor
 ) -> dict[str, Callable[[], Awaitable[None]]]:
     async def on_session_start() -> None:
-        for sub in cfg.syndicates:
+        for sub in cfg.funds:
             payload = await _catchup_one(cfg.sherwood_bin, sub)
             if payload is not None:
                 buffer.push(_format_catchup_injection(sub, payload))
@@ -178,7 +178,7 @@ _SHERWOOD_SETTLE_RE = re.compile(
 
 def _format_settlement_block(record: dict) -> str:
     return (
-        f'<sherwood-settlement syndicate="{record["syndicate"]}" '
+        f'<sherwood-settlement fund="{record["fund"]}" '
         f'action="{record["action"]}" '
         f'proposal_id="{record.get("proposal_id", "?")}" '
         f'pnl_usd="{record.get("pnl_usd", "n/a")}" '

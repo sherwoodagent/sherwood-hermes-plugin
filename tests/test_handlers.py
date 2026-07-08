@@ -35,7 +35,7 @@ async def test_proposal_created_injects_and_posts(cfg):
     await handle_chain_event("alpha", ev, buffer, cfg, post)
     buffer.push.assert_called_once()
     call_content = buffer.push.call_args.args[0]
-    assert 'syndicate="alpha"' in call_content
+    assert 'fund="alpha"' in call_content
     assert 'type="ProposalCreated"' in call_content
     assert "Aero LP" in call_content
     post.assert_called_once()

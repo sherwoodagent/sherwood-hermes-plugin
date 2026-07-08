@@ -11,7 +11,7 @@ Subcommands:
     digest             Bullet-format new interesting events from `cron_tick`.
     aum                Alert when TVL Δ since last reading exceeds threshold.
     gas                Alert when agent wallet ETH balance is below floor.
-    stream             Alert when a supervised syndicate stream is stale.
+    stream             Alert when a supervised fund stream is stale.
 
 State is persisted in `~/.hermes/plugins/sherwood-monitor/watchdog_state.json`
 under per-subcommand keys. This file is separate from `cron_cursor.json` so
@@ -111,14 +111,14 @@ def _agent_address_from_privkey(priv_hex: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _format_event(syndicate: str, ev: dict) -> str:
+def _format_event(fund: str, ev: dict) -> str:
     kind = ev.get("kind")
     if kind == "chain":
         etype = ev.get("type", "Event")
         pid = ev.get("proposalId") or ev.get("id") or ""
         block = ev.get("block", "")
         pid_str = f" proposal={pid}" if pid else ""
-        return f"- {syndicate}: {etype}{pid_str} block={block}"
+        return f"- {fund}: {etype}{pid_str} block={block}"
     if kind == "xmtp":
         mtype = ev.get("type", "MESSAGE")
         sender = ev.get("from", "")
@@ -126,12 +126,12 @@ def _format_event(syndicate: str, ev: dict) -> str:
         if len(text) > 80:
             text = text[:77] + "..."
         sender_str = f" from={sender[:10]}…" if sender else ""
-        return f"- {syndicate}: {mtype}{sender_str} {text}"
-    return f"- {syndicate}: {json.dumps(ev)}"
+        return f"- {fund}: {mtype}{sender_str} {text}"
+    return f"- {fund}: {json.dumps(ev)}"
 
 
 async def _digest(cfg: Config) -> str:
-    """Run cron_tick per syndicate, render new events as bullets.
+    """Run cron_tick per fund, render new events as bullets.
 
     Returns empty string when no events / no alerts — caller prints nothing,
     Hermes treats as silent tick. Concentration alerts are appended below
@@ -139,15 +139,15 @@ async def _digest(cfg: Config) -> str:
     """
     lines: list[str] = []
     alerts: list[str] = []
-    seen_alerts: set[str] = set()  # dedupe protocols across syndicates
+    seen_alerts: set[str] = set()  # dedupe protocols across funds
 
-    for sub in cfg.syndicates:
+    for sub in cfg.funds:
         try:
             result = await cron_tick(
                 cfg.sherwood_bin,
                 sub,
                 include_exposure=True,
-                syndicates_for_exposure=cfg.syndicates,
+                funds_for_exposure=cfg.funds,
                 concentration_threshold_pct=cfg.concentration_threshold_pct,
             )
         except Exception as exc:
@@ -157,7 +157,7 @@ async def _digest(cfg: Config) -> str:
         for ev in result.get("events", []) or []:
             lines.append(_format_event(sub, ev))
 
-        # `concentration_alerts` is aggregated across the same syndicate list
+        # `concentration_alerts` is aggregated across the same fund list
         # each time cron_tick is called — only emit each protocol once per run.
         for alert in result.get("concentration_alerts", []) or []:
             proto = alert.get("protocol", "")
@@ -165,7 +165,7 @@ async def _digest(cfg: Config) -> str:
                 continue
             seen_alerts.add(proto)
             pct = alert.get("pct", 0)
-            exposed = ", ".join(alert.get("syndicates", []) or [])
+            exposed = ", ".join(alert.get("funds", []) or [])
             alerts.append(f"- CONCENTRATION: {proto} {pct}% across [{exposed}]")
 
     if not lines and not alerts:
@@ -189,11 +189,11 @@ async def _digest(cfg: Config) -> str:
 
 
 async def _aum(cfg: Config) -> str:
-    if cfg.aum_alert_threshold_pct <= 0 or not cfg.syndicates:
+    if cfg.aum_alert_threshold_pct <= 0 or not cfg.funds:
         return ""
 
     try:
-        report = await aggregate_exposure(cfg.sherwood_bin, cfg.syndicates)
+        report = await aggregate_exposure(cfg.sherwood_bin, cfg.funds)
     except Exception as exc:
         _log.warning("aum: aggregate_exposure failed: %s", exc)
         return ""
@@ -291,7 +291,7 @@ def _gas(cfg: Config) -> str:
 
 
 # ---------------------------------------------------------------------------
-# stream — alert when a syndicate's supervisor stream is stale
+# stream — alert when a fund's supervisor stream is stale
 # ---------------------------------------------------------------------------
 
 
@@ -331,7 +331,7 @@ def _stream(cfg: Config) -> str:
     except json.JSONDecodeError:
         return ""
 
-    items = payload.get("syndicates") if isinstance(payload, dict) else None
+    items = payload.get("funds") if isinstance(payload, dict) else None
     if not isinstance(items, list):
         return ""
 
@@ -394,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         _log.error("config load failed: %s", exc)
         return 2
 
-    if not cfg.syndicates and args.subcommand in {"digest", "aum"}:
+    if not cfg.funds and args.subcommand in {"digest", "aum"}:
         # Nothing to monitor; silent tick (NOT an error).
         return 0
 

@@ -37,7 +37,7 @@ CHAIN_INJECT_AND_POST = {
 def _format_chain_injection(subdomain: str, ev: ChainEvent, priority: str = "normal") -> str:
     args_lines = "\n".join(f"  {k}: {v}" for k, v in ev.args.items())
     return (
-        f'<sherwood-event syndicate="{subdomain}" source="chain" '
+        f'<sherwood-event fund="{subdomain}" source="chain" '
         f'type="{ev.type}" priority="{priority}" block="{ev.block}" tx="{ev.tx}">\n'
         f"<args>\n{args_lines}\n</args>\n"
         f"</sherwood-event>"
@@ -147,7 +147,7 @@ _XMTP_NEVER_INJECT = {"REACTION"}
 
 def _format_xmtp_injection(subdomain: str, msg: SessionMessage, priority: str) -> str:
     return (
-        f'<sherwood-event syndicate="{subdomain}" source="xmtp" '
+        f'<sherwood-event fund="{subdomain}" source="xmtp" '
         f'type="{msg.type}" priority="{priority}" from="{msg.from_}" '
         f'sentAt="{msg.sent_at}">\n'
         f"{msg.text}\n"

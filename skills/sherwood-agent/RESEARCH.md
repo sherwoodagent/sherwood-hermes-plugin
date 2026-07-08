@@ -19,7 +19,7 @@ sherwood research market ETH --provider messari
 sherwood research wallet 0xDEF... --provider nansen
 ```
 
-Add `--post <syndicate>` to record research on-chain: pins the full result to IPFS, creates an EAS attestation (provider, query, cost, IPFS URI), and posts a notification to the syndicate XMTP chat.
+Add `--post <fund>` to record research on-chain: pins the full result to IPFS, creates an EAS attestation (provider, query, cost, IPFS URI), and posts a notification to the fund XMTP chat.
 
 ```bash
 sherwood research token WETH --provider nansen --post alpha
@@ -39,7 +39,7 @@ sherwood trade scan
 sherwood trade buy --token DEGEN --amount 50 --stop-loss 10
 
 # Monitor with auto-exit on signal flip
-sherwood trade monitor --interval 300 --syndicate alpha
+sherwood trade monitor --interval 300 --fund alpha
 ```
 
 Requires a Uniswap API key: `sherwood config set --uniswap-api-key <key>` (get one at https://developers.uniswap.org/).

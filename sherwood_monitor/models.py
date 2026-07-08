@@ -18,7 +18,7 @@ class ChainEvent:
 
 @dataclass(frozen=True)
 class SessionMessage:
-    """XMTP message observed in the syndicate group chat."""
+    """XMTP message observed in the fund group chat."""
 
     id: str
     type: str

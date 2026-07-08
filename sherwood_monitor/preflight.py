@@ -10,11 +10,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .sidecar import Sidecar
 
-# 0.40.5 is the first CLI release with `sherwood session check --no-xmtp`,
-# which the supervisor passes unconditionally. Older CLIs reject the flag
-# and the supervisor subprocess fails to start — surface a clear preflight
-# warning before that happens.
-MIN_CLI_VERSION = "0.40.5"
+# 0.68.0 is the first CLI release with the `sherwood fund` command (the
+# `syndicate` → `fund` product rename). The plugin's docs and skill pack
+# reference `sherwood fund`, so pin the floor to the release that ships it.
+MIN_CLI_VERSION = "0.68.0"
 
 _log = logging.getLogger(__name__)
 
@@ -82,10 +81,10 @@ async def check_sidecar_health(sidecar: "Sidecar") -> tuple[bool, str | None]:
         return False, None
 
 
-async def check_memberships(sidecar: "Sidecar", syndicates: list[str]) -> list[str]:
+async def check_memberships(sidecar: "Sidecar", funds: list[str]) -> list[str]:
     """Return list of subdomains where the sidecar isn't a member of the XMTP group."""
     missing: list[str] = []
-    for sub in syndicates:
+    for sub in funds:
         try:
             if not await sidecar.is_member(sub):
                 missing.append(sub)

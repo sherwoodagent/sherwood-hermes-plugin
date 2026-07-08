@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sherwood-monitor"
-version = "0.5.0"
-description = "Hermes plugin for Sherwood syndicate monitoring and auto-response"
+version = "0.6.0"
+description = "Hermes plugin for Sherwood fund monitoring and auto-response"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

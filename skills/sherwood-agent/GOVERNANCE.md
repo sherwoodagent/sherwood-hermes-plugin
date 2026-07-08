@@ -9,7 +9,9 @@ The SyndicateGovernor contract enables on-chain proposal lifecycle:
 
 > For deeper protocol context, see the [Governance docs](https://docs.sherwood.sh/protocol/governance/overview).
 
-Protocol fees, performance fees (agent's cut), and management fees are distributed on settlement from profit only. Fee distribution order: protocol fee → agent fee → management fee.
+Protocol fees, the agent fee (agent's cut), and management fees are distributed on settlement from profit only. Fee distribution order: protocol fee → agent fee → management fee.
+
+The agent fee is a **vault-owner property**, not a per-proposal parameter. The vault owner sets one fee for the whole vault via `sherwood fund set-agent-fee --bps <bps>` (or on-chain `vault.setAgentFeeBps(bps)`). It defaults to **5% (500 bps)** at vault creation and is capped at **15% (1500 bps)** by the vault. When a proposal is created, the governor **snapshots** the vault's current `agentFeeBps` onto that proposal — immutable for that proposal, so a later owner change can't alter an already-created proposal. At settlement the governor uses that snapshot, clamped to its `maxPerformanceFeeBps`. `propose()` takes no fee argument.
 
 ## Create a proposal
 
@@ -20,7 +22,6 @@ sherwood proposal create \
   --vault 0x... \
   --name "Moonwell USDC Yield" \
   --description "Supply USDC to Moonwell for 7 days" \
-  --performance-fee 1500 \
   --duration 7d \
   --execute-calls ./execute-calls.json \
   --settle-calls ./settle-calls.json
@@ -31,7 +32,6 @@ sherwood proposal create \
 | `--vault` | yes | Vault address the proposal targets |
 | `--name` | yes* | Strategy name (skipped if `--metadata-uri` provided) |
 | `--description` | yes* | Strategy rationale and risk summary (skipped if `--metadata-uri`) |
-| `--performance-fee` | yes | Agent fee in bps (e.g. 1500 = 15%, capped by governor) |
 | `--duration` | yes | Strategy duration. Accepts seconds or human format (`7d`, `24h`, `1h`) |
 | `--execute-calls` | yes | Path to JSON file with execute Call[] array (open positions) |
 | `--settle-calls` | yes | Path to JSON file with settlement Call[] array (close positions) |
@@ -39,7 +39,19 @@ sherwood proposal create \
 
 Execute calls run at proposal execution (open positions). Settlement calls run at proposal settlement (close positions). Each file is a JSON array of `[{ target, data, value }]`.
 
-If `--metadata-uri` is not provided, the CLI pins metadata to IPFS via Pinata (`PINATA_API_KEY` env var).
+If `--metadata-uri` is not provided, the CLI pins metadata to IPFS through the hosted Sherwood API (`https://sherwood.sh/api/ipfs/upload`), which holds the pinning credentials server-side — no local env vars or Pinata account needed. Optional overrides: `SHERWOOD_API_URL` (alternate API host for uploads), `PINATA_GATEWAY` (alternate gateway for reads). If the upload fails, the CLI warns and falls back to inline base64 `data:` metadata — the proposal still goes through.
+
+> **No fee flag.** `propose` does not accept a fee. The agent's cut is the vault's `agentFeeBps`, set by the vault owner via `sherwood fund set-agent-fee --bps <bps>` (default 5%, max 15%). The governor snapshots the vault's `agentFeeBps` onto the proposal at propose time; at settlement it uses that snapshot, clamped to the governor's `maxPerformanceFeeBps`.
+
+## Set the agent fee (vault owner)
+
+The vault owner sets one performance fee for the whole vault. There is no per-proposal fee.
+
+```bash
+sherwood fund set-agent-fee --bps 1500   # 15% of profit at settlement
+```
+
+Defaults to 500 bps (5%) at vault creation; the vault caps it at 1500 bps (15%). Each proposal snapshots the vault's `agentFeeBps` at propose time; at settlement the governor uses that snapshot, clamped to `maxPerformanceFeeBps`. On-chain equivalent: `vault.setAgentFeeBps(bps)`.
 
 ## List proposals
 
@@ -118,10 +130,10 @@ Each validates against hardcoded bounds before submitting.
 
 ## Participation Crons — Customization
 
-On OpenClaw, the CLI auto-registers two cron jobs when you create or join a syndicate (see SKILL.md for overview). To customize:
+On OpenClaw, the CLI auto-registers two cron jobs when you create or join a fund (see SKILL.md for overview). To customize:
 
 ```bash
-# View your syndicate crons
+# View your fund crons
 sherwood session cron <subdomain> --status
 
 # Remove all participation crons
@@ -138,7 +150,7 @@ openclaw cron remove --name sherwood-<subdomain>
 openclaw cron create --name "sherwood-<subdomain>" --every "5m" --session isolated ...
 ```
 
-**Leaving a syndicate:** Crons are not auto-removed. After leaving, clean up manually:
+**Leaving a fund:** Crons are not auto-removed. After leaving, clean up manually:
 
 ```bash
 sherwood session cron <subdomain> --remove

@@ -9,7 +9,7 @@ When you see a `<sherwood-settlement>` block in the injected context, capture it
 
 ## What to capture
 
-From the block, extract: syndicate, strategy name, pnl_usd, duration_days, proposer, date.
+From the block, extract: fund, strategy name, pnl_usd, duration_days, proposer, date.
 
 ## How to capture
 
@@ -18,13 +18,13 @@ Call the `memory` tool:
 ```
 memory(
     action="add",
-    content="Syndicate <sub> — strategy '<name>' settled <pnl_usd> over <duration_days>d on <date>. Proposer: <proposer>."
+    content="Fund <sub> — strategy '<name>' settled <pnl_usd> over <duration_days>d on <date>. Proposer: <proposer>."
 )
 ```
 
 ## When to skip
 
-- The same settlement is already in memory (check with substring match on syndicate + strategy name + date).
+- The same settlement is already in memory (check with substring match on fund + strategy name + date).
 - Memory is full — consolidate first via `memory(action="replace", ...)`.
 
 ## Why

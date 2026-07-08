@@ -122,11 +122,11 @@ async def test_include_exposure_adds_alerts(monkeypatch, tmp_path):
         total_aum_usd=100000.0,
         by_protocol={"aerodrome": 40000.0},
         concentration_pct={"aerodrome": 40.0},
-        per_syndicate={"alpha-fund": {"aerodrome": 40000.0}},
+        per_fund={"alpha-fund": {"aerodrome": 40000.0}},
     )
     fake_alerts = [
         ConcentrationAlert(
-            protocol="aerodrome", pct=40.0, syndicates_exposed=["alpha-fund"]
+            protocol="aerodrome", pct=40.0, funds_exposed=["alpha-fund"]
         )
     ]
 
@@ -137,7 +137,7 @@ async def test_include_exposure_adds_alerts(monkeypatch, tmp_path):
             "sherwood",
             "alpha-fund",
             include_exposure=True,
-            syndicates_for_exposure=["alpha-fund"],
+            funds_for_exposure=["alpha-fund"],
         )
 
     assert "concentration_alerts" in result
@@ -214,7 +214,7 @@ def test_filter_sorts_out_of_order_messages():
 async def test_concurrent_ticks_both_cursors_persisted(tmp_path, monkeypatch):
     """Regression: two cron_tick invocations in flight must both land their
     cursor updates. Before the asyncio.Lock + atomic replace, the second
-    writer's read-modify-write would clobber the first syndicate's cursor."""
+    writer's read-modify-write would clobber the first fund's cursor."""
     cursor_file = tmp_path / "cron_cursor.json"
     monkeypatch.setattr(cron_tick_mod, "CURSOR_PATH", cursor_file)
 

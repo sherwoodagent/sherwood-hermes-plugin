@@ -19,14 +19,14 @@ from .supervisor import Supervisor
 # Tests assert against these constants — change a name/schedule here, expect
 # `tests/test_cli.py` to need an update.
 PROPOSAL_REASONING_PROMPT = (
-    "Open proposals review. For each syndicate in "
+    "Open proposals review. For each fund in "
     "~/.hermes/plugins/sherwood-monitor/config.yaml, list any proposals that "
     "are currently in Pending or GuardianReview state. For each: summarize "
     "what it does, which protocol/contract it touches, the size relative to "
     "vault AUM, and your vote recommendation (FOR / AGAINST / ABSTAIN) with a "
-    "one-sentence rationale grounded in the syndicate's prior positions and "
+    "one-sentence rationale grounded in the fund's prior positions and "
     "the proposed strategy's risk profile. If there are NO open proposals "
-    "across all syndicates, reply with the single word HEARTBEAT_OK so the "
+    "across all funds, reply with the single word HEARTBEAT_OK so the "
     "cron stays silent."
 )
 
@@ -129,7 +129,7 @@ def register_cli(ctx: Any, sup: Supervisor) -> None:
     """Register `hermes sherwood start|stop|status|tail|install-cron` commands."""
 
     def _setup_common(parser: Any) -> None:
-        parser.add_argument("subdomain", help="syndicate subdomain")
+        parser.add_argument("subdomain", help="fund subdomain")
 
     def start_handler(args: Any) -> int:
         async def _start() -> None:
@@ -199,10 +199,10 @@ def register_cli(ctx: Any, sup: Supervisor) -> None:
         return 1 if result["errors"] else 0
 
     ctx.register_cli_command(
-        name="start", help="start monitoring a syndicate", setup_fn=_setup_common, handler_fn=start_handler
+        name="start", help="start monitoring a fund", setup_fn=_setup_common, handler_fn=start_handler
     )
     ctx.register_cli_command(
-        name="stop", help="stop monitoring a syndicate", setup_fn=_setup_common, handler_fn=stop_handler
+        name="stop", help="stop monitoring a fund", setup_fn=_setup_common, handler_fn=stop_handler
     )
     ctx.register_cli_command(
         name="status", help="show monitor status", setup_fn=lambda p: None, handler_fn=status_handler

@@ -10,7 +10,7 @@ def test_load_missing_file_creates_default(tmp_path: Path):
     cfg = load_config(cfg_path)
     assert cfg_path.exists()
     assert cfg_path.read_text() == DEFAULT_CONFIG_YAML
-    assert cfg.syndicates == []
+    assert cfg.funds == []
     assert cfg.auto_start is False
     assert cfg.xmtp_summaries is True
 
@@ -19,7 +19,7 @@ def test_load_existing_valid(tmp_path: Path):
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
         """
-syndicates:
+funds:
   - alpha
   - beta
 auto_start: true
@@ -31,7 +31,7 @@ concentration_threshold_pct: 25.0
 """.strip()
     )
     cfg = load_config(cfg_path)
-    assert cfg.syndicates == ["alpha", "beta"]
+    assert cfg.funds == ["alpha", "beta"]
     assert cfg.auto_start is True
     assert cfg.xmtp_summaries is False
     assert cfg.sherwood_bin == "/usr/local/bin/sherwood"
@@ -49,8 +49,8 @@ def test_load_malformed_yaml_raises(tmp_path: Path):
 
 def test_load_wrong_types_raises(tmp_path: Path):
     cfg_path = tmp_path / "config.yaml"
-    cfg_path.write_text("syndicates: not-a-list")
-    with pytest.raises(ValueError, match="syndicates must be a list"):
+    cfg_path.write_text("funds: not-a-list")
+    with pytest.raises(ValueError, match="funds must be a list"):
         load_config(cfg_path)
 
 

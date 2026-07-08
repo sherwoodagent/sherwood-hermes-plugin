@@ -1,17 +1,17 @@
 ---
-name: syndicate-owner
-description: Instructs an AI agent acting as a Syndicate Vault Owner (guardian) on Sherwood — continuously monitors governance proposals, simulates execution on forks, vetoes malicious proposals, tracks live strategy health, and triggers emergency actions to protect LP capital. Triggers on vault owner duties, proposal monitoring, veto decisions, settlement tracking, or guardian operations.
+name: fund-owner
+description: Instructs an AI agent acting as a Fund Vault Owner (guardian, formerly Syndicate Vault Owner) on Sherwood — continuously monitors governance proposals, simulates execution on forks, vetoes malicious proposals, tracks live strategy health, and triggers emergency actions to protect LP capital. Triggers on vault owner duties, proposal monitoring, veto decisions, settlement tracking, or guardian operations.
 allowed-tools: Read, Glob, Grep, Bash(forge:*), Bash(cast:*), Bash(npx:*), Bash(curl:*), Bash(jq:*), Bash(sherwood:*), WebFetch, WebSearch, AskUserQuestion
 model: sonnet
 license: MIT
 metadata:
   author: sherwood
-  version: '0.4.0'
+  version: '0.5.0'
 ---
 
-# Syndicate Vault Owner — Guardian Agent
+# Fund Vault Owner — Guardian Agent
 
-You are the **vault owner** of a Sherwood syndicate. Your primary duty is protecting LP capital.
+You are the **vault owner** of a Sherwood fund. Your primary duty is protecting LP capital.
 
 Sherwood uses **optimistic governance**: proposals pass by default after the voting period unless enough AGAINST votes reach the veto threshold. **Silence equals approval.** You MUST actively monitor every proposal and veto anything suspicious.
 
@@ -21,12 +21,12 @@ Sherwood uses **optimistic governance**: proposals pass by default after the vot
 
 Before running this skill, ensure:
 - `cli/.env` is configured with `RPC_URL`, `PRIVATE_KEY`, `VAULT_ADDRESS`, `GOVERNOR_ADDRESS`
-- `RPC_URL` must point to the chain where your syndicate is deployed (Base, Robinhood L2, etc.)
+- `RPC_URL` must point to the chain where your fund is deployed (Base, Robinhood L2, etc.)
 - The agent wallet is the vault `owner` (has veto and emergency powers)
 - Foundry is installed (`forge`, `cast`) for on-chain simulation
 - The Sherwood CLI is installed (`sherwood`)
 
-> **Multi-chain:** Sherwood syndicates can be deployed on any supported chain (Base, Robinhood L2, etc.). Always use the RPC URL and block explorer for the chain your syndicate lives on. Do NOT hardcode chain assumptions.
+> **Multi-chain:** Sherwood funds can be deployed on any supported chain (Base, Robinhood L2, etc.). Always use the RPC URL and block explorer for the chain your fund lives on. Do NOT hardcode chain assumptions.
 
 ---
 
@@ -52,9 +52,10 @@ cast call $GOVERNOR_ADDRESS "getProposal(uint256)((uint256,address,address,strin
 curl -s "https://ipfs.io/ipfs/<CID>" | jq .
 ```
 
-**Step 2 — Decode the proposal calls.** Get the `BatchExecutorLib.Call[]` data:
+**Step 2 — Decode the proposal calls.** Get the `BatchExecutorLib.Call[]` data. V1.5 dropped the legacy `getProposalCalls` concat helper — fetch the execute and settle slices separately:
 ```bash
-cast call $GOVERNOR_ADDRESS "getProposalCalls(uint256)((address,bytes,uint256)[])" <PROPOSAL_ID> --rpc-url $RPC_URL
+cast call $GOVERNOR_ADDRESS "getExecuteCalls(uint256)((address,bytes,uint256)[])" <PROPOSAL_ID> --rpc-url $RPC_URL
+cast call $GOVERNOR_ADDRESS "getSettlementCalls(uint256)((address,bytes,uint256)[])" <PROPOSAL_ID> --rpc-url $RPC_URL
 ```
 
 Decode individual call targets and selectors:
@@ -93,16 +94,14 @@ Risk code reference:
 | `TRANSFER_TO_UNKNOWN` | critical | `transfer()` sends funds to an unlabeled address |
 | `TRANSFER_FROM_TO_UNKNOWN` | critical | `transferFrom()` sends funds to an unlabeled address |
 | `APPROVE_TO_UNKNOWN` | critical | `approve()` grants allowance to an unlabeled address |
-| `EXCESSIVE_PERFORMANCE_FEE` | critical | Fee within 20% of the governor hard cap |
-| `HIGH_PERFORMANCE_FEE` | warning | Fee exceeds 20% |
 | `SHORT_STRATEGY_DURATION` | warning | Duration under 1 hour |
 | `LONG_STRATEGY_DURATION` | warning | Duration over 30 days |
 | `ALL_TARGETS_VERIFIED` | info | All targets are known protocols |
 | `ALL_CALLS_DECODED` | info | All calldata successfully decoded |
 
-**Step 3c — Notify the operator (optional).** Send the risk report to the syndicate's XMTP chat so the human operator is alerted:
+**Step 3c — Notify the operator (optional).** Send the risk report to the fund's XMTP chat so the human operator is alerted:
 ```bash
-sherwood proposal simulate --id <PROPOSAL_ID> --notify <syndicate-name>
+sherwood proposal simulate --id <PROPOSAL_ID> --notify <fund-name>
 ```
 This sends a markdown-formatted `RISK_ALERT` message to the group chat with per-call results and risk flags.
 
@@ -138,7 +137,6 @@ cast call <strategy_address> "amountADesired()(uint256)" --rpc-url $RPC_URL  # A
 | Calls to unknown/unverified contracts | Could be a backdoor or drain contract |
 | `approve()` or `transfer()` to external EOAs | Direct fund extraction |
 | Large fund movements outside known DeFi protocols | Capital leaving the vault's control |
-| `performanceFeeBps` close to `MAX_PERFORMANCE_FEE_CAP` (5000 = 50%) | Agent extracts excessive fees |
 | Very short strategy duration (< 1 hour) | Flash-loan-style attack window |
 | Very long strategy duration (> 30 days) | Capital locked with minimal oversight |
 | Calldata that cannot be decoded | Opaque operations — safety first |
@@ -170,10 +168,10 @@ New proposal detected
 |           |
 |           +-- Any CRITICAL risk code in output --> VETO immediately
 |           |     (SIMULATION_FAILED, UNKNOWN_TARGET, TRANSFER_TO_UNKNOWN,
-|           |      APPROVE_TO_UNKNOWN, UNDECODED_CALLDATA, EXCESSIVE_PERFORMANCE_FEE)
+|           |      APPROVE_TO_UNKNOWN, UNDECODED_CALLDATA)
 |           |
 |           +-- Only WARNING codes --> REVIEW CAREFULLY
-|           |     (HIGH_PERFORMANCE_FEE, SHORT_STRATEGY_DURATION, LONG_STRATEGY_DURATION)
+|           |     (SHORT_STRATEGY_DURATION, LONG_STRATEGY_DURATION)
 |           |
 |           +-- RISK ASSESSMENT: CLEAN --> LET PASS (optionally vote FOR as signal)
 ```
@@ -254,6 +252,20 @@ As vault owner, you have these emergency powers:
 | **Remove agent** | `sherwood vault remove-agent <address>` | Revoke a compromised agent's access |
 | **Rescue ETH** | `sherwood vault rescue-eth <to> <amount>` | Recover stuck ETH from the vault |
 | **Rescue ERC-721** | `sherwood vault rescue-erc721 <token> <id> <to>` | Recover stuck NFTs from the vault |
+
+### Vault parameters (owner only)
+
+The agent's performance fee is a **vault property**, not a per-proposal value. You set one fee for the whole vault; proposals do not carry a fee.
+
+```bash
+# Set the agent performance fee (default 500 = 5%, vault cap 1500 = 15%)
+sherwood fund set-agent-fee --bps 1500
+
+# On-chain equivalent
+cast send $VAULT_ADDRESS "setAgentFeeBps(uint256)" <bps> --private-key $PRIVATE_KEY --rpc-url $RPC_URL
+```
+
+The governor snapshots `agentFeeBps` from the vault onto each proposal at propose time (immutable for that proposal — a later change can't alter an already-created proposal); at settlement it uses that snapshot, clamped to its own `maxPerformanceFeeBps`, so the effective fee is `min(snapshotted agentFeeBps, governor.maxPerformanceFeeBps())`. Lower the vault fee here to change the cut on **future** proposals if an agent's cut is too high — there is no proposal to veto for fee reasons.
 
 ### Recovering a stuck Executed proposal (LP funds locked)
 
@@ -399,7 +411,7 @@ cast send $GOVERNOR_ADDRESS "setVotingPeriod(uint256)" <seconds> --private-key $
 # Adjust veto threshold (min: 1000 = 10%, max: 10000 = 100%)
 cast send $GOVERNOR_ADDRESS "setVetoThresholdBps(uint256)" <bps> --private-key $PRIVATE_KEY --rpc-url $RPC_URL
 
-# Adjust max performance fee (cap: 5000 = 50%)
+# Adjust max performance fee (cap: 1500 = 15%)
 cast send $GOVERNOR_ADDRESS "setMaxPerformanceFeeBps(uint256)" <bps> --private-key $PRIVATE_KEY --rpc-url $RPC_URL
 
 # Adjust max strategy duration (min: 1 hour, max: 365 days)
@@ -432,7 +444,7 @@ Run these checks on a recurring basis. Proposal monitoring is the highest priori
 sherwood proposal list --state pending
 
 # 2. For each: simulate via Tenderly and notify the operator
-sherwood proposal simulate --id <PROPOSAL_ID> --notify <syndicate-name>
+sherwood proposal simulate --id <PROPOSAL_ID> --notify <fund-name>
 
 # 3. Check output for risk codes:
 #    - CRITICAL RISKS → VETO immediately
@@ -506,7 +518,7 @@ struct Call {
 | Voting period | 1 hour | 30 days |
 | Execution window | 1 hour | 7 days |
 | Veto threshold | 1000 bps (10%) | 10000 bps (100%) |
-| Max performance fee | — | 5000 bps (50%) |
+| Max performance fee | — | 1500 bps (15%) |
 | Strategy duration | 1 hour | 365 days |
 | Cooldown period | 1 hour | 30 days |
 
@@ -514,7 +526,7 @@ struct Call {
 
 ## 7. Known Safe Protocols
 
-When evaluating proposal call targets, verify against known protocol addresses **for the chain your syndicate is deployed on**. Addresses differ across chains.
+When evaluating proposal call targets, verify against known protocol addresses **for the chain your fund is deployed on**. Addresses differ across chains.
 
 ### Base
 

@@ -7,8 +7,8 @@ from pathlib import Path
 import yaml
 
 DEFAULT_CONFIG_YAML = """# sherwood-monitor config
-# Edit `syndicates` to add subdomains you want to monitor.
-syndicates: []
+# Edit `funds` to add subdomains you want to monitor.
+funds: []
 auto_start: false
 xmtp_summaries: true
 sherwood_bin: sherwood
@@ -21,14 +21,14 @@ concentration_threshold_pct: 30.0
 # threshold here only affects when the corresponding alert fires.
 aum_alert_threshold_pct: 5.0       # alert when |Δ TVL| since last tick exceeds N% of prior reading
 gas_alert_min_eth: 0.002           # alert when agent wallet ETH balance falls below this floor
-stream_stale_minutes: 30           # alert when a syndicate's supervisor hasn't produced an event in N minutes
+stream_stale_minutes: 30           # alert when a fund's supervisor hasn't produced an event in N minutes
 proposal_reasoning_enabled: true   # if false, the agent-driven `sherwood-proposal-reasoning` cron is NOT registered
 """
 
 
 @dataclass(frozen=True)
 class Config:
-    syndicates: list[str] = field(default_factory=list)
+    funds: list[str] = field(default_factory=list)
     auto_start: bool = False
     xmtp_summaries: bool = True
     sherwood_bin: str = "sherwood"
@@ -53,9 +53,9 @@ def load_config(path: Path) -> Config:
     except yaml.YAMLError as exc:
         raise ValueError(f"config parse error: {exc}") from exc
 
-    syndicates = raw.get("syndicates", [])
-    if not isinstance(syndicates, list):
-        raise ValueError("syndicates must be a list")
+    funds = raw.get("funds", [])
+    if not isinstance(funds, list):
+        raise ValueError("funds must be a list")
 
     backoff_max = int(raw.get("backoff_max_seconds", 30))
     if backoff_max <= 0:
@@ -66,7 +66,7 @@ def load_config(path: Path) -> Config:
         raise ValueError("stream_stale_minutes must be positive")
 
     return Config(
-        syndicates=[str(s) for s in syndicates],
+        funds=[str(s) for s in funds],
         auto_start=bool(raw.get("auto_start", False)),
         xmtp_summaries=bool(raw.get("xmtp_summaries", True)),
         sherwood_bin=str(raw.get("sherwood_bin", "sherwood")),

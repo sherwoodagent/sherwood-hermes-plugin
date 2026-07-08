@@ -20,7 +20,6 @@ interface ISyndicateGovernor {
         address proposer;
         address vault;
         string metadataURI;
-        uint256 performanceFeeBps;
         uint256 splitIndex;
         uint256 strategyDuration;
         uint256 votesFor;
@@ -33,13 +32,15 @@ interface ISyndicateGovernor {
     }
 
     function getProposal(uint256 proposalId) external view returns (StrategyProposal memory);
-    function getProposalCalls(uint256 proposalId) external view returns (Call[] memory);
+    function getExecuteCalls(uint256 proposalId) external view returns (Call[] memory);
+    function getSettlementCalls(uint256 proposalId) external view returns (Call[] memory);
     function getCapitalSnapshot(uint256 proposalId) external view returns (uint256);
 }
 
 interface ISyndicateVault {
     function asset() external view returns (address);
     function totalAssets() external view returns (uint256);
+    function agentFeeBps() external view returns (uint256);
 }
 
 /// @title SimulateProposal — Fork-test a governance proposal before it auto-passes
@@ -52,19 +53,32 @@ contract SimulateProposal is Test {
         address vault = vm.envAddress("VAULT_ADDRESS");
 
         // Fetch proposal metadata
-        ISyndicateGovernor.StrategyProposal memory proposal =
-            ISyndicateGovernor(governor).getProposal(proposalId);
+        ISyndicateGovernor.StrategyProposal memory proposal = ISyndicateGovernor(governor).getProposal(proposalId);
 
         emit log_named_address("Proposer", proposal.proposer);
         emit log_named_address("Vault", proposal.vault);
         emit log_named_string("Metadata URI", proposal.metadataURI);
-        emit log_named_uint("Performance Fee (bps)", proposal.performanceFeeBps);
         emit log_named_uint("Strategy Duration (s)", proposal.strategyDuration);
+        // The agent fee is no longer a per-proposal input — it lives on the vault
+        // as `agentFeeBps` (vault owner sets it via `vault.setAgentFeeBps`). The
+        // governor snapshots the vault's `agentFeeBps` onto the proposal at propose
+        // time and uses that snapshot, clamped to `maxPerformanceFeeBps`, at settlement.
+        emit log_named_uint("Vault agent fee (bps)", ISyndicateVault(vault).agentFeeBps());
         emit log_named_uint("State", uint256(proposal.state));
 
-        // Fetch proposal calls
-        ISyndicateGovernor.Call[] memory calls =
-            ISyndicateGovernor(governor).getProposalCalls(proposalId);
+        // Fetch proposal calls — concatenation of execute + settle. The
+        // legacy `getProposalCalls` concat helper was dropped in V1.5;
+        // we now build the unified array off-chain to keep simulation
+        // semantics identical (executeCalls run first, then settleCalls).
+        ISyndicateGovernor.Call[] memory exec = ISyndicateGovernor(governor).getExecuteCalls(proposalId);
+        ISyndicateGovernor.Call[] memory settle = ISyndicateGovernor(governor).getSettlementCalls(proposalId);
+        ISyndicateGovernor.Call[] memory calls = new ISyndicateGovernor.Call[](exec.length + settle.length);
+        for (uint256 i = 0; i < exec.length; i++) {
+            calls[i] = exec[i];
+        }
+        for (uint256 i = 0; i < settle.length; i++) {
+            calls[exec.length + i] = settle[i];
+        }
 
         emit log_named_uint("Number of calls", calls.length);
 
@@ -96,12 +110,8 @@ contract SimulateProposal is Test {
         // Simulate each call as the vault (governor executes via vault)
         vm.startPrank(vault);
         for (uint256 i = 0; i < calls.length; i++) {
-            (bool success, bytes memory ret) =
-                calls[i].target.call{value: calls[i].value}(calls[i].data);
-            assertTrue(
-                success,
-                string(abi.encodePacked("Call ", vm.toString(i), " FAILED"))
-            );
+            (bool success, bytes memory ret) = calls[i].target.call{value: calls[i].value}(calls[i].data);
+            assertTrue(success, string(abi.encodePacked("Call ", vm.toString(i), " FAILED")));
             emit log_named_uint("Call succeeded", i);
             emit log_named_bytes("Return data", ret);
         }
@@ -125,8 +135,7 @@ contract SimulateProposal is Test {
         address vault = vm.envAddress("VAULT_ADDRESS");
 
         // Get capital snapshot for P&L comparison
-        uint256 capitalSnapshot =
-            ISyndicateGovernor(governor).getCapitalSnapshot(proposalId);
+        uint256 capitalSnapshot = ISyndicateGovernor(governor).getCapitalSnapshot(proposalId);
         emit log_named_uint("Capital snapshot", capitalSnapshot);
 
         address asset = ISyndicateVault(vault).asset();
@@ -141,9 +150,7 @@ contract SimulateProposal is Test {
 
         // Settlement simulation: try calling settleProposal
         // This verifies the proposal CAN be settled without reverting
-        (bool success,) = governor.call(
-            abi.encodeWithSignature("settleProposal(uint256)", proposalId)
-        );
+        (bool success,) = governor.call(abi.encodeWithSignature("settleProposal(uint256)", proposalId));
         assertTrue(success, "settleProposal would revert — needs emergency settle");
     }
 }
