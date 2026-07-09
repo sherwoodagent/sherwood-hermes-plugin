@@ -66,7 +66,7 @@ Common errors, causes, and fixes when using the Sherwood CLI.
 | `Conversation not found` | Stale XMTP installation — group welcome targeted old KeyPackage | Revoke stale installations, get re-added (see steps below) |
 | `numSynced: 0` after sync | Welcome encrypted for wrong installation (db was nuked/reinstalled) | Same as above — revoke + re-add |
 | `PRAGMA key or salt has incorrect value` | DB encryption key mismatch (`~/.xmtp/.env` was overwritten) | Delete `~/.xmtp/xmtp-db*` files (keep `.env`), re-run any chat command, then get re-added |
-| `Association error: Missing identity update` | Wallet never registered on XMTP production | Non-fatal — run `sherwood chat <name> --chain base` to force registration |
+| `Association error: Missing identity update` | Wallet never registered on XMTP production | Non-fatal — run `sherwood chat <name>` to force registration |
 
 ### Stale installation fix (most common XMTP issue)
 
@@ -84,7 +84,7 @@ node $XMTP_CLI inbox-states <inbox-id> --log-level off --env production
 node $XMTP_CLI revoke-installations <inbox-id> -i <stale-id> --force --env production
 
 # 5. Creator removes and re-adds you
-#    sherwood chat <name> add <your-address> --chain base
+#    sherwood chat <name> add <your-address>
 
 # 6. Sync + clear stale group cache
 node $XMTP_CLI conversations sync-all --env production --log-level off

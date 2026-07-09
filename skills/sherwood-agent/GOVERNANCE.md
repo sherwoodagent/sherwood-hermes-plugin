@@ -56,40 +56,35 @@ Defaults to 500 bps (5%) at vault creation; the vault caps it at 1500 bps (15%).
 ## List proposals
 
 ```bash
-sherwood proposal list [--vault <addr>] [--state <filter>] [--chain <network>]
-```
+sherwood proposal list [--vault <addr>] [--state <filter>]```
 
 Filter by state: `pending`, `approved`, `executed`, `settled`, `all` (default: `all`).
 
 ## Show proposal detail
 
 ```bash
-sherwood proposal show <id> [--chain <network>]
-```
+sherwood proposal show <id>```
 
 Displays metadata, state, timestamps, vote breakdown, decoded calls, capital snapshot (if executed), and P&L/fees (if settled).
 
 ## Vote on a proposal
 
 ```bash
-sherwood proposal vote --id <proposalId> --support <for|against|abstain> [--chain <network>]
-```
+sherwood proposal vote --id <proposalId> --support <for|against|abstain>```
 
 Caller must have voting power (vault shares at snapshot). Displays vote weight before confirming.
 
 ## Execute an approved proposal
 
 ```bash
-sherwood proposal execute --id <proposalId> [--chain <network>]
-```
+sherwood proposal execute --id <proposalId>```
 
 Anyone can call. Verifies proposal is Approved, within execution window, no other active strategy, and cooldown has elapsed.
 
 ## Settle an executed proposal
 
 ```bash
-sherwood proposal settle --id <proposalId> [--calls <path-to-json>] [--chain <network>]
-```
+sherwood proposal settle --id <proposalId> [--calls <path-to-json>]```
 
 Auto-routes to the correct settlement path:
 - **Proposer:** `settleProposal` — proposer can call anytime after execution
@@ -101,30 +96,21 @@ Output: P&L, fees distributed, redemptions unlocked.
 ## Cancel a proposal
 
 ```bash
-sherwood proposal cancel --id <proposalId> [--chain <network>]
-```
+sherwood proposal cancel --id <proposalId>```
 
 Proposer can cancel if Pending/Approved. Vault owner can emergency cancel at any non-settled state.
 
 ## Governor info
 
 ```bash
-sherwood governor info [--chain <network>]
-```
+sherwood governor info```
 
 Displays current parameters: voting period, execution window, veto threshold, max performance fee, max strategy duration, cooldown period, protocol fee, and registered vaults.
 
 ## Governor parameter setters (owner only)
 
 ```bash
-sherwood governor set-voting-period --seconds <n> [--chain <network>]
-sherwood governor set-execution-window --seconds <n> [--chain <network>]
-sherwood governor set-veto-threshold --bps <n> [--chain <network>]
-sherwood governor set-max-fee --bps <n> [--chain <network>]
-sherwood governor set-max-duration --seconds <n> [--chain <network>]
-sherwood governor set-cooldown --seconds <n> [--chain <network>]
-sherwood governor set-protocol-fee --bps <n> [--chain <network>]
-```
+sherwood governor set-voting-period --seconds <n>sherwood governor set-execution-window --seconds <n>sherwood governor set-veto-threshold --bps <n>sherwood governor set-max-fee --bps <n>sherwood governor set-max-duration --seconds <n>sherwood governor set-cooldown --seconds <n>sherwood governor set-protocol-fee --bps <n>```
 
 Each validates against hardcoded bounds before submitting.
 

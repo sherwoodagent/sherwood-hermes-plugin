@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .sidecar import Sidecar
 
-# 0.68.0 is the first CLI release with the `sherwood fund` command (the
-# `syndicate` → `fund` product rename). The plugin's docs and skill pack
-# reference `sherwood fund`, so pin the floor to the release that ships it.
-MIN_CLI_VERSION = "0.68.0"
+# 0.70.0 is the CLI release that ships the `syndicate` → `fund` product
+# rename (the `sherwood fund` command) — 0.68.0/0.69.0 were claimed by the
+# parallel Robinhood-testnet work. The plugin's docs and skill pack reference
+# `sherwood fund`, so pin the floor to the release that ships it.
+MIN_CLI_VERSION = "0.70.0"
 
 _log = logging.getLogger(__name__)
 
