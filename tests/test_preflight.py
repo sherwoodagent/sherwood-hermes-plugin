@@ -15,11 +15,11 @@ from sherwood_monitor.preflight import (
 
 
 def test_check_cli_installed_ok():
-    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.70.0"))
+    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.71.0"))
     with patch("subprocess.run", fake_run):
         ok, version = check_cli_installed("sherwood")
     assert ok is True
-    assert version == "0.70.0"
+    assert version == "0.71.0"
 
 
 def test_check_cli_installed_missing():
@@ -30,11 +30,11 @@ def test_check_cli_installed_missing():
 
 
 def test_check_cli_installed_version_too_old():
-    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.69.9"))
+    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.70.9"))
     with patch("subprocess.run", fake_run):
-        ok, version = check_cli_installed("sherwood", min_version="0.70.0")
+        ok, version = check_cli_installed("sherwood", min_version="0.71.0")
     assert ok is False
-    assert version == "0.69.9"
+    assert version == "0.70.9"
 
 
 def test_check_cli_configured_ok(tmp_path: Path):
@@ -56,7 +56,7 @@ def test_run_preflight_all_ok(tmp_path: Path):
     sidecar_dir = tmp_path / "xmtp_sidecar"
     (sidecar_dir / "dist").mkdir(parents=True)
     (sidecar_dir / "dist" / "index.js").write_text("// built")
-    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.70.0"))
+    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.71.0"))
     with patch("subprocess.run", fake_run):
         result = run_preflight("sherwood", sidecar_dir=sidecar_dir, home=tmp_path)
     assert isinstance(result, PreflightResult)
@@ -165,7 +165,7 @@ def test_run_preflight_includes_sidecar_built_warning(tmp_path: Path):
     sidecar_dir.mkdir()
     # No dist/ subdirectory → sidecar not built
 
-    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.70.0"))
+    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.71.0"))
     sherwood_home = tmp_path / "home"
     (sherwood_home / ".sherwood").mkdir(parents=True)
     (sherwood_home / ".sherwood" / "config.json").write_text("{}")
@@ -179,7 +179,7 @@ def test_run_preflight_includes_sidecar_built_warning(tmp_path: Path):
 
 def test_run_preflight_sidecar_dir_none_adds_warning(tmp_path: Path):
     """sidecar_dir=None → sidecar_built=False + warning about not configured."""
-    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.70.0"))
+    fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.71.0"))
     sherwood_home = tmp_path / "home"
     (sherwood_home / ".sherwood").mkdir(parents=True)
     (sherwood_home / ".sherwood" / "config.json").write_text("{}")

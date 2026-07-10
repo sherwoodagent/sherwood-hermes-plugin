@@ -45,14 +45,14 @@ The `sherwood-monitor` plugin you're running: on-chain event streaming + autonom
 
 4. **Verify preconditions:**
    ```bash
-   sherwood --version      # must be >= 0.70.0
+   sherwood --version      # must be >= 0.71.0
    sherwood config get     # note the network + wallet address
    sherwood vault info $SUB --json > "$RUN_DIR/0-vault-info.json" || true
    sherwood proposal list $SUB --json > "$RUN_DIR/0-proposals-before.json" || true
    ```
    Save the first two outputs to `$RUN_DIR/preflight.txt`. The last two snapshot the current on-chain state so you can diff later.
 
-**Pass condition:** `$SUB` resolves to a real vault, `$RUN_DIR` exists, sherwood CLI version ≥ 0.70.0, network matches user expectation, vault info + proposal list are readable.
+**Pass condition:** `$SUB` resolves to a real vault, `$RUN_DIR` exists, sherwood CLI version ≥ 0.71.0, network matches user expectation, vault info + proposal list are readable.
 
 ---
 
