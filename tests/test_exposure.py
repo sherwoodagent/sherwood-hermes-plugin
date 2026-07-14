@@ -1,4 +1,4 @@
-"""Tests for cross-syndicate exposure aggregation and concentration alerts."""
+"""Tests for cross-fund exposure aggregation and concentration alerts."""
 from __future__ import annotations
 
 import json
@@ -26,7 +26,7 @@ BETA = _load("vault_info_beta.json")
 
 
 @pytest.mark.asyncio
-async def test_aggregate_exposure_sums_across_syndicates():
+async def test_aggregate_exposure_sums_across_funds():
     with patch(
         "sherwood_monitor.exposure.fetch_vault_info",
         side_effect=[ALPHA, BETA],
@@ -48,8 +48,8 @@ async def test_aggregate_exposure_skips_failed_vaults():
     # alpha skipped — only beta counted
     assert report.by_protocol == {"aerodrome": 20000.0}
     assert report.total_aum_usd == 50000.0
-    assert "alpha" not in report.per_syndicate
-    assert "beta" in report.per_syndicate
+    assert "alpha" not in report.per_fund
+    assert "beta" in report.per_fund
 
 
 def test_concentration_pct_correct():
@@ -60,7 +60,7 @@ def test_concentration_pct_correct():
             "moonwell": round(40000 / 150000 * 100, 2),
             "aerodrome": round(40000 / 150000 * 100, 2),
         },
-        per_syndicate={
+        per_fund={
             "alpha": {"moonwell": 40000.0, "aerodrome": 20000.0},
             "beta": {"aerodrome": 20000.0},
         },
@@ -74,7 +74,7 @@ def test_check_concentration_flags_over_threshold():
         total_aum_usd=150000.0,
         by_protocol={"moonwell": 40000.0, "aerodrome": 40000.0},
         concentration_pct={"moonwell": 26.67, "aerodrome": 26.67},
-        per_syndicate={
+        per_fund={
             "alpha": {"moonwell": 40000.0, "aerodrome": 20000.0},
             "beta": {"aerodrome": 20000.0},
         },
@@ -83,7 +83,7 @@ def test_check_concentration_flags_over_threshold():
     alerts = check_concentration(report, threshold_pct=25.0)
     assert len(alerts) == 2
     aero_alert = next(a for a in alerts if a.protocol == "aerodrome")
-    assert set(aero_alert.syndicates_exposed) == {"alpha", "beta"}
+    assert set(aero_alert.funds_exposed) == {"alpha", "beta"}
 
 
 def test_check_concentration_empty_when_all_under():
@@ -91,7 +91,7 @@ def test_check_concentration_empty_when_all_under():
         total_aum_usd=150000.0,
         by_protocol={"moonwell": 40000.0, "aerodrome": 40000.0},
         concentration_pct={"moonwell": 26.67, "aerodrome": 26.67},
-        per_syndicate={
+        per_fund={
             "alpha": {"moonwell": 40000.0, "aerodrome": 20000.0},
             "beta": {"aerodrome": 20000.0},
         },

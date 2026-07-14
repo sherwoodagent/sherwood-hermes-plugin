@@ -175,7 +175,7 @@ def test_install_cron_skips_reasoning_when_disabled(install_cron_handler, capsys
     """`proposal_reasoning_enabled: false` in config skips the agent cron, registers the four no_agent crons."""
     cfg_dir = tmp_path / ".hermes" / "plugins" / "sherwood-monitor"
     cfg_dir.mkdir(parents=True)
-    (cfg_dir / "config.yaml").write_text("syndicates: []\nproposal_reasoning_enabled: false\n")
+    (cfg_dir / "config.yaml").write_text("funds: []\nproposal_reasoning_enabled: false\n")
     monkeypatch.setattr("sherwood_monitor.cli.Path.home", lambda: tmp_path)
 
     list_result = MagicMock(returncode=0, stdout="", stderr="")

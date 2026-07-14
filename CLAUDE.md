@@ -28,11 +28,11 @@ Then open follow-up PRs in the consumer repos:
 
 ## `MIN_CLI_VERSION` (separate floor)
 
-`sherwood_monitor/preflight.py` pins `MIN_CLI_VERSION` — the minimum Sherwood CLI version this plugin works against. Do NOT bump it unless a new plugin feature actually requires a newer CLI subcommand or flag. The current floor exists because of `sherwood session check --no-xmtp` (added in CLI 0.40.5).
+`sherwood_monitor/preflight.py` pins `MIN_CLI_VERSION` — the minimum Sherwood CLI version this plugin works against. Do NOT bump it unless a new plugin feature actually requires a newer CLI subcommand or flag. The current floor is `0.71.0` — the release that ships the `sherwood fund` command (the `syndicate` → `fund` product rename), which the plugin's docs and bundled skill pack reference. (0.68.0/0.69.0 were claimed by the parallel Robinhood-testnet work and 0.70.0 by the per-vault governor #421, so the rename landed in 0.71.0.) (The earlier floor was `0.40.5` for `sherwood session check --no-xmtp`, which the supervisor still passes.)
 
 If you bump `MIN_CLI_VERSION`, the consumer-repo updates above also need to bump their CLI pin to ≥ the new floor.
 
-## Cron stack (current as of v0.5.0)
+## Cron stack (current as of v0.6.0)
 
 Five entries registered by `hermes sherwood install-cron`:
 - `sherwood-monitor-digest` (no_agent, every 15m)

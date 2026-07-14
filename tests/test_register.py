@@ -119,12 +119,12 @@ def test_register_injects_membership_warnings(tmp_path: Path, mock_ctx):
     fake_version = MagicMock(returncode=0, stdout="0.5.0")
 
     # We need to intercept the buffer's push calls — use a custom config
-    # with alpha-fund in syndicates so the membership check fires
+    # with alpha-fund in funds so the membership check fires
     import yaml as _yaml
     cfg_dir = tmp_path / ".hermes" / "plugins" / "sherwood-monitor"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "config.yaml").write_text(
-        _yaml.dump({"syndicates": ["alpha-fund"], "sherwood_bin": "sherwood"})
+        _yaml.dump({"funds": ["alpha-fund"], "sherwood_bin": "sherwood"})
     )
 
     from sherwood_monitor.event_buffer import EventBuffer
@@ -153,8 +153,8 @@ def test_register_injects_membership_warnings(tmp_path: Path, mock_ctx):
     assert "0xABCDEF" in all_text or "sherwood chat alpha-fund add" in all_text
 
 
-def test_register_stream_starts_per_syndicate(tmp_path: Path, mock_ctx):
-    """stream_start is called for each syndicate where the sidecar is a member."""
+def test_register_stream_starts_per_fund(tmp_path: Path, mock_ctx):
+    """stream_start is called for each fund where the sidecar is a member."""
     sherwood_dir = tmp_path / ".sherwood"
     sherwood_dir.mkdir()
     (sherwood_dir / "config.json").write_text(
@@ -175,7 +175,7 @@ def test_register_stream_starts_per_syndicate(tmp_path: Path, mock_ctx):
     cfg_dir = tmp_path / ".hermes" / "plugins" / "sherwood-monitor"
     cfg_dir.mkdir(parents=True)
     (cfg_dir / "config.yaml").write_text(
-        _yaml.dump({"syndicates": ["alpha-fund", "beta-fund"], "sherwood_bin": "sherwood"})
+        _yaml.dump({"funds": ["alpha-fund", "beta-fund"], "sherwood_bin": "sherwood"})
     )
 
     fake_version = MagicMock(returncode=0, stdout="0.5.0")

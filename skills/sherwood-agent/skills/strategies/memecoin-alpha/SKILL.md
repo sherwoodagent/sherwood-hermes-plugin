@@ -6,7 +6,7 @@ model: sonnet
 license: MIT
 metadata:
   author: sherwood
-  version: '0.1.0'
+  version: '0.2.0'
 ---
 
 # Memecoin Alpha Strategy
@@ -120,8 +120,8 @@ sherwood trade scan --token 0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed
 # Skip cost confirmation (for automated agents)
 sherwood trade scan --yes
 
-# Post results to syndicate chat
-sherwood trade scan --syndicate alpha
+# Post results to fund chat
+sherwood trade scan --fund alpha
 ```
 
 Output: table with token, composite score, action, confidence, per-signal breakdown.
@@ -136,7 +136,7 @@ sherwood trade buy \
   --stop-loss 10 \
   --trailing-stop 20 \
   --deadline 24 \
-  --syndicate alpha
+  --fund alpha
 ```
 
 | Flag | Default | Description |
@@ -147,7 +147,7 @@ sherwood trade buy \
 | `--stop-loss` | 10 | Stop loss percentage |
 | `--trailing-stop` | 0 | Trailing stop from high-water (0 = disabled) |
 | `--deadline` | 0 | Force exit after N hours (0 = none) |
-| `--syndicate` | — | Post TRADE_EXECUTED to chat |
+| `--fund` | — | Post TRADE_EXECUTED to chat |
 
 ### Sell a token
 
@@ -171,7 +171,7 @@ Shows: token, entry price, current price, quantity, cost basis, current value, u
 
 ```bash
 # Check every 5 minutes, auto-sell on exit triggers
-sherwood trade monitor --interval 300 --syndicate alpha
+sherwood trade monitor --interval 300 --fund alpha
 ```
 
 The monitor:
@@ -180,7 +180,7 @@ The monitor:
 3. Runs full signal analysis (Nansen + Venice + Messari)
 4. Checks all exit conditions (stop loss, trailing stop, deadline, signals)
 5. Auto-executes sell via Uniswap Trading API if exit triggered
-6. Posts RISK_ALERT and TRADE_EXECUTED to syndicate chat
+6. Posts RISK_ALERT and TRADE_EXECUTED to fund chat
 
 ## Workflow: Agent Autonomy
 
@@ -188,13 +188,13 @@ A fully autonomous agent loop:
 
 ```bash
 # 1. Scan for opportunities
-sherwood trade scan --yes --syndicate alpha
+sherwood trade scan --yes --fund alpha
 
 # 2. If BUY signal found, execute
-sherwood trade buy --token <addr> --amount 50 --stop-loss 10 --trailing-stop 20 --deadline 48 --syndicate alpha
+sherwood trade buy --token <addr> --amount 50 --stop-loss 10 --trailing-stop 20 --deadline 48 --fund alpha
 
 # 3. Monitor and auto-exit
-sherwood trade monitor --interval 300 --syndicate alpha
+sherwood trade monitor --interval 300 --fund alpha
 ```
 
 The agent can combine this with research commands for deeper due diligence:
@@ -219,7 +219,7 @@ The API handles multi-hop routing, fee tier selection, and cross-pool optimizati
 
 ## Chat Integration
 
-All trade actions post to syndicate XMTP chat using existing message types:
+All trade actions post to fund XMTP chat using existing message types:
 
 | Message Type | When |
 |-------------|------|

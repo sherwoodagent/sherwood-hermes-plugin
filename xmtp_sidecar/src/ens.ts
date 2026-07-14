@@ -53,7 +53,7 @@ function getBaseClient() {
 }
 
 /**
- * Resolve a syndicate subdomain to its XMTP group ID.
+ * Resolve a fund subdomain to its XMTP group ID.
  * Reads the "xmtpGroupId" text record from the Durin L2Registry on Base.
  */
 export async function resolveSubdomainToGroupId(subdomain: string): Promise<string> {

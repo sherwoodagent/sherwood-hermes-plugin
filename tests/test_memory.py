@@ -13,7 +13,7 @@ def test_build_record_execute():
         command="sherwood proposal execute alpha 42",
         result_json='{"tx": "0xabc", "proposalId": 42}',
     )
-    assert rec["syndicate"] == "alpha"
+    assert rec["fund"] == "alpha"
     assert rec["action"] == "execute"
     assert rec["tx_hash"] == "0xabc"
     assert rec["proposal_id"] == 42
@@ -37,7 +37,7 @@ def test_build_record_handles_non_json_result():
         command="sherwood proposal execute alpha 42",
         result_json="ok",
     )
-    assert rec["syndicate"] == "alpha"
+    assert rec["fund"] == "alpha"
     assert rec["tx_hash"] is None
 
 
@@ -52,4 +52,4 @@ def test_write_settlement_calls_memory_writer():
     )
     writer.assert_called_once()
     args = writer.call_args.args
-    assert args[0]["syndicate"] == "alpha"
+    assert args[0]["fund"] == "alpha"

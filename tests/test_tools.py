@@ -39,10 +39,10 @@ async def test_stop_handler():
 @pytest.mark.asyncio
 async def test_status_handler():
     sup = MagicMock()
-    sup.status = MagicMock(return_value={"syndicates": [{"subdomain": "alpha"}]})
+    sup.status = MagicMock(return_value={"funds": [{"subdomain": "alpha"}]})
     handlers = make_handlers(sup)
     result = await handlers["sherwood_monitor_status"]({})
-    assert json.loads(result)["syndicates"][0]["subdomain"] == "alpha"
+    assert json.loads(result)["funds"][0]["subdomain"] == "alpha"
 
 
 @pytest.mark.asyncio
@@ -59,13 +59,13 @@ async def test_handler_swallows_exception():
 @pytest.mark.asyncio
 async def test_exposure_handler_returns_report():
     sup = MagicMock()
-    cfg = Config(sherwood_bin="sherwood", syndicates=["alpha", "beta"], concentration_threshold_pct=30.0)
+    cfg = Config(sherwood_bin="sherwood", funds=["alpha", "beta"], concentration_threshold_pct=30.0)
 
     fake_report = ExposureReport(
         total_aum_usd=150000.0,
         by_protocol={"moonwell": 40000.0, "aerodrome": 40000.0},
         concentration_pct={"moonwell": 26.67, "aerodrome": 26.67},
-        per_syndicate={
+        per_fund={
             "alpha": {"moonwell": 40000.0, "aerodrome": 20000.0},
             "beta": {"aerodrome": 20000.0},
         },
@@ -84,13 +84,13 @@ async def test_exposure_handler_returns_report():
 @pytest.mark.asyncio
 async def test_exposure_handler_reports_alerts_over_threshold():
     sup = MagicMock()
-    cfg = Config(sherwood_bin="sherwood", syndicates=["alpha", "beta"], concentration_threshold_pct=25.0)
+    cfg = Config(sherwood_bin="sherwood", funds=["alpha", "beta"], concentration_threshold_pct=25.0)
 
     fake_report = ExposureReport(
         total_aum_usd=150000.0,
         by_protocol={"aerodrome": 40000.0},
         concentration_pct={"aerodrome": 26.67},
-        per_syndicate={"alpha": {"aerodrome": 20000.0}, "beta": {"aerodrome": 20000.0}},
+        per_fund={"alpha": {"aerodrome": 20000.0}, "beta": {"aerodrome": 20000.0}},
     )
 
     with patch("sherwood_monitor.tools.aggregate_exposure", AsyncMock(return_value=fake_report)):
@@ -100,7 +100,7 @@ async def test_exposure_handler_reports_alerts_over_threshold():
     parsed = json.loads(result)
     assert len(parsed["alerts"]) == 1
     assert parsed["alerts"][0]["protocol"] == "aerodrome"
-    assert set(parsed["alerts"][0]["syndicates_exposed"]) == {"alpha", "beta"}
+    assert set(parsed["alerts"][0]["funds_exposed"]) == {"alpha", "beta"}
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ async def test_exposure_handler_reports_alerts_over_threshold():
 @pytest.mark.asyncio
 async def test_cron_tick_handler_returns_events():
     sup = MagicMock()
-    cfg = Config(sherwood_bin="sherwood", syndicates=["alpha-fund"], concentration_threshold_pct=30.0)
+    cfg = Config(sherwood_bin="sherwood", funds=["alpha-fund"], concentration_threshold_pct=30.0)
 
     fake_result = {
         "subdomain": "alpha-fund",
@@ -132,7 +132,7 @@ async def test_cron_tick_handler_returns_events():
 @pytest.mark.asyncio
 async def test_cron_tick_handler_missing_subdomain():
     sup = MagicMock()
-    cfg = Config(sherwood_bin="sherwood", syndicates=["alpha-fund"], concentration_threshold_pct=30.0)
+    cfg = Config(sherwood_bin="sherwood", funds=["alpha-fund"], concentration_threshold_pct=30.0)
     handlers = make_handlers(sup, cfg)
     result = await handlers["sherwood_monitor_cron_tick"]({})
     parsed = json.loads(result)

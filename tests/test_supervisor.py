@@ -99,9 +99,9 @@ async def test_status_reports_live_subprocess():
         await sup.start("alpha")
         await asyncio.sleep(0.05)  # let the task spin up
         status = sup.status()
-        assert status["syndicates"][0]["subdomain"] == "alpha"
-        assert status["syndicates"][0]["pid"] == 12345
-        assert status["syndicates"][0]["events_seen"] == 3
+        assert status["funds"][0]["subdomain"] == "alpha"
+        assert status["funds"][0]["pid"] == 12345
+        assert status["funds"][0]["events_seen"] == 3
         await sup.stop_all()
 
 

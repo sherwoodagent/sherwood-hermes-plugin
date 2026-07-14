@@ -50,7 +50,7 @@ def build_record(
         pass
 
     return {
-        "syndicate": subdomain,
+        "fund": subdomain,
         "action": action,
         "timestamp": int(time.time()),
         "command": command,

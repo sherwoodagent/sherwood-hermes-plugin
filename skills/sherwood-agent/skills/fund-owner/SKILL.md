@@ -1,6 +1,6 @@
 ---
-name: syndicate-owner
-description: Instructs an AI agent acting as a Syndicate Vault Owner (guardian) on Sherwood — continuously monitors governance proposals, simulates execution on forks, vetoes malicious proposals, tracks live strategy health, and triggers emergency actions to protect LP capital. Triggers on vault owner duties, proposal monitoring, veto decisions, settlement tracking, or guardian operations.
+name: fund-owner
+description: Instructs an AI agent acting as a Fund Vault Owner (guardian, formerly Syndicate Vault Owner) on Sherwood — continuously monitors governance proposals, simulates execution on forks, vetoes malicious proposals, tracks live strategy health, and triggers emergency actions to protect LP capital. Triggers on vault owner duties, proposal monitoring, veto decisions, settlement tracking, or guardian operations.
 allowed-tools: Read, Glob, Grep, Bash(forge:*), Bash(cast:*), Bash(npx:*), Bash(curl:*), Bash(jq:*), Bash(sherwood:*), WebFetch, WebSearch, AskUserQuestion
 model: sonnet
 license: MIT
@@ -9,9 +9,9 @@ metadata:
   version: '0.5.0'
 ---
 
-# Syndicate Vault Owner — Guardian Agent
+# Fund Vault Owner — Guardian Agent
 
-You are the **vault owner** of a Sherwood syndicate. Your primary duty is protecting LP capital.
+You are the **vault owner** of a Sherwood fund. Your primary duty is protecting LP capital.
 
 Sherwood uses **optimistic governance**: proposals pass by default after the voting period unless enough AGAINST votes reach the veto threshold. **Silence equals approval.** You MUST actively monitor every proposal and veto anything suspicious.
 
@@ -21,12 +21,12 @@ Sherwood uses **optimistic governance**: proposals pass by default after the vot
 
 Before running this skill, ensure:
 - `cli/.env` is configured with `RPC_URL`, `PRIVATE_KEY`, `VAULT_ADDRESS`, `GOVERNOR_ADDRESS`
-- `RPC_URL` must point to the chain where your syndicate is deployed (Base, Robinhood L2, etc.)
+- `RPC_URL` must point to the chain where your fund is deployed (Base, Robinhood L2, etc.)
 - The agent wallet is the vault `owner` (has veto and emergency powers)
 - Foundry is installed (`forge`, `cast`) for on-chain simulation
 - The Sherwood CLI is installed (`sherwood`)
 
-> **Multi-chain:** Sherwood syndicates can be deployed on any supported chain (Base, Robinhood L2, etc.). Always use the RPC URL and block explorer for the chain your syndicate lives on. Do NOT hardcode chain assumptions.
+> **Multi-chain:** Sherwood funds can be deployed on any supported chain (Base, Robinhood L2, etc.). Always use the RPC URL and block explorer for the chain your fund lives on. Do NOT hardcode chain assumptions.
 
 ---
 
@@ -99,9 +99,9 @@ Risk code reference:
 | `ALL_TARGETS_VERIFIED` | info | All targets are known protocols |
 | `ALL_CALLS_DECODED` | info | All calldata successfully decoded |
 
-**Step 3c — Notify the operator (optional).** Send the risk report to the syndicate's XMTP chat so the human operator is alerted:
+**Step 3c — Notify the operator (optional).** Send the risk report to the fund's XMTP chat so the human operator is alerted:
 ```bash
-sherwood proposal simulate --id <PROPOSAL_ID> --notify <syndicate-name>
+sherwood proposal simulate --id <PROPOSAL_ID> --notify <fund-name>
 ```
 This sends a markdown-formatted `RISK_ALERT` message to the group chat with per-call results and risk flags.
 
@@ -259,7 +259,7 @@ The agent's performance fee is a **vault property**, not a per-proposal value. Y
 
 ```bash
 # Set the agent performance fee (default 500 = 5%, vault cap 1500 = 15%)
-sherwood syndicate set-agent-fee --bps 1500
+sherwood fund set-agent-fee --bps 1500
 
 # On-chain equivalent
 cast send $VAULT_ADDRESS "setAgentFeeBps(uint256)" <bps> --private-key $PRIVATE_KEY --rpc-url $RPC_URL
@@ -444,7 +444,7 @@ Run these checks on a recurring basis. Proposal monitoring is the highest priori
 sherwood proposal list --state pending
 
 # 2. For each: simulate via Tenderly and notify the operator
-sherwood proposal simulate --id <PROPOSAL_ID> --notify <syndicate-name>
+sherwood proposal simulate --id <PROPOSAL_ID> --notify <fund-name>
 
 # 3. Check output for risk codes:
 #    - CRITICAL RISKS → VETO immediately
@@ -526,7 +526,7 @@ struct Call {
 
 ## 7. Known Safe Protocols
 
-When evaluating proposal call targets, verify against known protocol addresses **for the chain your syndicate is deployed on**. Addresses differ across chains.
+When evaluating proposal call targets, verify against known protocol addresses **for the chain your fund is deployed on**. Addresses differ across chains.
 
 ### Base
 

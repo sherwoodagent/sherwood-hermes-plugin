@@ -1,17 +1,17 @@
 # Sherwood Monitor — Boot
 
-For each syndicate in `~/.hermes/plugins/sherwood-monitor/config.yaml`:
+For each fund in `~/.hermes/plugins/sherwood-monitor/config.yaml`:
 
-1. Call `sherwood_monitor_status()` and report each syndicate's state
+1. Call `sherwood_monitor_status()` and report each fund's state
    (`pid`, `uptime_seconds`, `events_seen`, `last_event_at`).
-2. If `auto_start` is true and a syndicate has no live supervisor,
+2. If `auto_start` is true and a fund has no live supervisor,
    call `sherwood_monitor_start(subdomain)`.
 3. If `on_session_start` injected any `<sherwood-catchup>` blocks,
    summarize them briefly for the user (new proposals, settlements,
    risk alerts) so they know the state of their funds at session start.
 
 If `sherwood_monitor_status()` returns an empty list, note that no
-syndicates are configured and remind the user how to add one:
+funds are configured and remind the user how to add one:
 `edit ~/.hermes/plugins/sherwood-monitor/config.yaml`.
 
 ## Cron setup (one-time)
@@ -25,7 +25,7 @@ five crons:
     proposals/settlements/risk alerts
   - `sherwood-aum-watchdog` (every 15m) — alerts when TVL Δ exceeds threshold
   - `sherwood-gas-watchdog` (every 30m) — alerts when agent wallet ETH is low
-  - `sherwood-stream-watchdog` (every 5m) — alerts when a syndicate's
+  - `sherwood-stream-watchdog` (every 5m) — alerts when a fund's
     supervisor stream goes stale or its supervisor PID dies
 - One **agent** cron (`sherwood-proposal-reasoning`, every 6h) — the only
   cron that costs LLM tokens. It lists open proposals and returns a vote

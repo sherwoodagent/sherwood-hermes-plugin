@@ -162,17 +162,17 @@ def register(ctx: Any) -> None:
                 return
 
             # Membership check
-            missing = await check_memberships(sidecar, cfg.syndicates)  # type: ignore[arg-type]
+            missing = await check_memberships(sidecar, cfg.funds)  # type: ignore[arg-type]
 
             if sidecar_address and missing:
                 lines = [
                     "sherwood-monitor sidecar wallet " + sidecar_address,
-                    "needs to be added to these syndicates' XMTP groups:",
+                    "needs to be added to these funds' XMTP groups:",
                 ]
                 for sub in missing:
                     lines.append(f"  sherwood chat {sub} add {sidecar_address}")
                 lines.append("")
-                lines.append("Run these as the syndicate creator.")
+                lines.append("Run these as the fund creator.")
                 buffer.push(
                     "<sherwood-monitor-warning>\n"
                     + "\n".join(lines)
@@ -205,9 +205,9 @@ def register(ctx: Any) -> None:
 
             sidecar.on_stream_event(_on_stream_event)  # type: ignore[union-attr]
 
-            # Start streams for syndicates where the sidecar IS a member
-            member_syndicates = [s for s in cfg.syndicates if s not in missing]
-            for sub in member_syndicates:
+            # Start streams for funds where the sidecar IS a member
+            member_funds = [s for s in cfg.funds if s not in missing]
+            for sub in member_funds:
                 try:
                     # Resolve first so we can capture group_id for the reverse map.
                     group_id_result = await sidecar.call(  # type: ignore[union-attr]
@@ -216,7 +216,7 @@ def register(ctx: Any) -> None:
                     group_id = group_id_result["group_id"]
                     group_to_subdomain[group_id] = sub
                     await sidecar.stream_start(sub)  # type: ignore[union-attr]
-                    _log.info("XMTP stream started for syndicate %s", sub)
+                    _log.info("XMTP stream started for fund %s", sub)
                 except Exception as exc:
                     _log.warning("stream_start failed for %s: %s", sub, exc)
 

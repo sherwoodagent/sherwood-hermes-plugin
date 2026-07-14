@@ -1,4 +1,4 @@
-"""Cross-syndicate exposure aggregation and concentration alerts."""
+"""Cross-fund exposure aggregation and concentration alerts."""
 from __future__ import annotations
 
 import asyncio
@@ -17,34 +17,34 @@ class ExposureReport:
     total_aum_usd: float
     by_protocol: dict[str, float]
     concentration_pct: dict[str, float]
-    per_syndicate: dict[str, dict[str, float]] = field(default_factory=dict)
+    per_fund: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ConcentrationAlert:
     protocol: str
     pct: float
-    syndicates_exposed: list[str]
+    funds_exposed: list[str]
 
 
 async def aggregate_exposure(
-    sherwood_bin: str, syndicates: list[str]
+    sherwood_bin: str, funds: list[str]
 ) -> ExposureReport:
     total_aum = 0.0
     by_protocol: dict[str, float] = {}
-    per_syndicate: dict[str, dict[str, float]] = {}
+    per_fund: dict[str, dict[str, float]] = {}
 
     results = await asyncio.gather(
-        *(fetch_vault_info(sherwood_bin, s) for s in syndicates),
+        *(fetch_vault_info(sherwood_bin, s) for s in funds),
         return_exceptions=True,
     )
-    for sub, info in zip(syndicates, results):
+    for sub, info in zip(funds, results):
         if isinstance(info, Exception) or not info:
             _log.warning("exposure: skipping %s (%s)", sub, info)
             continue
         total_aum += float(info.get("aumUsd", 0))
         positions = info.get("positions", []) or []
-        per = per_syndicate.setdefault(sub, {})
+        per = per_fund.setdefault(sub, {})
         for p in positions:
             proto = str(p.get("protocol", "")).lower()
             if not proto:
@@ -62,7 +62,7 @@ async def aggregate_exposure(
         total_aum_usd=total_aum,
         by_protocol=by_protocol,
         concentration_pct=concentration,
-        per_syndicate=per_syndicate,
+        per_fund=per_fund,
     )
 
 
@@ -72,8 +72,8 @@ def check_concentration(
     alerts: list[ConcentrationAlert] = []
     for proto, pct in report.concentration_pct.items():
         if pct >= threshold_pct:
-            exposed = [sub for sub, per in report.per_syndicate.items() if proto in per]
+            exposed = [sub for sub, per in report.per_fund.items() if proto in per]
             alerts.append(
-                ConcentrationAlert(protocol=proto, pct=pct, syndicates_exposed=exposed)
+                ConcentrationAlert(protocol=proto, pct=pct, funds_exposed=exposed)
             )
     return alerts

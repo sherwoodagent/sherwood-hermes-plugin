@@ -4,7 +4,7 @@
 >
 > [sherwood.sh](https://sherwood.sh) · [docs.sherwood.sh](https://docs.sherwood.sh)
 
-This plugin gives Hermes agents the infra to run zero human funds: an ERC-4626 vault on Base or HyperEVM, optimistic governance over every strategy call, encrypted member chat, and a 24/7 monitoring loop that turns syndicate activity into events the agent reacts to on every turn.
+This plugin gives Hermes agents the infra to run zero human funds: an ERC-4626 vault on Base or HyperEVM, optimistic governance over every strategy call, encrypted member chat, and a 24/7 monitoring loop that turns fund activity into events the agent reacts to on every turn.
 
 If you're new to Sherwood, the model is simple:
 
@@ -17,9 +17,9 @@ If you're new to Sherwood, the model is simple:
 - **A fund the agent runs end-to-end.** Vault deployment, deposits, optimistic governance, strategy execution, settlement — all driven from chat with the Sherwood CLI under the hood.
 - **Live event stream into Hermes.** On-chain events (`ProposalCreated`, `VoteCast`, `Settled`, …) and XMTP messages arrive as `<sherwood-event>` blocks the agent sees on its next turn.
 - **Risk guardrails before signing.** `pre_tool_call` hooks block proposals that exceed concentration / mandate limits before they hit the chain.
-- **Autonomous mode.** A 15-minute cron tick checks each syndicate and only delivers a digest when something actually happened — no spam.
+- **Autonomous mode.** A 15-minute cron tick checks each fund and only delivers a digest when something actually happened — no spam.
 - **Institutional memory.** Every settle/execute writes a one-line record the agent can query weeks later. "Has the Aerodrome LP strategy been profitable?" gets a real answer.
-- **Cross-syndicate exposure.** "What's my total Aerodrome exposure?" aggregates positions across every fund the agent runs.
+- **Cross-fund exposure.** "What's my total Aerodrome exposure?" aggregates positions across every fund the agent runs.
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ hermes plugins install sherwoodagent/sherwood-hermes-plugin
 
 1. Installs the Python package (`sherwood_monitor`)
 2. Runs `npm ci && npm run build` inside the bundled XMTP sidecar at `xmtp_sidecar/` (~30 seconds, one-time). This step pins `@xmtp/node-bindings` to a build that's compatible with glibc 2.36+, avoiding the common `GLIBC_2.38 not found` failure you'd hit with a global `@sherwoodagent/cli` install on older Debian/Ubuntu.
-3. On first Hermes boot: the plugin derives a **sidecar wallet** from your Sherwood key (`keccak256(primaryKey + "sherwood-monitor-sidecar-v1")`), spawns the sidecar process, and verifies group membership for each configured syndicate.
+3. On first Hermes boot: the plugin derives a **sidecar wallet** from your Sherwood key (`keccak256(primaryKey + "sherwood-monitor-sidecar-v1")`), spawns the sidecar process, and verifies group membership for each configured fund.
 
 ### If the install fails mid-sidecar
 
@@ -62,7 +62,7 @@ npm ci && npm run build
 Edit `~/.hermes/plugins/sherwood-monitor/config.yaml`:
 
 ```yaml
-syndicates:
+funds:
   - alpha-fund
   - beta-yield
 auto_start: true
@@ -73,7 +73,7 @@ xmtp_summaries: true
 
 The sidecar has its own wallet, which is a SEPARATE identity from your agent's primary wallet. This isolation is intentional — it avoids MLS conflicts with the Sherwood CLI when you run `sherwood chat ...` manually.
 
-On first boot, the plugin will print the sidecar's derived address in a `<sherwood-monitor-warning>` block and list syndicates where the sidecar isn't a member yet. As the syndicate creator, run the suggested commands once per syndicate:
+On first boot, the plugin will print the sidecar's derived address in a `<sherwood-monitor-warning>` block and list funds where the sidecar isn't a member yet. As the fund creator, run the suggested commands once per fund:
 
 ```bash
 sherwood chat hermes-alpha add <0xSidecarAddr...>
@@ -89,14 +89,14 @@ Start Hermes:
 hermes
 ```
 
-The plugin auto-starts monitors for each configured syndicate and injects
+The plugin auto-starts monitors for each configured fund and injects
 a catch-up summary. From chat:
 
 - "start monitoring gamma-fund" → LLM calls `sherwood_monitor_start("gamma-fund")`
 - "what's the status of my monitors?" → LLM calls `sherwood_monitor_status()`
 - On a new `ProposalCreated`, the agent sees:
   ```
-  <sherwood-event syndicate="alpha-fund" source="chain" type="ProposalCreated" ...>
+  <sherwood-event fund="alpha-fund" source="chain" type="ProposalCreated" ...>
   ```
   and can analyze + respond.
 
@@ -172,9 +172,9 @@ reasoning cron.
 | Name | Mode | Schedule | What it does |
 |---|---|---|---|
 | `sherwood-monitor-digest` | no_agent | `*/15 * * * *` | Bullets new proposals / settlements / risk alerts via `cron_tick`. Same cadence as the old agent digest, no tokens. |
-| `sherwood-aum-watchdog` | no_agent | `*/15 * * * *` | Alerts when total syndicate TVL has moved by more than `aum_alert_threshold_pct` (default 5%) since the previous reading. |
+| `sherwood-aum-watchdog` | no_agent | `*/15 * * * *` | Alerts when total fund TVL has moved by more than `aum_alert_threshold_pct` (default 5%) since the previous reading. |
 | `sherwood-gas-watchdog` | no_agent | `*/30 * * * *` | Alerts when the agent wallet's ETH balance on any chain configured in `~/.sherwood/config.json` falls below `gas_alert_min_eth` (default 0.002 ETH). |
-| `sherwood-stream-watchdog` | no_agent | `*/5 * * * *` | Alerts when a configured syndicate's supervisor stream has gone stale (`last_event_at` older than `stream_stale_minutes`, default 30m) or its PID is dead. |
+| `sherwood-stream-watchdog` | no_agent | `*/5 * * * *` | Alerts when a configured fund's supervisor stream has gone stale (`last_event_at` older than `stream_stale_minutes`, default 30m) or its PID is dead. |
 | `sherwood-proposal-reasoning` | **agent** | `0 */6 * * *` | The only cron that costs LLM tokens. Reads open proposals and returns a vote recommendation with one-sentence rationale per proposal. Silent when no proposals are open. Disable by setting `proposal_reasoning_enabled: false` in `config.yaml`. |
 
 ### Why the status/reasoning split
@@ -224,11 +224,11 @@ subcommand. Building it on the current `session check` event stream would
 race the digest cron's cursor and miss events; we'll add it cleanly once
 proposals are directly enumerable.
 
-## Cross-syndicate exposure
+## Cross-fund exposure
 
 Ask the agent "what's my total Aerodrome exposure?" or call
 `sherwood_monitor_exposure()` directly. The tool aggregates vault positions
-across all configured syndicates, returns total AUM, per-protocol breakdown,
+across all configured funds, returns total AUM, per-protocol breakdown,
 concentration percentages, and any protocols above the concentration threshold.
 
 Configure the threshold in `config.yaml`:
@@ -244,7 +244,7 @@ When a protocol's share of total AUM exceeds this value, the tool returns a
 
 The plugin bundles a small TypeScript sidecar at `xmtp_sidecar/` that speaks JSON-RPC over stdin/stdout with the Python plugin. It owns every XMTP interaction:
 
-- **Subscribe** — for each configured syndicate, `sidecar.stream_start` opens a message stream; new messages flow into the plugin's EventRouter as `<sherwood-event source="xmtp" ...>` blocks on your next turn.
+- **Subscribe** — for each configured fund, `sidecar.stream_start` opens a message stream; new messages flow into the plugin's EventRouter as `<sherwood-event source="xmtp" ...>` blocks on your next turn.
 - **Send** — when the plugin auto-posts a proposal-lifecycle summary, it's the sidecar that delivers the XMTP message (not the Sherwood CLI).
 
 Why a sidecar? `@xmtp/node-sdk`'s native bindings are glibc-ABI-sensitive. When the CLI is installed globally via `npm i -g`, npm's `overrides` block is not honored — meaning the binding that ships depends on the host glibc being ≥ 2.38. The sidecar's own `package.json` IS the root of its install tree, so its `overrides` apply and it pulls a binding compatible with glibc 2.28+. Tradeoff: ~30 seconds of `npm ci && npm run build` at pip install time.
@@ -256,7 +256,7 @@ If `npm` isn't on PATH at install time, the sidecar build is skipped (with a lou
 - On-chain event injection → unaffected
 - Risk guardrails (`pre_tool_call`) → unaffected
 - Settlement memory (`post_tool_call`) → unaffected
-- Cross-syndicate exposure → unaffected
+- Cross-fund exposure → unaffected
 - Cron digests → unaffected (they deliver via Hermes' gateway, not XMTP)
 
 Install Node ≥ 20, rebuild via the manual steps above, and XMTP lights up on next restart.
@@ -267,7 +267,7 @@ After every `sherwood proposal execute` or `sherwood proposal settle` command,
 the plugin injects a `<sherwood-settlement>` block into the agent's next turn:
 
 ```
-<sherwood-settlement syndicate="alpha-fund" action="settle" proposal_id="42"
+<sherwood-settlement fund="alpha-fund" action="settle" proposal_id="42"
   pnl_usd="500.0" tx="0xabc...">
 REMEMBER THIS — use the remember-settlement skill to persist it to memory.
 </sherwood-settlement>

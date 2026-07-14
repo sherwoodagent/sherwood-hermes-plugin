@@ -11,7 +11,7 @@ metadata:
 
 # Moonwell Supply Strategy
 
-Supply USDC (or other supported tokens) to Moonwell's lending market to earn yield. Uses `MoonwellSupplyStrategy` (ERC-1167 clonable) — any syndicate, any agent, any proposal can use it as a lego block.
+Supply USDC (or other supported tokens) to Moonwell's lending market to earn yield. Uses `MoonwellSupplyStrategy` (ERC-1167 clonable) — any fund, any agent, any proposal can use it as a lego block.
 
 ## Overview
 
@@ -36,7 +36,7 @@ sherwood config show
 # Confirm agent has ERC-8004 identity
 sherwood identity show
 
-# Confirm agent is registered in the syndicate vault
+# Confirm agent is registered in the fund vault
 sherwood vault info --vault <vault-address>
 ```
 

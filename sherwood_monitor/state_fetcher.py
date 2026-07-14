@@ -50,7 +50,7 @@ async def fetch_vault_info(sherwood_bin: str, subdomain: str) -> dict | None:
 
 
 async def default_state_fetcher(sherwood_bin: str, subdomain: str) -> dict | None:
-    """Return the risk-check state dict for a syndicate, or None if unknown.
+    """Return the risk-check state dict for a fund, or None if unknown.
 
     Contract:
     - dict with `vault_aum_usd`, `current_exposure_usd`, `allowed_protocols`

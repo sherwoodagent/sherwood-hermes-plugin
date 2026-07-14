@@ -10,7 +10,7 @@ from sherwood_monitor.hooks import make_session_hooks, on_session_end_factory
 
 @pytest.mark.asyncio
 async def test_session_start_injects_catchup_summary(fixture):
-    cfg = Config(sherwood_bin="sherwood", syndicates=["alpha"], auto_start=False)
+    cfg = Config(sherwood_bin="sherwood", funds=["alpha"], auto_start=False)
     buffer = MagicMock(spec=EventBuffer)
     sup = MagicMock()
     sup.start = AsyncMock()
@@ -25,7 +25,7 @@ async def test_session_start_injects_catchup_summary(fixture):
         hooks = make_session_hooks(cfg=cfg, buffer=buffer, supervisor=sup)
         await hooks["on_session_start"]()
 
-    # Pushed a catch-up summary referencing the syndicate
+    # Pushed a catch-up summary referencing the fund
     assert any(
         "alpha" in call.args[0]
         for call in buffer.push.call_args_list
@@ -34,13 +34,13 @@ async def test_session_start_injects_catchup_summary(fixture):
 
 @pytest.mark.asyncio
 async def test_session_start_auto_starts_supervisors(fixture):
-    cfg = Config(sherwood_bin="sherwood", syndicates=["alpha"], auto_start=True)
+    cfg = Config(sherwood_bin="sherwood", funds=["alpha"], auto_start=True)
     buffer = MagicMock(spec=EventBuffer)
     sup = MagicMock()
     sup.start = AsyncMock()
 
     payload = json.dumps(
-        {"syndicate": "alpha", "messages": [], "events": [], "meta": {"newMessages": 0, "newEvents": 0, "blocksScanned": 0, "lastCheckAt": "never"}}
+        {"fund": "alpha", "messages": [], "events": [], "meta": {"newMessages": 0, "newEvents": 0, "blocksScanned": 0, "lastCheckAt": "never"}}
     )
     proc = MagicMock()
     proc.communicate = AsyncMock(return_value=(payload.encode(), b""))

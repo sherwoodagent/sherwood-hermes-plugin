@@ -25,7 +25,7 @@ def _redirect_paths(monkeypatch, tmp_path):
 
 
 def _cfg(**overrides) -> Config:
-    base = dict(syndicates=["alpha-fund"])
+    base = dict(funds=["alpha-fund"])
     base.update(overrides)
     return Config(**base)
 
@@ -65,18 +65,18 @@ async def test_digest_formats_chain_and_xmtp_events(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_digest_dedupes_concentration_alerts_across_syndicates(monkeypatch, tmp_path):
+async def test_digest_dedupes_concentration_alerts_across_funds(monkeypatch, tmp_path):
     _redirect_paths(monkeypatch, tmp_path)
-    # Both syndicates' cron_tick calls return the same protocol alert — emit once.
+    # Both funds' cron_tick calls return the same protocol alert — emit once.
     fake_tick = AsyncMock(
         return_value={
             "events": [],
             "concentration_alerts": [
-                {"protocol": "aerodrome", "pct": 42.0, "syndicates": ["alpha", "beta"]},
+                {"protocol": "aerodrome", "pct": 42.0, "funds": ["alpha", "beta"]},
             ],
         }
     )
-    cfg = _cfg(syndicates=["alpha", "beta"])
+    cfg = _cfg(funds=["alpha", "beta"])
     with patch("sherwood_monitor.cli_watchdog.cron_tick", fake_tick):
         out = await wd._digest(cfg)
     assert out.count("CONCENTRATION: aerodrome") == 1
@@ -84,15 +84,15 @@ async def test_digest_dedupes_concentration_alerts_across_syndicates(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_digest_swallows_per_syndicate_errors(monkeypatch, tmp_path):
+async def test_digest_swallows_per_fund_errors(monkeypatch, tmp_path):
     _redirect_paths(monkeypatch, tmp_path)
-    # cron_tick raises for one syndicate; the other still produces output.
+    # cron_tick raises for one fund; the other still produces output.
     async def _tick(_bin, sub, **_kw):
         if sub == "alpha":
             raise RuntimeError("boom")
         return {"events": [{"kind": "chain", "type": "ProposalSettled", "proposalId": "9", "block": 200}]}
 
-    cfg = _cfg(syndicates=["alpha", "beta"])
+    cfg = _cfg(funds=["alpha", "beta"])
     with patch("sherwood_monitor.cli_watchdog.cron_tick", side_effect=_tick):
         out = await wd._digest(cfg)
     # Alpha's error did not abort; beta's event survived.
@@ -263,7 +263,7 @@ def test_stream_silent_when_hermes_missing(monkeypatch, tmp_path):
 def test_stream_flags_dead_supervisor(monkeypatch, tmp_path):
     _redirect_paths(monkeypatch, tmp_path)
     status_payload = {
-        "syndicates": [
+        "funds": [
             {"subdomain": "alpha", "pid": 0, "last_event_at": None},
             {"subdomain": "beta", "pid": 1234, "last_event_at": int(__import__("time").time())},
         ]
@@ -283,7 +283,7 @@ def test_stream_flags_stale_event(monkeypatch, tmp_path):
 
     stale_ts = int(_time.time()) - 3600  # 60 min ago
     status_payload = {
-        "syndicates": [{"subdomain": "gamma", "pid": 4242, "last_event_at": stale_ts}]
+        "funds": [{"subdomain": "gamma", "pid": 4242, "last_event_at": stale_ts}]
     }
     with patch("shutil.which", return_value="/usr/local/bin/hermes"), patch(
         "subprocess.run",
@@ -294,11 +294,11 @@ def test_stream_flags_stale_event(monkeypatch, tmp_path):
 
 
 def test_stream_silent_when_status_returns_empty(monkeypatch, tmp_path):
-    """No configured syndicates → empty syndicates list → silent."""
+    """No configured funds → empty funds list → silent."""
     _redirect_paths(monkeypatch, tmp_path)
     with patch("shutil.which", return_value="/usr/local/bin/hermes"), patch(
         "subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=json.dumps({"syndicates": []}), stderr=""),
+        return_value=MagicMock(returncode=0, stdout=json.dumps({"funds": []}), stderr=""),
     ):
         out = wd._stream(_cfg())
     assert out == ""
@@ -309,7 +309,7 @@ def test_stream_silent_when_status_returns_empty(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_main_digest_silent_when_no_syndicates(monkeypatch, tmp_path, capsys):
+def test_main_digest_silent_when_no_funds(monkeypatch, tmp_path, capsys):
     _redirect_paths(monkeypatch, tmp_path)
     rc = wd.main(["digest"])
     assert rc == 0
@@ -322,7 +322,7 @@ def test_main_emits_alert_with_trailing_newline(monkeypatch, tmp_path, capsys):
     # Stub _gas to return a non-empty alert; verify main wraps it correctly.
     monkeypatch.setattr(wd, "_gas", lambda cfg: "TESTING_ALERT_LINE")
     # Avoid load_config touching tmp_path (write a minimal config so it exists).
-    (tmp_path / "config.yaml").write_text("syndicates: [foo]\n")
+    (tmp_path / "config.yaml").write_text("funds: [foo]\n")
     rc = wd.main(["gas"])
     captured = capsys.readouterr()
     assert rc == 0
@@ -331,7 +331,7 @@ def test_main_emits_alert_with_trailing_newline(monkeypatch, tmp_path, capsys):
 
 def test_main_returns_nonzero_on_hard_failure(monkeypatch, tmp_path, capsys):
     _redirect_paths(monkeypatch, tmp_path)
-    (tmp_path / "config.yaml").write_text("syndicates: [foo]\n")
+    (tmp_path / "config.yaml").write_text("funds: [foo]\n")
     monkeypatch.setattr(wd, "_gas", lambda cfg: (_ for _ in ()).throw(RuntimeError("boom")))
     rc = wd.main(["gas"])
     assert rc == 1

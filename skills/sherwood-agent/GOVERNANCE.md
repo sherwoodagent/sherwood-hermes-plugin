@@ -11,7 +11,7 @@ The SyndicateGovernor contract enables on-chain proposal lifecycle:
 
 Protocol fees, the agent fee (agent's cut), and management fees are distributed on settlement from profit only. Fee distribution order: protocol fee → agent fee → management fee.
 
-The agent fee is a **vault-owner property**, not a per-proposal parameter. The vault owner sets one fee for the whole vault via `sherwood syndicate set-agent-fee --bps <bps>` (or on-chain `vault.setAgentFeeBps(bps)`). It defaults to **5% (500 bps)** at vault creation and is capped at **15% (1500 bps)** by the vault. When a proposal is created, the governor **snapshots** the vault's current `agentFeeBps` onto that proposal — immutable for that proposal, so a later owner change can't alter an already-created proposal. At settlement the governor uses that snapshot, clamped to its `maxPerformanceFeeBps`. `propose()` takes no fee argument.
+The agent fee is a **vault-owner property**, not a per-proposal parameter. The vault owner sets one fee for the whole vault via `sherwood fund set-agent-fee --bps <bps>` (or on-chain `vault.setAgentFeeBps(bps)`). It defaults to **5% (500 bps)** at vault creation and is capped at **15% (1500 bps)** by the vault. When a proposal is created, the governor **snapshots** the vault's current `agentFeeBps` onto that proposal — immutable for that proposal, so a later owner change can't alter an already-created proposal. At settlement the governor uses that snapshot, clamped to its `maxPerformanceFeeBps`. `propose()` takes no fee argument.
 
 ## Create a proposal
 
@@ -41,14 +41,14 @@ Execute calls run at proposal execution (open positions). Settlement calls run a
 
 If `--metadata-uri` is not provided, the CLI pins metadata to IPFS through the hosted Sherwood API (`https://sherwood.sh/api/ipfs/upload`), which holds the pinning credentials server-side — no local env vars or Pinata account needed. Optional overrides: `SHERWOOD_API_URL` (alternate API host for uploads), `PINATA_GATEWAY` (alternate gateway for reads). If the upload fails, the CLI warns and falls back to inline base64 `data:` metadata — the proposal still goes through.
 
-> **No fee flag.** `propose` does not accept a fee. The agent's cut is the vault's `agentFeeBps`, set by the vault owner via `sherwood syndicate set-agent-fee --bps <bps>` (default 5%, max 15%). The governor snapshots the vault's `agentFeeBps` onto the proposal at propose time; at settlement it uses that snapshot, clamped to the governor's `maxPerformanceFeeBps`.
+> **No fee flag.** `propose` does not accept a fee. The agent's cut is the vault's `agentFeeBps`, set by the vault owner via `sherwood fund set-agent-fee --bps <bps>` (default 5%, max 15%). The governor snapshots the vault's `agentFeeBps` onto the proposal at propose time; at settlement it uses that snapshot, clamped to the governor's `maxPerformanceFeeBps`.
 
 ## Set the agent fee (vault owner)
 
 The vault owner sets one performance fee for the whole vault. There is no per-proposal fee.
 
 ```bash
-sherwood syndicate set-agent-fee --bps 1500   # 15% of profit at settlement
+sherwood fund set-agent-fee --bps 1500   # 15% of profit at settlement
 ```
 
 Defaults to 500 bps (5%) at vault creation; the vault caps it at 1500 bps (15%). Each proposal snapshots the vault's `agentFeeBps` at propose time; at settlement the governor uses that snapshot, clamped to `maxPerformanceFeeBps`. On-chain equivalent: `vault.setAgentFeeBps(bps)`.
@@ -56,40 +56,35 @@ Defaults to 500 bps (5%) at vault creation; the vault caps it at 1500 bps (15%).
 ## List proposals
 
 ```bash
-sherwood proposal list [--vault <addr>] [--state <filter>] [--chain <network>]
-```
+sherwood proposal list [--vault <addr>] [--state <filter>]```
 
 Filter by state: `pending`, `approved`, `executed`, `settled`, `all` (default: `all`).
 
 ## Show proposal detail
 
 ```bash
-sherwood proposal show <id> [--chain <network>]
-```
+sherwood proposal show <id>```
 
 Displays metadata, state, timestamps, vote breakdown, decoded calls, capital snapshot (if executed), and P&L/fees (if settled).
 
 ## Vote on a proposal
 
 ```bash
-sherwood proposal vote --id <proposalId> --support <for|against|abstain> [--chain <network>]
-```
+sherwood proposal vote --id <proposalId> --support <for|against|abstain>```
 
 Caller must have voting power (vault shares at snapshot). Displays vote weight before confirming.
 
 ## Execute an approved proposal
 
 ```bash
-sherwood proposal execute --id <proposalId> [--chain <network>]
-```
+sherwood proposal execute --id <proposalId>```
 
 Anyone can call. Verifies proposal is Approved, within execution window, no other active strategy, and cooldown has elapsed.
 
 ## Settle an executed proposal
 
 ```bash
-sherwood proposal settle --id <proposalId> [--calls <path-to-json>] [--chain <network>]
-```
+sherwood proposal settle --id <proposalId> [--calls <path-to-json>]```
 
 Auto-routes to the correct settlement path:
 - **Proposer:** `settleProposal` — proposer can call anytime after execution
@@ -101,39 +96,30 @@ Output: P&L, fees distributed, redemptions unlocked.
 ## Cancel a proposal
 
 ```bash
-sherwood proposal cancel --id <proposalId> [--chain <network>]
-```
+sherwood proposal cancel --id <proposalId>```
 
 Proposer can cancel if Pending/Approved. Vault owner can emergency cancel at any non-settled state.
 
 ## Governor info
 
 ```bash
-sherwood governor info [--chain <network>]
-```
+sherwood governor info```
 
 Displays current parameters: voting period, execution window, veto threshold, max performance fee, max strategy duration, cooldown period, protocol fee, and registered vaults.
 
 ## Governor parameter setters (owner only)
 
 ```bash
-sherwood governor set-voting-period --seconds <n> [--chain <network>]
-sherwood governor set-execution-window --seconds <n> [--chain <network>]
-sherwood governor set-veto-threshold --bps <n> [--chain <network>]
-sherwood governor set-max-fee --bps <n> [--chain <network>]
-sherwood governor set-max-duration --seconds <n> [--chain <network>]
-sherwood governor set-cooldown --seconds <n> [--chain <network>]
-sherwood governor set-protocol-fee --bps <n> [--chain <network>]
-```
+sherwood governor set-voting-period --seconds <n>sherwood governor set-execution-window --seconds <n>sherwood governor set-veto-threshold --bps <n>sherwood governor set-max-fee --bps <n>sherwood governor set-max-duration --seconds <n>sherwood governor set-cooldown --seconds <n>sherwood governor set-protocol-fee --bps <n>```
 
 Each validates against hardcoded bounds before submitting.
 
 ## Participation Crons — Customization
 
-On OpenClaw, the CLI auto-registers two cron jobs when you create or join a syndicate (see SKILL.md for overview). To customize:
+On OpenClaw, the CLI auto-registers two cron jobs when you create or join a fund (see SKILL.md for overview). To customize:
 
 ```bash
-# View your syndicate crons
+# View your fund crons
 sherwood session cron <subdomain> --status
 
 # Remove all participation crons
@@ -150,7 +136,7 @@ openclaw cron remove --name sherwood-<subdomain>
 openclaw cron create --name "sherwood-<subdomain>" --every "5m" --session isolated ...
 ```
 
-**Leaving a syndicate:** Crons are not auto-removed. After leaving, clean up manually:
+**Leaving a fund:** Crons are not auto-removed. After leaving, clean up manually:
 
 ```bash
 sherwood session cron <subdomain> --remove

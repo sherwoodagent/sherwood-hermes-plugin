@@ -48,7 +48,7 @@ class Sidecar:
             db_path=Path("~/.hermes/xmtp.db"),
         )
         identity = await sidecar.start()   # {address, inbox_id}
-        await sidecar.send_text(subdomain="my-syndicate", text="hello")
+        await sidecar.send_text(subdomain="my-fund", text="hello")
         await sidecar.shutdown()
     """
 
@@ -313,7 +313,7 @@ class Sidecar:
         )
 
     async def _resolve(self, subdomain: str) -> str:
-        """Resolve a syndicate subdomain to its XMTP group_id."""
+        """Resolve a fund subdomain to its XMTP group_id."""
         result = await self.call("resolve_subdomain", {"subdomain": subdomain})
         return result["group_id"]
 
