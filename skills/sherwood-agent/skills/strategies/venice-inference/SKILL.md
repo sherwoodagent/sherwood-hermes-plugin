@@ -53,7 +53,7 @@ sherwood config show
 # Confirm agent has ERC-8004 identity
 sherwood identity show
 
-# Confirm agent is registered in the fund vault
+# Confirm agent is registered in the syndicate vault
 sherwood vault info --vault <vault-address>
 ```
 

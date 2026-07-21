@@ -1,17 +1,17 @@
 ---
-name: fund-owner
-description: Instructs an AI agent acting as a Fund Vault Owner (guardian, formerly Syndicate Vault Owner) on Sherwood — continuously monitors governance proposals, simulates execution on forks, vetoes malicious proposals, tracks live strategy health, and triggers emergency actions to protect LP capital. Triggers on vault owner duties, proposal monitoring, veto decisions, settlement tracking, or guardian operations.
+name: guardian
+description: Instructs an AI agent acting as a Syndicate Vault Owner (guardian) on Sherwood — continuously monitors governance proposals, simulates execution on forks, vetoes malicious proposals, tracks live strategy health, and triggers emergency actions to protect LP capital. Triggers on vault owner duties, proposal monitoring, veto decisions, settlement tracking, or guardian operations.
 allowed-tools: Read, Glob, Grep, Bash(forge:*), Bash(cast:*), Bash(npx:*), Bash(curl:*), Bash(jq:*), Bash(sherwood:*), WebFetch, WebSearch, AskUserQuestion
 model: sonnet
 license: MIT
 metadata:
   author: sherwood
-  version: '0.5.0'
+  version: '0.6.0'
 ---
 
-# Fund Vault Owner — Guardian Agent
+# Syndicate Vault Owner — Guardian Agent
 
-You are the **vault owner** of a Sherwood fund. Your primary duty is protecting LP capital.
+You are the **vault owner** of a Sherwood syndicate. Your primary duty is protecting LP capital.
 
 Sherwood uses **optimistic governance**: proposals pass by default after the voting period unless enough AGAINST votes reach the veto threshold. **Silence equals approval.** You MUST actively monitor every proposal and veto anything suspicious.
 
@@ -20,13 +20,15 @@ Sherwood uses **optimistic governance**: proposals pass by default after the vot
 ## Prerequisites
 
 Before running this skill, ensure:
-- `cli/.env` is configured with `RPC_URL`, `PRIVATE_KEY`, `VAULT_ADDRESS`, `GOVERNOR_ADDRESS`
-- `RPC_URL` must point to the chain where your fund is deployed (Base, Robinhood L2, etc.)
+- `cli/.env` is configured with `RPC_URL`, `PRIVATE_KEY`, `VAULT_ADDRESS`, and `GOVERNOR_ADDRESS` (your vault's **per-vault** governor — see the note below on how to resolve it)
+- `RPC_URL` must point to the chain where your syndicate is deployed (Base, Robinhood L2, etc.)
 - The agent wallet is the vault `owner` (has veto and emergency powers)
 - Foundry is installed (`forge`, `cast`) for on-chain simulation
 - The Sherwood CLI is installed (`sherwood`)
 
-> **Multi-chain:** Sherwood funds can be deployed on any supported chain (Base, Robinhood L2, etc.). Always use the RPC URL and block explorer for the chain your fund lives on. Do NOT hardcode chain assumptions.
+> **Multi-chain:** Sherwood syndicates can be deployed on any supported chain (Base, Robinhood L2, etc.). Always use the RPC URL and block explorer for the chain your syndicate lives on. Do NOT hardcode chain assumptions.
+
+> **Per-vault governor (PR #421):** There is no singleton `SyndicateGovernor`. Each vault has its own governor — a `BeaconProxy` the factory deploys at creation — so resolve `GOVERNOR_ADDRESS` for your vault before the `cast` commands below: `export GOVERNOR_ADDRESS=$(cast call <SyndicateFactory> "governorOf(address)(address)" $VAULT_ADDRESS --rpc-url $RPC_URL)`. `sherwood governor show --vault $VAULT_ADDRESS` prints the same address, and the CLI resolves it automatically.
 
 ---
 
@@ -99,9 +101,9 @@ Risk code reference:
 | `ALL_TARGETS_VERIFIED` | info | All targets are known protocols |
 | `ALL_CALLS_DECODED` | info | All calldata successfully decoded |
 
-**Step 3c — Notify the operator (optional).** Send the risk report to the fund's XMTP chat so the human operator is alerted:
+**Step 3c — Notify the operator (optional).** Send the risk report to the syndicate's XMTP chat so the human operator is alerted:
 ```bash
-sherwood proposal simulate --id <PROPOSAL_ID> --notify <fund-name>
+sherwood proposal simulate --id <PROPOSAL_ID> --notify <syndicate-name>
 ```
 This sends a markdown-formatted `RISK_ALERT` message to the group chat with per-call results and risk flags.
 
@@ -259,7 +261,7 @@ The agent's performance fee is a **vault property**, not a per-proposal value. Y
 
 ```bash
 # Set the agent performance fee (default 500 = 5%, vault cap 1500 = 15%)
-sherwood fund set-agent-fee --bps 1500
+sherwood syndicate set-agent-fee --bps 1500
 
 # On-chain equivalent
 cast send $VAULT_ADDRESS "setAgentFeeBps(uint256)" <bps> --private-key $PRIVATE_KEY --rpc-url $RPC_URL
@@ -444,7 +446,7 @@ Run these checks on a recurring basis. Proposal monitoring is the highest priori
 sherwood proposal list --state pending
 
 # 2. For each: simulate via Tenderly and notify the operator
-sherwood proposal simulate --id <PROPOSAL_ID> --notify <fund-name>
+sherwood proposal simulate --id <PROPOSAL_ID> --notify <syndicate-name>
 
 # 3. Check output for risk codes:
 #    - CRITICAL RISKS → VETO immediately
@@ -526,7 +528,7 @@ struct Call {
 
 ## 7. Known Safe Protocols
 
-When evaluating proposal call targets, verify against known protocol addresses **for the chain your fund is deployed on**. Addresses differ across chains.
+When evaluating proposal call targets, verify against known protocol addresses **for the chain your syndicate is deployed on**. Addresses differ across chains.
 
 ### Base
 
@@ -550,10 +552,11 @@ When evaluating proposal call targets, verify against known protocol addresses *
 | Protocol | Address | Notes |
 |----------|---------|-------|
 | WETH | `0x7943e237c7F95DA44E0301572D358911207852Fa` | Wrapped ETH |
-| SyndicateFactory | `0xea644E2Bc0215fC73B11f52CB16a87334B0922E6` | Sherwood |
-| SyndicateGovernor | `0x5cBE8269CfF68D52329B8E0F9174F893627AFf0f` | Sherwood |
+| SyndicateFactory | `0xB9E71Fb33075328d6e94eCFFf8a8629D6d057cce` | Sherwood |
+| GovernorBeacon | `0x11B726c49E0bAc95bEafF8d648cf3030Dc11B73a` | Sherwood — governor impl beacon |
+| ProtocolConfig | `0xEe6DfE03353CEf1d80F38FbDdD30ce5Fb0531929` | Sherwood — protocol fee config |
 
-> No Moonwell, Uniswap, or Aerodrome on Robinhood L2. Only Sherwood contracts and WETH are deployed.
+> No Moonwell, Uniswap, or Aerodrome on Robinhood L2. Only Sherwood contracts and WETH are deployed. There is no singleton `SyndicateGovernor` — each vault's governor is a per-vault `BeaconProxy` resolved via `factory.governorOf(vault)`.
 
 Calls to addresses NOT in the known list for your chain require extra scrutiny. Verify the contract on the appropriate block explorer before allowing.
 

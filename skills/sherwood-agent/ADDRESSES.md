@@ -5,8 +5,6 @@ it by default. These addresses are also available in `cli/src/lib/addresses.ts`
 (resolved at runtime). This is the initial deployment target; the protocol will
 expand to more chains over time.
 
-> On-chain contracts keep the `Syndicate*` naming for audit continuity; the product concept is a fund.
-
 > See also: [Deployments reference](https://docs.sherwood.sh/reference/deployments)
 
 ## Robinhood testnet (chain 46630)
@@ -17,17 +15,24 @@ StrategyFactory keyless deploy. Source of truth: `contracts/chains/46630.json`.
 
 | Contract | Address |
 |----------|---------|
-| SyndicateFactory | `0x81F785E31B9f31BC437978B5E7dEe8006F43dd8b` |
-| SyndicateGovernor | `0xdAB22196ac2c6C5C33445f3125C28aF98E0cA2d0` |
-| SyndicateVaultImpl | `0xB21b3af1E9f99222d136517363d0d185AF2449cd` |
-| BatchExecutorLib | `0xB869dF634679C6a36D6C82D47D1793486F4cba3a` |
-| GuardianRegistry | `0x2fe810666E673Fbd87cA00f95EBf82a19A5b543F` |
-| StakedWood (sWOOD) | `0x320911DEF7Ec4c0C435B9cCEE3fAfE9EEad171C9` |
-| WOOD token (fixture) | `0x4435Aae199907f60588902Bcd7c4363a13Bb2951` |
-| PriceRouter | `0x7Cc36bcc6a1f0F2607BacC8692fe2aD52eB14fd7` |
-| PortfolioStrategy (template) | `0x3a6121371D51B59De3A14Bc401EfBd3fb726E109` |
-| StrategyFactory | `0xBBb2884dEAD8235d75a0405ecC3c9F5713cBE904` |
-| UniswapSwapAdapter (Synthra-backed) | `0x2e8aB422Db9127F1a70d8C38A15903f22B51DA97` |
+| SyndicateFactory | `0xB9E71Fb33075328d6e94eCFFf8a8629D6d057cce` |
+| GovernorBeacon | `0x11B726c49E0bAc95bEafF8d648cf3030Dc11B73a` |
+| ProtocolConfig | `0xEe6DfE03353CEf1d80F38FbDdD30ce5Fb0531929` |
+| SyndicateVaultImpl | `0x189160156d470B9ce8A55206DE19Ea60D2638ec6` |
+| BatchExecutorLib | `0xd83dc3A79Bb41a02Ca7aC812c0f52212C1BdBC1B` |
+| GuardianRegistry | `0x57f0fa384d0d7e2F234535d1235440312866872B` |
+| StakedWood (sWOOD) | `0x15F48A9f24c8ECaa8f03c28Ecd1a3b4784CdCb3c` |
+| WOOD token (fixture) | `0xCCb4fB59cf40de1E23083037ee81Da1DD747D8d7` |
+| PriceRouter | `0xDd302ffcfA08071780eC1A2f12BccFB9ba6b6731` |
+| PortfolioStrategy (template) | `0x67420Cc504d70a42Adfd8867d878afe0978C7d10` |
+| StrategyFactory | `0xE1D082ef1CE17f9C6a46e97928337267BFF0C309` |
+| UniswapSwapAdapter (Synthra-backed) | `0x4fc3492117cC3bbcE0b210D22a8DC244f9d86490` |
+
+There is **no singleton `SyndicateGovernor`**. Since PR #421 each vault has its own
+governor — a `BeaconProxy` the factory deploys at creation, all sharing one
+implementation via the `GovernorBeacon` above — resolved at runtime via
+`factory.governorOf(vault)` (`sherwood governor show --vault <addr>` prints it; the
+CLI resolves it for you). Protocol-level fees live on the shared `ProtocolConfig`.
 
 ### Tokens
 
@@ -53,7 +58,7 @@ verifier proxy.
 | Synthra Router | `0x3Ce954107b1A675826B33bF23060Dd655e3758fE` |
 | Synthra Quoter | `0x231606c321A99DE81e28fE48B07a93F1ba49e713` |
 | Synthra V3 Factory | `0x911b4000D3422F482F4062a913885f7b035382Df` |
-| Synthra QuoterV2 shim | `0xC703139b5C7EA26D906fcd6d335798d2EC9A1262` |
+| Synthra QuoterV2 shim | `0xb3C009aECAeDd5ccC62Ec12eDAAA55F19C4A1eFb` |
 | Chainlink Verifier Proxy | `0x72790f9eB82db492a7DDb6d2af22A270Dcc3Db64` |
 | Permit2 | `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
 | Multicall3 | `0xcA11bde05977b3631167028862bE2a173976CA11` |
@@ -63,11 +68,11 @@ verifier proxy.
 The following are not deployed on the current target chain and come online as
 Sherwood expands to more chains:
 
-- **ERC-8004 agent identity** — no IdentityRegistry on this chain; `fund create`
-  and `fund add` skip identity verification (registries are `address(0)`), and
+- **ERC-8004 agent identity** — no IdentityRegistry on this chain; `syndicate create`
+  and `syndicate add` skip identity verification (registries are `address(0)`), and
   `agentId=0` is used when `--agent-id` is omitted.
 - **EAS coordination attestations** (join requests / approvals) — no EAS predeploy.
-- **ENS subnames (Durin)** — no registrar; `fund create` skips ENS registration.
+- **ENS subnames (Durin)** — no registrar; `syndicate create` skips ENS registration.
 - **Strategies other than Portfolio** — Moonwell (supply / wstETH), Aerodrome LP,
   Leveraged Aerodrome CL, Venice inference, Mamo yield, Hyperliquid perp/grid.
 
@@ -79,8 +84,8 @@ tokenized stocks/crypto with on-chain rebalancing through Synthra. Use
 
 | Template | Address |
 |----------|---------|
-| PortfolioStrategy | `0x3a6121371D51B59De3A14Bc401EfBd3fb726E109` |
-| UniswapSwapAdapter (Synthra-backed) | `0x2e8aB422Db9127F1a70d8C38A15903f22B51DA97` |
+| PortfolioStrategy | `0x67420Cc504d70a42Adfd8867d878afe0978C7d10` |
+| UniswapSwapAdapter (Synthra-backed) | `0x4fc3492117cC3bbcE0b210D22a8DC244f9d86490` |
 
 Under the V2 live-NAV model the strategy is never trusted for value: it reports its
 on-venue holdings via `IStrategy.positions()` and the vault prices them through the
@@ -91,7 +96,7 @@ through the async-redeem queue (Lane B), settling at one frozen per-proposal pri
 
 ```bash
 sherwood vault add-target --target 0x7943e237c7F95DA44E0301572D358911207852Fa  # WETH (vault asset)
-sherwood vault add-target --target 0x2e8aB422Db9127F1a70d8C38A15903f22B51DA97  # UniswapSwapAdapter (Synthra)
+sherwood vault add-target --target 0x4fc3492117cC3bbcE0b210D22a8DC244f9d86490  # UniswapSwapAdapter (Synthra)
 sherwood vault add-target --target 0x3Ce954107b1A675826B33bF23060Dd655e3758fE  # Synthra Router
 sherwood vault add-target --target <stock-token-addresses>                       # e.g. TSLA / AMZN / AMD
 sherwood vault add-target --target <strategy-clone-address>                       # Your strategy contract

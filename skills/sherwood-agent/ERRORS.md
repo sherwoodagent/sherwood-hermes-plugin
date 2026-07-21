@@ -13,9 +13,9 @@ Common errors, causes, and fixes when using the Sherwood CLI.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `NotCreator` | Wallet isn't the fund creator | Use the creator wallet |
+| `NotCreator` | Wallet isn't the syndicate creator | Use the creator wallet |
 | `NotAllowedTarget` | Contract not in vault allowlist | `sherwood vault add-target --target 0x...` |
-| `DepositorNotApproved` | LP not whitelisted | `sherwood fund approve-depositor --depositor 0x...` |
+| `DepositorNotApproved` | LP not whitelisted | `sherwood syndicate approve-depositor --depositor 0x...` |
 
 ## Execution Errors
 
