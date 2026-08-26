@@ -23,6 +23,18 @@ CHAIN_INJECT_ONLY = {
     "RedemptionsUnlockedEvent",
     "Deposited",
     "Withdrawn",
+    # SandboxRun(uint256 indexed pid, address indexed sandbox, uint256 funding)
+    # topic0 0x6fbfaa03c3db533cf914b5a5b997d8244b90daa0e259cf25627e7901d536dc16
+    # (mechanical dry-run execution; context only, the payload-stored event is
+    # the one worth surfacing to humans)
+    # NAME COLLISION: ICallSandbox declares a DIFFERENT SandboxRun with shape
+    # (address,uint256,uint256), topic0 0x2638b671... — routing here is by
+    # name only, so "SandboxRun" means exclusively the ISyndicateVault event
+    # above. The producer (`sherwood session check`, cli/src/lib/events.ts)
+    # emits only the vault-side event under this type string; if the
+    # ICallSandbox event is ever wired, it must arrive under a distinct type
+    # (e.g. "CallSandboxRun") and get its own entry here.
+    "SandboxRun",
 }
 
 # Events that inject AND auto-post a summary to XMTP
@@ -31,6 +43,18 @@ CHAIN_INJECT_AND_POST = {
     "ProposalExecuted",
     "ProposalSettled",
     "ProposalCancelled",
+    # SandboxPayloadStored(uint256 indexed proposalId, uint256 funding, uint256 callCount, uint256 tokenCount)
+    # topic0 0x393ef493444e6e45462f29fd987511c4cd17f31055d75871c2fe6cee68c82ffd
+    "SandboxPayloadStored",
+    # ReviewOpened(uint256 indexed proposalId, uint128 totalStakeAtOpen)
+    # topic0 0x4d948f9d06779a41bd21bacd6cba0b797cf95b1f539bb54987679283d6792be5
+    "ReviewOpened",
+    # ReviewResolved(uint256 indexed proposalId, bool blocked, uint256 slashedAmount)
+    # topic0 0xd889790c2115ffccca59bed8322903510682f6a6bdf7fe5752bfde7ada8b4f36
+    "ReviewResolved",
+    # GuardianSlashed(bytes32 indexed reviewKey, address indexed approver, uint256 ownSlash, uint256 delegatedSlash)
+    # topic0 0x02f6fd955b5d82d2a69f041915e84a751e27676108460d0c3b711da57520db68
+    "GuardianSlashed",
 }
 
 
@@ -97,11 +121,59 @@ def _format_proposal_cancelled_summary(ev: ChainEvent) -> str:
     )
 
 
+def _format_sandbox_payload_stored_summary(ev: ChainEvent) -> str:
+    funding = ev.args.get("funding", "?")
+    try:
+        funding_usd = f"${int(funding) / 1_000_000:,.2f}"
+    except ValueError:
+        funding_usd = funding
+    return (
+        f"**Proposal #{ev.args.get('proposalId', '?')} — sandbox payload stored** — "
+        f"funding: {funding_usd} (USDC), calls: {ev.args.get('callCount', '?')}, "
+        f"tokens: {ev.args.get('tokenCount', '?')}. Guardians: payload is ready for review."
+    )
+
+
+def _fmt_wood(raw: str) -> str:
+    try:
+        return f"{int(raw) / 1e18:,.2f} WOOD"
+    except ValueError:
+        return raw
+
+
+def _format_review_opened_summary(ev: ChainEvent) -> str:
+    return (
+        f"**Guardian review opened — proposal #{ev.args.get('proposalId', '?')}** — "
+        f"total stake at open: {_fmt_wood(ev.args.get('totalStakeAtOpen', '?'))}"
+    )
+
+
+def _format_review_resolved_summary(ev: ChainEvent) -> str:
+    blocked = str(ev.args.get("blocked", "?")).lower() in {"true", "1"}
+    verdict = "BLOCKED" if blocked else "cleared"
+    return (
+        f"**Guardian review resolved — proposal #{ev.args.get('proposalId', '?')}** — "
+        f"verdict: {verdict}, slashed: {_fmt_wood(ev.args.get('slashedAmount', '?'))}"
+    )
+
+
+def _format_guardian_slashed_summary(ev: ChainEvent) -> str:
+    return (
+        f"**Guardian slashed** — approver `{ev.args.get('approver', '?')}` "
+        f"lost {_fmt_wood(ev.args.get('ownSlash', '?'))} "
+        f"(review `{ev.args.get('reviewKey', '?')}`)"
+    )
+
+
 _CHAIN_SUMMARY_FORMATTERS: dict[str, Callable[[ChainEvent], str]] = {
     "ProposalCreated": _format_proposal_created_summary,
     "ProposalExecuted": _format_proposal_executed_summary,
     "ProposalSettled": _format_proposal_settled_summary,
     "ProposalCancelled": _format_proposal_cancelled_summary,
+    "SandboxPayloadStored": _format_sandbox_payload_stored_summary,
+    "ReviewOpened": _format_review_opened_summary,
+    "ReviewResolved": _format_review_resolved_summary,
+    "GuardianSlashed": _format_guardian_slashed_summary,
 }
 
 

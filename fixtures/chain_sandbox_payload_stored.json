@@ -1,0 +1,12 @@
+{
+  "source": "chain",
+  "type": "SandboxPayloadStored",
+  "block": 22501020,
+  "tx": "0xccc333",
+  "args": {
+    "proposalId": "42",
+    "funding": "250000000",
+    "callCount": "3",
+    "tokenCount": "2"
+  }
+}

@@ -26,6 +26,13 @@ INTERESTING_CHAIN = {
     "ProposalSettled",
     "ProposalCancelled",
     "ProposalExecuted",
+    # Sandbox lifecycle (SyndicateGovernor / SyndicateVault)
+    "SandboxPayloadStored",
+    "SandboxRun",
+    # Guardian review lifecycle (GuardianRegistry / StakedWood)
+    "ReviewOpened",
+    "ReviewResolved",
+    "GuardianSlashed",
 }
 INTERESTING_XMTP = {"RISK_ALERT", "APPROVAL_REQUEST"}
 

@@ -1,0 +1,11 @@
+{
+  "source": "chain",
+  "type": "ReviewResolved",
+  "block": 22501040,
+  "tx": "0xfff666",
+  "args": {
+    "proposalId": "42",
+    "blocked": "true",
+    "slashedAmount": "300000000000000000000"
+  }
+}
