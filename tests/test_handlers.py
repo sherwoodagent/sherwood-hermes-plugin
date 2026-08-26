@@ -187,3 +187,98 @@ async def test_strategy_proposal_injects(cfg):
         "alpha", _msg("STRATEGY_PROPOSAL", "Aero LP"), buffer, cfg, post
     )
     buffer.push.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Sandbox + guardian events (SHE-98) — fixture-driven, end to end:
+# event log JSON -> decode_record -> handle_chain_event -> auto-post.
+# ---------------------------------------------------------------------------
+
+from sherwood_monitor.models import decode_record
+
+
+@pytest.mark.asyncio
+async def test_sandbox_payload_stored_injects_and_posts(cfg, fixture):
+    buffer = MagicMock(spec=EventBuffer)
+    post = AsyncMock()
+    ev = decode_record(fixture("chain_sandbox_payload_stored"))
+    await handle_chain_event("alpha", ev, buffer, cfg, post)
+    buffer.push.assert_called_once()
+    injected = buffer.push.call_args.args[0]
+    assert 'type="SandboxPayloadStored"' in injected
+    post.assert_called_once()
+    assert post.call_args.args[0] == "alpha"
+    summary = post.call_args.args[1]
+    assert "Proposal #42" in summary
+    assert "sandbox payload stored" in summary
+    assert "$250.00" in summary  # funding 250000000 = $250.00 USDC
+    assert "calls: 3" in summary
+    assert "tokens: 2" in summary
+
+
+@pytest.mark.asyncio
+async def test_sandbox_run_injects_no_post(cfg, fixture):
+    buffer = MagicMock(spec=EventBuffer)
+    post = AsyncMock()
+    ev = decode_record(fixture("chain_sandbox_run"))
+    await handle_chain_event("alpha", ev, buffer, cfg, post)
+    buffer.push.assert_called_once()
+    assert 'type="SandboxRun"' in buffer.push.call_args.args[0]
+    post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_review_opened_injects_and_posts(cfg, fixture):
+    buffer = MagicMock(spec=EventBuffer)
+    post = AsyncMock()
+    ev = decode_record(fixture("chain_review_opened"))
+    await handle_chain_event("alpha", ev, buffer, cfg, post)
+    buffer.push.assert_called_once()
+    post.assert_called_once()
+    summary = post.call_args.args[1]
+    assert "Guardian review opened" in summary
+    assert "proposal #42" in summary
+    assert "1,500.00 WOOD" in summary  # 1500e18 stake
+
+
+@pytest.mark.asyncio
+async def test_review_resolved_blocked_injects_and_posts(cfg, fixture):
+    buffer = MagicMock(spec=EventBuffer)
+    post = AsyncMock()
+    ev = decode_record(fixture("chain_review_resolved"))
+    await handle_chain_event("alpha", ev, buffer, cfg, post)
+    buffer.push.assert_called_once()
+    post.assert_called_once()
+    summary = post.call_args.args[1]
+    assert "Guardian review resolved" in summary
+    assert "BLOCKED" in summary
+    assert "300.00 WOOD" in summary
+
+
+@pytest.mark.asyncio
+async def test_review_resolved_cleared_verdict(cfg):
+    buffer = MagicMock(spec=EventBuffer)
+    post = AsyncMock()
+    ev = _event(
+        "ReviewResolved",
+        {"proposalId": "7", "blocked": "false", "slashedAmount": "0"},
+    )
+    await handle_chain_event("alpha", ev, buffer, cfg, post)
+    post.assert_called_once()
+    summary = post.call_args.args[1]
+    assert "cleared" in summary
+    assert "BLOCKED" not in summary
+
+
+@pytest.mark.asyncio
+async def test_guardian_slashed_injects_and_posts(cfg, fixture):
+    buffer = MagicMock(spec=EventBuffer)
+    post = AsyncMock()
+    ev = decode_record(fixture("chain_guardian_slashed"))
+    await handle_chain_event("alpha", ev, buffer, cfg, post)
+    buffer.push.assert_called_once()
+    post.assert_called_once()
+    summary = post.call_args.args[1]
+    assert "Guardian slashed" in summary
+    assert "0xGuardian00000000000000000000000000000005" in summary
+    assert "150.00 WOOD" in summary

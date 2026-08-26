@@ -1,0 +1,10 @@
+{
+  "source": "chain",
+  "type": "ReviewOpened",
+  "block": 22501030,
+  "tx": "0xeee555",
+  "args": {
+    "proposalId": "42",
+    "totalStakeAtOpen": "1500000000000000000000"
+  }
+}

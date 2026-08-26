@@ -253,3 +253,28 @@ async def test_concurrent_ticks_both_cursors_persisted(tmp_path, monkeypatch):
     assert "beta" in data
     assert data["alpha"]["block"] == 100
     assert data["beta"]["block"] == 200
+
+
+def test_sandbox_and_guardian_events_are_interesting():
+    """SHE-98: sandbox + guardian review events survive the cron filter."""
+    payload = {
+        "events": [
+            {"type": "SandboxPayloadStored", "block": 200, "proposalId": "42"},
+            {"type": "SandboxRun", "block": 201, "pid": "42"},
+            {"type": "ReviewOpened", "block": 202, "proposalId": "42"},
+            {"type": "ReviewResolved", "block": 203, "proposalId": "42"},
+            {"type": "GuardianSlashed", "block": 204, "approver": "0xg"},
+            {"type": "VoteCast", "block": 205, "voter": "0xabc"},
+        ],
+        "messages": [],
+    }
+    events, max_block, _ = _filter_interesting(payload, 0, 0.0)
+    types_ = [e["type"] for e in events]
+    assert types_ == [
+        "SandboxPayloadStored",
+        "SandboxRun",
+        "ReviewOpened",
+        "ReviewResolved",
+        "GuardianSlashed",
+    ]
+    assert max_block == 205

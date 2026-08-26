@@ -1,0 +1,12 @@
+{
+  "source": "chain",
+  "type": "GuardianSlashed",
+  "block": 22501041,
+  "tx": "0xabc777",
+  "args": {
+    "reviewKey": "0x9f2a1c000000000000000000000000000000000000000000000000000000beef",
+    "approver": "0xGuardian00000000000000000000000000000005",
+    "ownSlash": "150000000000000000000",
+    "delegatedSlash": "0"
+  }
+}
