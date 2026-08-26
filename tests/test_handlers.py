@@ -5,7 +5,7 @@ import pytest
 from sherwood_monitor.config import Config
 from sherwood_monitor.event_buffer import EventBuffer
 from sherwood_monitor.handlers import handle_chain_event
-from sherwood_monitor.models import ChainEvent
+from sherwood_monitor.models import ChainEvent, decode_record
 
 
 @pytest.fixture
@@ -193,8 +193,6 @@ async def test_strategy_proposal_injects(cfg):
 # Sandbox + guardian events (SHE-98) — fixture-driven, end to end:
 # event log JSON -> decode_record -> handle_chain_event -> auto-post.
 # ---------------------------------------------------------------------------
-
-from sherwood_monitor.models import decode_record
 
 
 @pytest.mark.asyncio

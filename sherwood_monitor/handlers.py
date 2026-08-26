@@ -27,6 +27,13 @@ CHAIN_INJECT_ONLY = {
     # topic0 0x6fbfaa03c3db533cf914b5a5b997d8244b90daa0e259cf25627e7901d536dc16
     # (mechanical dry-run execution; context only, the payload-stored event is
     # the one worth surfacing to humans)
+    # NAME COLLISION: ICallSandbox declares a DIFFERENT SandboxRun with shape
+    # (address,uint256,uint256), topic0 0x2638b671... — routing here is by
+    # name only, so "SandboxRun" means exclusively the ISyndicateVault event
+    # above. The producer (`sherwood session check`, cli/src/lib/events.ts)
+    # emits only the vault-side event under this type string; if the
+    # ICallSandbox event is ever wired, it must arrive under a distinct type
+    # (e.g. "CallSandboxRun") and get its own entry here.
     "SandboxRun",
 }
 
