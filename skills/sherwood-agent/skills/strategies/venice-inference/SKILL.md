@@ -1,19 +1,23 @@
 ---
 name: venice-inference
-description: Venice VVV staking loan model — vault lends asset to agent for private inference, agent repays principal + profit from off-chain strategy
-allowed-tools: Read, Glob, Grep, Bash(sherwood *), Bash(npm *), Bash(npx *), WebFetch, WebSearch, AskUserQuestion
 model: sonnet
+description: Venice VVV staking loan model — vault lends asset to agent for private inference, agent repays principal + profit from off-chain strategy. Not available on Robinhood Chain (4663), where Sherwood is live; retained for reference only. Triggers on Venice, VVV, sVVV, private inference funding.
+allowed-tools: Read Glob Grep Bash(sherwood:*) Bash(npm:*) Bash(npx:*) WebFetch WebSearch AskUserQuestion
 license: MIT
 metadata:
   author: sherwood
-  version: '0.2.0'
+  version: '0.3.2'
 ---
 
 # Venice Inference Strategy
 
+> **Not available on Robinhood Chain (4663), where Sherwood is live.** VVV staking lives on another chain and `VeniceInferenceStrategy` is not a template on 4663 (`sherwood strategy list` does not show it). This skill is retained for reference; do not propose it. The addresses below are the venue's own on another chain.
+
 Loan-model strategy: vault lends asset to an agent for Venice private inference. The agent stakes VVV for sVVV (their inference license), uses Venice to research and execute off-chain strategies, and repays the vault in the vault's asset (principal + profit).
 
 sVVV is **non-transferrable** on Base — it stays with the agent permanently as their inference license.
+
+> **Unaudited.** `VeniceInferenceStrategy` is in neither the core protocol (which removed it) nor `sherwood-strategies`. Treat it as unaudited: before proposing or approving it, run the checks in [Strategies from `sherwood-strategies` are unaudited](../../../SKILL.md#strategies-from-sherwood-strategies-are-unaudited) and tell the user it is used at their own risk.
 
 ## Overview
 
@@ -51,7 +55,7 @@ Vault holds USDC or another asset. Strategy swaps to VVV via Aerodrome Router, t
 sherwood config show
 
 # Confirm agent has ERC-8004 identity
-sherwood identity show
+sherwood identity status
 
 # Confirm agent is registered in the syndicate vault
 sherwood vault info --vault <vault-address>
@@ -205,7 +209,7 @@ IERC20(asset).safeTransferFrom(agent, vault, repaymentAmount)
 
 ## Governor Integration
 
-- **Allowlisting:** The vault must allowlist the strategy clone address, VVV token, sVVV staking contract, and Aerodrome Router (swap path only) as batch targets via `sherwood vault add-target`.
+- **Batch callees:** There is no vault-side target list and no callee allowlist. The batch names the strategy clone, which must be registered on `StrategyFactory` (`isRegisteredStrategy`) or the call reverts `NotARegisteredStrategy(target)`; the vault `asset()` is the only other permitted target, and its leg must be allowance-shaped or a `transferFrom` from the vault. The VVV token, sVVV staking contract and Aerodrome Router are the clone's own counterparties, not batch targets. Approve spenders are not allowlisted — their allowance is reset after the batch.
 - **Gas costs:** The proposer (agent) pays gas for clone deployment + initialization. The governor pays gas for proposal execution and settlement.
 - **updateParams():** Callable directly by the proposer while strategy is in Executed state. No governance proposal needed. Used to set `repaymentAmount` (principal + profit) and adjust swap slippage.
 - **Agent repayment:** Before settlement, agent must hold enough vault asset and approve the strategy clone. If agent can't repay, settlement reverts — vault owner can emergency settle.
@@ -223,7 +227,11 @@ IERC20(asset).safeTransferFrom(agent, vault, repaymentAmount)
 | USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 | WETH | `0x4200000000000000000000000000000000000006` |
 
-## Required Allowlist Targets
+## Required batch callees
+
+These are the venues the strategy clone talks to. They are **not** batch targets and
+need no callee standing; a swap adapter or price source is checked strategy-side
+against `TierRegistry.isCounterpartyAllowed`. Not a vault-side target list.
 
 For governance proposals using VeniceInferenceStrategy:
 

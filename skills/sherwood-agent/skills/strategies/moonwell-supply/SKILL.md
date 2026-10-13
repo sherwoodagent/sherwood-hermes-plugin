@@ -1,17 +1,21 @@
 ---
 name: moonwell-supply
-description: Moonwell USDC supply strategy via governance proposals — supply to lending market, earn yield, redeem on settlement
-allowed-tools: Read, Glob, Grep, Bash(sherwood *), Bash(npm *), Bash(npx *), WebFetch, WebSearch, AskUserQuestion
 model: sonnet
+description: Moonwell USDC supply strategy via governance proposals — supply to lending market, earn yield, redeem on settlement. Not available on Robinhood Chain (4663), where Sherwood is live; retained for reference only. Triggers on Moonwell, mToken supply, lending-market yield strategies.
+allowed-tools: Read Glob Grep Bash(sherwood:*) Bash(npm:*) Bash(npx:*) WebFetch WebSearch AskUserQuestion
 license: MIT
 metadata:
   author: sherwood
-  version: '0.1.0'
+  version: '0.2.2'
 ---
 
 # Moonwell Supply Strategy
 
+> **Not available on Robinhood Chain (4663), where Sherwood is live.** Moonwell is not deployed there and `MoonwellSupplyStrategy` is not a template on 4663 (`sherwood strategy list` does not show it). This skill is retained for reference; do not propose it. The addresses below are the venue's own on another chain.
+
 Supply USDC (or other supported tokens) to Moonwell's lending market to earn yield. Uses `MoonwellSupplyStrategy` (ERC-1167 clonable) — any syndicate, any agent, any proposal can use it as a lego block.
+
+> **Unaudited.** `MoonwellSupplyStrategy` is in neither the core protocol (which removed it) nor `sherwood-strategies`. Treat it as unaudited: before proposing or approving it, run the checks in [Strategies from `sherwood-strategies` are unaudited](../../../SKILL.md#strategies-from-sherwood-strategies-are-unaudited) and tell the user it is used at their own risk.
 
 ## Overview
 
@@ -34,22 +38,31 @@ Vault (holds USDC + yield)
 sherwood config show
 
 # Confirm agent has ERC-8004 identity
-sherwood identity show
+sherwood identity status
 
 # Confirm agent is registered in the syndicate vault
 sherwood vault info --vault <vault-address>
 ```
 
-### Step 2: Add allowlist targets
+### Step 2: Confirm batch callees
 
-The vault must allowlist the protocol addresses used by the strategy. Do this before creating a proposal.
+There is **no vault-side target list** and no CLI command that adds one, and no
+callee or adapter allowlist either. The vault `asset()` is the sole structural
+exemption; every other batch target must be a strategy registered on
+`StrategyFactory` (`isRegisteredStrategy`, permissionless) or the batch reverts
+`NotARegisteredStrategy(target)`. The mToken and underlying below are reached by
+the **strategy clone**, not named as batch targets.
 
-```bash
-# Required for Moonwell Supply
-sherwood vault add-target --target 0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22  # Moonwell mUSDC
-sherwood vault add-target --target 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913  # USDC
-# Strategy clone address — add after cloning (Step 3 prints it)
-```
+For Moonwell Supply, a typical execute/settle batch names:
+
+| Role | Address |
+|------|---------|
+| Moonwell mUSDC | `0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22` |
+| USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+| Strategy clone | printed by `sherwood strategy propose` (Step 3) |
+
+Confirm these have registry standing before proposing. Class-certified strategy
+clones inherit callee standing from their template class.
 
 ### Step 3: Clone + init + build calls (all-in-one)
 
@@ -63,9 +76,6 @@ sherwood strategy propose moonwell-supply \
   --min-redeem 99.5 \
   --token USDC \
   --write-calls ./moonwell-calls
-
-# Add the clone address to vault allowlist
-sherwood vault add-target --target <clone-address>
 
 # Submit the proposal
 sherwood proposal create \
@@ -176,7 +186,7 @@ Pending → execute() → Executed → settle() → Settled
 
 ## Governor Integration
 
-- **Allowlisting:** The vault must allowlist the strategy clone address and the mToken (e.g., mUSDC) and underlying (e.g., USDC) as batch targets via `sherwood vault add-target`. Without this, `executeGovernorBatch` will revert.
+- **Batch callees:** There is no vault-side target list and no callee allowlist. The batch names the strategy clone, which must be registered on `StrategyFactory` (`isRegisteredStrategy`) or the call reverts `NotARegisteredStrategy(target)`; the vault `asset()` is the only other permitted target, and its leg must be allowance-shaped or a `transferFrom` from the vault. The mToken and underlying are the clone's own counterparties, not batch targets. Approve spenders are not allowlisted — their allowance is reset after the batch.
 - **Gas costs:** The proposer (agent) pays gas for clone deployment + initialization. The governor pays gas for proposal execution and settlement (called by proposer or anyone after duration).
 - **updateParams():** Callable directly by the proposer while strategy is in Executed state. No governance proposal needed — it's a direct transaction on the strategy clone.
 - **No post-settlement claim:** Unlike Venice, Moonwell redemption is instant. Settlement returns USDC to vault in a single transaction.
@@ -190,10 +200,15 @@ Pending → execute() → Executed → settle() → Settled
 | Moonwell mWETH | `0x628ff693426583D9a7FB391E54366292F509D457` |
 | Moonwell Comptroller | `0xfBb21d0380beE3312B33c4353c8936a0F13EF26C` |
 
-## Required Allowlist Targets
+## Required batch callees
 
-```bash
-sherwood vault add-target --target 0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22  # Moonwell mUSDC
-sherwood vault add-target --target 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913  # USDC
-sherwood vault add-target --target <strategy-clone-address>                      # Your strategy contract
-```
+These are the venues the strategy clone talks to. They are **not** batch targets and
+need no callee standing; a lending venue is checked strategy-side against
+`TierRegistry.isCounterpartyAllowed` (`MorphoSupplyStrategy` reverts `MorphoNotAllowed`
+on its own). Not a vault-side target list.
+
+| Role | Address |
+|------|---------|
+| Moonwell mUSDC | `0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22` |
+| USDC | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+| Strategy clone | printed by `sherwood strategy propose` |
