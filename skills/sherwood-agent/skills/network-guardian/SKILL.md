@@ -56,7 +56,7 @@ Launch values from `script/robinhood-mainnet/RobinhoodParams.sol` on `v1-deploy`
 | Slashed WOOD | **burned** to `0x…dEaD` — the slash pays nobody | — |
 | Epoch length | 7 d; an approve lock is held until its bucket ends + the 14 d challenge window: **23–53 d** after the Approve | `ExposureLedger.epochLength`, `challengeWindow` |
 | Covered TVL cap | $1M of required coverage per proposal | `ExposureLedger.coveredTvlCapUsd` |
-| WOOD valuation | haircut price: 50% of `min(cap, 24 h two-pool TWAP)` | `ExposureLedger.woodHaircutBps`, `woodPriceX8` |
+| WOOD valuation | haircut price: 50% of `min(cap, 1 h WOOD/WETH V3 TWAP x ETH/USD)`; the cap is seated at 2x the TWAP | `ExposureLedger.woodHaircutBps`, `woodPriceX8` |
 
 Consequences you must plan around:
 
