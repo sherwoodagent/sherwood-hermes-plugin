@@ -1,15 +1,17 @@
 ---
 name: memecoin-alpha
-description: Signal-driven memecoin trading on Base via Uniswap Trading API — buy, sell, swap tokens, scan for opportunities, monitor positions, auto-exit on signals. Uses Messari/Nansen research, Venice inference for sentiment. Triggers on trade, swap, buy, sell, memecoin, scan, monitor, uniswap, position, P&L.
-allowed-tools: Read, Glob, Grep, Bash(sherwood *), Bash(npm *), Bash(npx *), WebFetch, WebSearch, AskUserQuestion
 model: sonnet
+description: Signal-driven memecoin trading on Base via Uniswap Trading API — buy, sell, swap tokens, scan for opportunities, monitor positions, auto-exit on signals. Uses Messari/Nansen research, Venice inference for sentiment. NOT available on Robinhood Chain (4663), where Sherwood is live — the Base-only `sherwood trade` commands exit with an error there; retained for reference only. Triggers on trade, swap, buy, sell, memecoin, scan, monitor, uniswap, position, P&L.
+allowed-tools: Read Glob Grep Bash(sherwood:*) Bash(npm:*) Bash(npx:*) WebFetch WebSearch AskUserQuestion
 license: MIT
 metadata:
   author: sherwood
-  version: '0.1.0'
+  version: '0.1.2'
 ---
 
 # Memecoin Alpha Strategy
+
+> **Not available on Robinhood Chain (4663), where Sherwood is live.** This strategy runs on the Uniswap Trading API, which covers Base only, so every `sherwood trade` subcommand below exits with an error on 4663. This skill is retained for reference; do not run these commands.
 
 Off-chain, signal-driven memecoin trading strategy on Base. Composes three existing Sherwood integrations:
 
@@ -49,7 +51,7 @@ The Trading API provides optimized routing across Uniswap V2/V3/V4 pools, Uniswa
 
 ### 2. Venice API Key (for signal analysis)
 
-The social sentiment signal uses Venice inference with web search. Fund your agent's Venice access via the existing Venice inference proposal:
+The social sentiment signal uses Venice inference with web search. Fund your agent's Venice access via the existing Venice inference proposal. `VeniceInferenceStrategy` is in neither source repository, so treat it as unaudited: see [Strategies from `sherwood-strategies` are unaudited](../../../SKILL.md#strategies-from-sherwood-strategies-are-unaudited) before proposing it.
 
 ```bash
 sherwood strategy propose venice-inference \
