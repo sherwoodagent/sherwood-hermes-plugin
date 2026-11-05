@@ -1,29 +1,21 @@
 #!/usr/bin/env bash
-# Shared constants + helpers for the 4663 fork scripts. Source it; do not run it.
+# Shared constants + helpers for the FORK-ONLY 4663 scripts. Source it; do not run it.
 # Addresses: sherwoodagent/skill ADDRESSES.md (chain 4663), same table the CLI ships.
+# Mainnet signing goes through the Sherwood prepare API and the app's /tg/sign page.
 export FOUNDRY_DISABLE_NIGHTLY_WARNING=1
 export PATH="$PATH:$HOME/.foundry/bin:/usr/sbin:/sbin"
 FORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Parameters (env): RPC_URL (or FORK_RPC_URL), CHAIN_ID (default 4663),
-# SIGNER = anvil (fork, dev keys, local RPC only) | external (no keys; calldata JSON +
-# an ordered "send these" plan in $FORK_OUT_DIR/plan.md; any RPC, incl. mainnet).
-RPC="${RPC_URL:-${FORK_RPC_URL:-http://127.0.0.1:8545}}"
-CHAIN_ID="${CHAIN_ID:-4663}"
-SIGNER="${SIGNER:-anvil}"
-FORK_OUT_DIR="${FORK_OUT_DIR:-$FORK_DIR/out}"
-export RPC_URL="$RPC" FORK_RPC_URL="$RPC" CHAIN_ID SIGNER FORK_OUT_DIR
-mkdir -p "$FORK_OUT_DIR"
+source "$FORK_DIR/guard.sh"
 
-case "$SIGNER" in
-  anvil)
-    case "$RPC" in
-      http://127.0.0.1:*|http://localhost:*) ;;
-      *) echo "lib.sh: SIGNER=anvil refuses a non-local RPC (use SIGNER=external)" >&2; return 2 2>/dev/null || exit 2 ;;
-    esac ;;
-  external) ;;
-  *) echo "lib.sh: SIGNER must be anvil or external" >&2; return 2 2>/dev/null || exit 2 ;;
-esac
-require_anvil() { [ "$SIGNER" = "anvil" ] || { echo "$1 needs SIGNER=anvil (a local fork); refusing under SIGNER=external" >&2; exit 2; }; }
+# Parameters (env): RPC_URL (or FORK_RPC_URL; default http://127.0.0.1:8545), FORK_OUT_DIR.
+RPC="${RPC_URL:-${FORK_RPC_URL:-http://127.0.0.1:8545}}"
+FORK_OUT_DIR="${FORK_OUT_DIR:-$FORK_DIR/out}"
+assert_local_rpc "$RPC"
+assert_fork_chain "$RPC"
+mkdir -p "$FORK_OUT_DIR"
+assert_clean_out_dir "$FORK_OUT_DIR"
+# cast reads the RPC from ETH_RPC_URL: it never goes on a command line.
+export RPC_URL="$RPC" FORK_RPC_URL="$RPC" ETH_RPC_URL="$RPC" FORK_OUT_DIR
 
 # --- core (run 1 / run 2) ---
 FACTORY=0x619af1488F32B4797f6faDa3C3a8De72a5B693E0
@@ -54,7 +46,6 @@ GUARDIAN_KEY=0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba
 ROLE_ADDRS=("$HOST" "$AGENT" "$MEMBER_A" "$MEMBER_B" "$WETH_HOST" "$GUARDIAN")
 
 role_key() {
-  require_anvil role_key
   case "$1" in
     host)     echo 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 ;;
     agent)    echo 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d ;;
@@ -67,21 +58,24 @@ role_key() {
 }
 
 sw() { "$FORK_DIR/sw.sh" "$@"; }
-c() { cast call --rpc-url "$RPC" "$@"; }
-rpc() { require_anvil "anvil_*/evm_* RPC"; cast rpc --rpc-url "$RPC" "$@"; }
-now_ts() { cast block latest --field timestamp --rpc-url "$RPC"; }
+c() { cast call "$@"; }
+rpc() { assert_anvil "$RPC"; cast rpc "$@"; }
+now_ts() { cast block latest --field timestamp; }
+head_block() { cast block-number; }
 
-# Advance chain time by N seconds and mine one block (fork only).
+# Advance chain time by N seconds and mine one block.
 warp() { rpc evm_increaseTime "$1" >/dev/null; rpc evm_mine >/dev/null; }
 
-# Append a row to the step log: step | status | tx | gas | note
-STEP_LOG="${STEP_LOG:-$FORK_OUT_DIR/steps.tsv}"
-logstep() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" | tee -a "$STEP_LOG"; }
-
-# gas used of a tx hash on the fork
-gas_of() { cast receipt "$1" gasUsed --rpc-url "$RPC" 2>/dev/null || echo "?"; }
-
-head_block() { cast block-number --rpc-url "$RPC"; }
+# Does <addr> have code? Prints 1 or 0. Fails closed (exit 2) on any cast error or odd output.
+has_code() {
+  local code
+  code="$(cast code "$1" 2>/dev/null)" || guard_die "cast code $1 failed; refusing to guess whether it is deployed"
+  case "$code" in
+    0x) echo 0 ;;
+    0x[0-9a-fA-F]*) echo 1 ;;
+    *) guard_die "cast code $1 returned '$code'" ;;
+  esac
+}
 
 # Print every tx mined after block $1 (anvil automines one tx per block):
 #   hash  from  to  selector  gasUsed  status
@@ -91,10 +85,10 @@ txs_since() {
   b="$from"
   while [ "$b" -lt "$to" ]; do
     b=$((b + 1))
-    for h in $(cast block "$b" --json --rpc-url "$RPC" | jq -r '.transactions[] | if type=="string" then . else .hash end'); do
+    for h in $(cast block "$b" --json | jq -r '.transactions[] | if type=="string" then . else .hash end'); do
       local tx rc
-      tx="$(cast tx "$h" --json --rpc-url "$RPC")"
-      rc="$(cast receipt "$h" --json --rpc-url "$RPC")"
+      tx="$(cast tx "$h" --json)"
+      rc="$(cast receipt "$h" --json)"
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$h" \
         "$(jq -r .from <<<"$tx")" "$(jq -r '.to // "create"' <<<"$tx")" \
         "$(jq -r '.input // .data' <<<"$tx" | cut -c1-10)" \
@@ -119,58 +113,42 @@ step() {
   return $rc
 }
 
-# Sign + send every tx of a CLI `--calldata-only` JSON ({txs:[{to,data,value,chainId}]}) as <role>.
-# This is the external-signer path: the CLI builds, cast signs. A StrategyFactory clone tx is
-# skipped when the JSON's .clone already has code (the clone address is CREATE2-deterministic,
-# so re-running calldata-only after a half-finished propose re-emits the same clone tx).
+# Sign + send (anvil dev key of <role>) every tx of a CLI `--calldata-only` JSON
+# ({txs:[{to,data,value,chainId}]}). A StrategyFactory clone tx is skipped only when the
+# JSON's .clone verifiably has code (CREATE2-deterministic, so a re-run of calldata-only
+# after a half-finished propose re-emits it); any cast error stops the send.
 #   send_calldata <name> <role> <json-file>
-# Under SIGNER=external nothing is signed or sent: the txs are appended to the ordered plan
-# ($FORK_OUT_DIR/plan.md + plan/NN-<name>.json) for the external wallet of <role>.
-PLAN_DIR="${PLAN_DIR:-$FORK_OUT_DIR/plan}"
-plan_calldata() {
-  local name="$1" role="$2" json="$3" n i k to data value cid clone
-  mkdir -p "$PLAN_DIR"
-  k="$(printf '%02d' $(( $(find "$PLAN_DIR" -name '*.json' | wc -l) + 1 )))"
-  cp "$json" "$PLAN_DIR/$k-$name.json"
-  [ -f "$FORK_OUT_DIR/plan.md" ] || printf '# Send these in order (chain %s)\n\n| # | Step | Signer | To | Selector | Value | Calldata file |\n|---|---|---|---|---|---|---|\n' "$CHAIN_ID" > "$FORK_OUT_DIR/plan.md"
-  clone="$(jq -r '.clone // empty' "$json")"
-  n="$(jq '.txs|length' "$json")"
-  for i in $(jot - 0 $((n - 1))); do
-    to="$(jq -r ".txs[$i].to" "$json")"; data="$(jq -r ".txs[$i].data" "$json")"
-    value="$(jq -r ".txs[$i].value // \"0x0\"" "$json")"; cid="$(jq -r ".txs[$i].chainId // \"$CHAIN_ID\"" "$json")"
-    [ "$cid" = "$CHAIN_ID" ] || { echo "plan: tx $i chainId $cid != $CHAIN_ID" >&2; return 2; }
-    if [ -n "$clone" ] && [ "$(echo "$to" | tr A-F a-f)" = "$(echo "$STRATEGY_FACTORY" | tr A-F a-f)" ] \
-       && [ "$(cast code "$clone" --rpc-url "$RPC")" != "0x" ]; then continue; fi
-    printf '| %s.%s | %s | %s | `%s` | `%s` | %s | `plan/%s-%s.json` .txs[%s] |\n' "$k" "$((i + 1))" "$name" "$role" "$to" "${data:0:10}" "$value" "$k" "$name" "$i" >> "$FORK_OUT_DIR/plan.md"
-  done
-  echo "plan: $name -> $PLAN_DIR/$k-$name.json ($n txs, signer: $role); ordered list: $FORK_OUT_DIR/plan.md"
-}
-
 send_calldata() {
-  if [ "$SIGNER" = "external" ]; then plan_calldata "$@"; return; fi
   local name="$1" role="$2" json="$3" key n i to data value cid clone rc=0
+  assert_anvil "$RPC"
   key="$(role_key "$role")"
   mkdir -p "$STEPS_DIR"
   : > "$STEPS_DIR/$name.txs"
   echo ">>> [$name] ($role) send $(jq '.txs|length' "$json") txs from $json" | tee "$STEPS_DIR/$name.out"
   clone="$(jq -r '.clone // empty' "$json")"
   n="$(jq '.txs|length' "$json")"
-  for i in $(jot - 0 $((n - 1))); do
+  i=0
+  while [ "$i" -lt "$n" ]; do
     to="$(jq -r ".txs[$i].to" "$json")"; data="$(jq -r ".txs[$i].data" "$json")"
-    value="$(jq -r ".txs[$i].value // \"0x0\"" "$json")"; cid="$(jq -r ".txs[$i].chainId // 4663" "$json")"
-    [ "$cid" = "$CHAIN_ID" ] || { echo "tx $i chainId $cid != $CHAIN_ID" >&2; return 2; }
-    if [ -n "$clone" ] && [ "$(echo "$to" | tr A-F a-f)" = "$(echo "$STRATEGY_FACTORY" | tr A-F a-f)" ] \
-       && [ "$(cast code "$clone" --rpc-url "$RPC")" != "0x" ]; then
-      echo "  tx $i: clone $clone already deployed, skipped" | tee -a "$STEPS_DIR/$name.out"; continue
+    value="$(jq -r ".txs[$i].value // \"0x0\"" "$json")"; cid="$(jq -r ".txs[$i].chainId // \"$FORK_CHAIN_ID\"" "$json")"
+    [ "$cid" = "$FORK_CHAIN_ID" ] || { echo "tx $i chainId $cid != $FORK_CHAIN_ID" >&2; return 2; }
+    if [ -n "$clone" ] && [ "$(echo "$to" | tr A-F a-f)" = "$(echo "$STRATEGY_FACTORY" | tr A-F a-f)" ]; then
+      local deployed
+      deployed="$(has_code "$clone")" || { echo "  tx $i: cannot read code at $clone; stopping (fail closed)" | tee -a "$STEPS_DIR/$name.out"; return 2; }
+      if [ "$deployed" = 1 ]; then
+        echo "  tx $i: clone $clone already deployed (code present), skipped" | tee -a "$STEPS_DIR/$name.out"
+        i=$((i + 1)); continue
+      fi
     fi
     local out h st g
-    if out="$(cast send --json --private-key "$key" --rpc-url "$RPC" --value "$(cast to-dec "$value")" "$to" "$data" 2>&1)"; then
+    if out="$(cast send --json --private-key "$key" --value "$(cast to-dec "$value")" "$to" "$data" 2>&1)"; then
       h="$(jq -r .transactionHash <<<"$out")"; st="$(jq -r .status <<<"$out")"; g="$(cast to-dec "$(jq -r .gasUsed <<<"$out")")"
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$h" "$role" "$to" "${data:0:10}" "$g" "$st" | tee -a "$STEPS_DIR/$name.txs"
     else
-      echo "  tx $i ${data:0:10} -> $to REVERTED: $(echo "$out" | grep -oE 'execution reverted[^,]*(, data: "[^"]*")?' | head -1)" | tee -a "$STEPS_DIR/$name.out"
+      echo "  tx $i ${data:0:10} -> $to REVERTED: $(echo "$out" | redact | grep -oE 'execution reverted[^,]*(, data: "[^"]*")?' | head -1)" | tee -a "$STEPS_DIR/$name.out"
       rc=1; break
     fi
+    i=$((i + 1))
   done
   echo "<<< [$name] exit=$rc" | tee -a "$STEPS_DIR/$name.out"
   return $rc

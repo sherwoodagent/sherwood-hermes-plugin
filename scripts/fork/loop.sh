@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Full PortfolioStrategy loop on a local anvil fork of Robinhood Chain mainnet (4663):
+# FORK ONLY. Full PortfolioStrategy loop on a local anvil fork of Robinhood Chain mainnet (4663):
 # identity -> vault (USDG, whitelist) -> members deposit -> agent registered (cannot propose)
 # -> P1 proposed by the owner and vetoed by member B (20%) -> P2 proposed, nobody objects
 # -> guardian review (staked guardian Approves with a WOOD lock) -> execute -> settle
 # -> member A redeems. Plus the WETH-vault finding.
 #
-#   FORK_RPC_URL=http://127.0.0.1:8545 scripts/fork/loop.sh            # every stage, in order
-#   FORK_RPC_URL=http://127.0.0.1:8545 scripts/fork/loop.sh execute    # one stage
+#   RPC_URL=http://127.0.0.1:8545 scripts/fork/loop.sh            # every stage, in order
+#   RPC_URL=http://127.0.0.1:8545 scripts/fork/loop.sh execute    # one stage
 #
 # Stages: identity create members agent p1 p2 review execute settle redeem weth
 # Idempotent: each stage records STAGE_<name>=done (and the ids it made) in
@@ -18,8 +18,7 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-require_anvil "loop.sh (it warps time and uses dev keys; for mainnet use plan.sh)"
-[ "$(cast chain-id --rpc-url "$RPC")" = "$CHAIN_ID" ] || { echo "loop: $RPC is not chain $CHAIN_ID" >&2; exit 2; }
+assert_anvil "$RPC"   # warps time, cheat RPCs, dev keys: anvil only
 
 STATE="$FORK_OUT_DIR/state.env"; touch "$STATE"
 # shellcheck disable=SC1090
@@ -38,7 +37,14 @@ TOKENS=NVDA,AAPL,SPY
 ROUTES=v3:500,v3:500,v4:500:5             # sources get liquidity -> recommended.by_symbol[*].swap_extra_data_hint
 MAX_SLIP=125                              # largest suggested_max_slippage_bps across the legs (AAPL)
 
-setv() { sed -i '' "/^$1=/d" "$STATE"; echo "$1=$2" >> "$STATE"; eval "$1=\"\$2\""; }
+# setv NAME VALUE: persist to state.env, shell-quoted (printf %q), portable (no sed -i).
+setv() {
+  local t; t="$(mktemp "$FORK_OUT_DIR/.state.XXXXXX")"
+  grep -v "^$1=" "$STATE" > "$t" || true
+  printf '%s=%q\n' "$1" "$2" >> "$t"
+  mv "$t" "$STATE"
+  printf -v "$1" '%s' "$2"
+}
 done_stage() { grep -q "^STAGE_$1=done$" "$STATE"; }
 mark() { echo "STAGE_$1=done" >> "$STATE"; echo "=== stage $1 done"; }
 note() { echo "$*" | tee -a "$STEPS_DIR/notes.txt"; }
@@ -49,7 +55,7 @@ bal() { c "$1" 'balanceOf(address)(uint256)' "$2" | awk '{print $1}'; }
 expect_revert() {
   local name="$1" want="$2" from="$3" to="$4"; shift 4
   local out got
-  out="$(cast call --from "$from" --rpc-url "$RPC" "$to" "$@" 2>&1 || true)"
+  out="$(cast call --from "$from" "$to" "$@" 2>&1 || true)"
   got="$(grep -oE 'data: "0x[0-9a-fA-F]{8}' <<<"$out" | head -1 | cut -c8-)"
   if [ "$got" = "$want" ]; then note "[$name] PASS reverted $want"; else note "[$name] FAIL want $want got '${got:-no revert}' :: $(head -c 300 <<<"$out")"; fi
 }
@@ -167,7 +173,7 @@ stage_p2() {
   warp 2
   # Snapshot semantics (sandboxed): a share transfer after the snapshot does not move vote weight.
   local s; s="$(rpc evm_snapshot | tr -d '"')"
-  cast send --private-key "$(role_key memberA)" --rpc-url "$RPC" "$VAULT" 'transfer(address,uint256)' "$MEMBER_B" 100000000000000 >/dev/null 2>&1 \
+  cast send --private-key "$(role_key memberA)" "$VAULT" 'transfer(address,uint256)' "$MEMBER_B" 100000000000000 >/dev/null 2>&1 \
     && note "snapshot probe: A->B share transfer ok; B balance $(bal "$VAULT" "$MEMBER_B"), B weight on P2 $(c "$GOVERNOR" 'getVoteWeight(uint256,address)(uint256)' "$P2" "$MEMBER_B")" \
     || note "snapshot probe: share transfer reverted"
   rpc evm_revert "$s" >/dev/null
@@ -191,7 +197,7 @@ stage_review() {
   else
     note "CLI review-vote refused (see steps/12-review-vote-approve.out); falling back to raw voteOnProposal"
     local out
-    out="$(cast send --json --private-key "$GUARDIAN_KEY" --rpc-url "$RPC" "$GUARDIAN_REGISTRY" \
+    out="$(cast send --json --private-key "$GUARDIAN_KEY" "$GUARDIAN_REGISTRY" \
       'voteOnProposal(address,uint256,uint8,uint256)' "$GOVERNOR" "$P2" 1 "$(cast to-wei "$GUARDIAN_LOCK")")"
     printf '%s\tguardian\t%s\tvoteOnProposal\t%s\t%s\n' "$(jq -r .transactionHash <<<"$out")" "$GUARDIAN_REGISTRY" \
       "$(cast to-dec "$(jq -r .gasUsed <<<"$out")")" "$(jq -r .status <<<"$out")" > "$STEPS_DIR/12-review-vote-approve-raw.txs"

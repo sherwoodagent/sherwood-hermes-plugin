@@ -1,2 +1,5 @@
-.cli/
-out/
+# FORK-ONLY tooling outputs: never commit them.
+/.cli/
+/out/
+/*-run/
+/plans/

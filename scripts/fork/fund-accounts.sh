@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Fund the anvil dev accounts on the 4663 fork. Idempotent: it SETS balances, it does not add.
+# FORK ONLY. Fund the anvil dev accounts on the 4663 fork. Idempotent: it SETS balances.
 #
-#   FORK_RPC_URL=http://127.0.0.1:8545 scripts/fork/fund-accounts.sh
+#   RPC_URL=http://127.0.0.1:8545 scripts/fork/fund-accounts.sh
 #
 # 1. Clears code on every role account. On the real chain 4663, anvil's well-known dev
 #    accounts carry an EIP-7702 delegation (0xef0100 8a67b5...7e408a, a sweeper). On the
@@ -15,8 +15,7 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-require_anvil fund-accounts.sh
-[ "$(cast chain-id --rpc-url "$RPC")" = "$CHAIN_ID" ] || { echo "RPC is not chain $CHAIN_ID" >&2; exit 2; }
+assert_anvil "$RPC"   # the anvil_* cheat RPCs only exist on anvil
 
 set_erc20() { # token slot holder amountWei
   local key; key="$(cast index address "$3" "$2")"
@@ -50,8 +49,8 @@ printf '%-10s %-44s %8s %14s %10s %s\n' role address ETH WOOD USDG code
 for pair in host:$HOST agent:$AGENT memberA:$MEMBER_A memberB:$MEMBER_B weth:$WETH_HOST guardian:$GUARDIAN; do
   r="${pair%%:*}"; a="${pair#*:}"
   printf '%-10s %-44s %8s %14s %10s %s\n' "$r" "$a" \
-    "$(cast from-wei "$(cast balance "$a" --rpc-url "$RPC")" | cut -d. -f1)" \
+    "$(cast from-wei "$(cast balance "$a")" | cut -d. -f1)" \
     "$(cast from-wei "$(c "$WOOD" 'balanceOf(address)(uint256)' "$a" | awk '{print $1}')" | cut -d. -f1)" \
     "$(c "$USDG" 'balanceOf(address)(uint256)' "$a" | awk '{printf "%.2f", $1/1e6}')" \
-    "$(cast code "$a" --rpc-url "$RPC")"
+    "$(cast code "$a")"
 done
