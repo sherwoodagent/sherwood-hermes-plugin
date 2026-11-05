@@ -286,5 +286,8 @@ group can steer it:
 Sherwood CLI's `privateKey` from `~/.sherwood/config.json` to derive the XMTP
 sidecar's separate wallet (keccak of key + salt; only the derived sidecar key
 is handed to the local sidecar process). That is unchanged here, but it touches a private key outside
-Hermes' secret scope (catalog rule 11). The catalog lane decides whether it
-stays, moves behind a secret, or goes.
+Hermes' secret scope (catalog rule 11). `cli_watchdog.py` reads the same file
+for the gas watchdog's agent address. v0.7.0 keeps both reads and discloses
+them (README "What the plugin touches", `docs/hackathon-disclosure.md`, the
+catalog entry); if catalog review asks for changes, the fix is in
+`docs/catalog-submission.md` ("Expect in review").

@@ -11,8 +11,6 @@ import os
 
 # Declared in plugin.yaml `requires_env`.
 TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
-PRIVY_APP_ID = "PRIVY_APP_ID"
-PRIVY_APP_SECRET = "PRIVY_APP_SECRET"
 SHERWOOD_TG_LINK_SECRET = "SHERWOOD_TG_LINK_SECRET"
 # Bearer for the app's /api/tg/link lookup; NOT the link-signing key.
 SHERWOOD_TG_API_TOKEN = "SHERWOOD_TG_API_TOKEN"

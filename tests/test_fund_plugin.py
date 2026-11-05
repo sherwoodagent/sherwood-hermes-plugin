@@ -112,9 +112,10 @@ def test_manifest_v2_matches_registrations(tmp_path, monkeypatch):
     assert set(manifest["provides_hooks"]) == set(ctx.hooks)
     assert manifest.get("capabilities", []) == []
     env = {e["name"]: e for e in manifest["requires_env"]}
-    assert set(env) == {"TELEGRAM_BOT_TOKEN", "PRIVY_APP_ID", "PRIVY_APP_SECRET", "SHERWOOD_TG_LINK_SECRET",
-                        "SHERWOOD_TG_API_TOKEN", "TX_BUILDER_URL", "APP_BASE_URL"}
-    assert {n for n, e in env.items() if e["secret"]} == {"TELEGRAM_BOT_TOKEN", "PRIVY_APP_SECRET", "SHERWOOD_TG_LINK_SECRET",
+    # Every declared env var is read somewhere; the plugin holds no wallet credential (no Privy keys).
+    assert set(env) == {"TELEGRAM_BOT_TOKEN", "SHERWOOD_TG_LINK_SECRET", "SHERWOOD_TG_API_TOKEN",
+                        "TX_BUILDER_URL", "APP_BASE_URL"}
+    assert {n for n, e in env.items() if e["secret"]} == {"TELEGRAM_BOT_TOKEN", "SHERWOOD_TG_LINK_SECRET",
                                                           "SHERWOOD_TG_API_TOKEN"}
     assert all(e.get("description") and e.get("url") for e in env.values())
     settings_keys = {f.name for f in fields(FundSettings)}

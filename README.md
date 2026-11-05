@@ -4,12 +4,12 @@
 >
 > [sherwood.sh](https://sherwood.sh) · [docs.sherwood.sh](https://docs.sherwood.sh)
 
-This plugin gives Hermes agents the infra to run zero human funds: an ERC-4626 vault on Base or HyperEVM, optimistic governance over every strategy call, encrypted member chat, and a 24/7 monitoring loop that turns fund activity into events the agent reacts to on every turn.
+This plugin gives Hermes agents the infra to run zero human funds: an ERC-4626 vault on Robinhood Chain (chain 4663), optimistic governance over every strategy call, encrypted member chat, a 24/7 monitoring loop that turns fund activity into events the agent reacts to on every turn, and a fund that runs inside a Telegram group (see [Group-chat fund](#group-chat-fund-telegram)).
 
 If you're new to Sherwood, the model is simple:
 
-- **Your agent** proposes and runs strategies (Aerodrome LP, Moonwell supply, Morpho, …) and earns a performance fee on profit.
-- **Depositors** put USDC into the vault, keep custody (non-custodial ERC-4626 shares), and can veto any proposal before it executes.
+- **Your agent** proposes and runs strategies (for example a basket of Robinhood Chain stock tokens through PortfolioStrategy) and earns a performance fee on profit.
+- **Depositors** put the vault's asset (USDG) into the vault, keep custody (non-custodial ERC-4626 shares), and can veto any proposal before it executes.
 - **Guardians** stake $WOOD and review every proposal — they're slashed if they approve a malicious call. This is the human-vetoable part.
 
 ## What you get
@@ -18,14 +18,15 @@ If you're new to Sherwood, the model is simple:
 - **Live event stream into Hermes.** On-chain events (`ProposalCreated`, `VoteCast`, `Settled`, …) and XMTP messages arrive as `<sherwood-event>` blocks the agent sees on its next turn.
 - **Risk guardrails before signing.** `pre_tool_call` hooks block proposals that exceed concentration / mandate limits before they hit the chain.
 - **Autonomous mode.** A 15-minute cron tick checks each fund and only delivers a digest when something actually happened — no spam.
-- **Institutional memory.** Every settle/execute writes a one-line record the agent can query weeks later. "Has the Aerodrome LP strategy been profitable?" gets a real answer.
-- **Cross-fund exposure.** "What's my total Aerodrome exposure?" aggregates positions across every fund the agent runs.
+- **A fund in a Telegram group.** The agent pitches trades in the chat, members deposit and object from their own wallets, guest Hermes agents join as co-managers, and every proposal gets a live card. See [Group-chat fund](#group-chat-fund-telegram).
+- **Institutional memory.** Every settle/execute writes a one-line record the agent can query weeks later. "Has the NVDA basket strategy been profitable?" gets a real answer.
+- **Cross-fund exposure.** "What's my total exposure to one protocol?" aggregates positions across every fund the agent runs.
 
 ## Prerequisites
 
 - Hermes Agent installed and running
 - Python ≥ 3.11
-- Node ≥ 20 and npm (for the bundled XMTP sidecar)
+- Node ≥ 22 and npm (for the bundled XMTP sidecar; its pinned `@xmtp/node-bindings` needs Node 22)
 - Sherwood CLI installed and configured (the plugin derives its sidecar wallet from `~/.sherwood/config.json`):
 
 ```bash
@@ -36,8 +37,10 @@ sherwood config set --private-key <0x...>
 ## Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin
+hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0
 ```
+
+Hermes ≥ 0.21.5. Once the plugin is listed in the Hermes catalog, `hermes plugins install sherwood-monitor` installs the reviewed pin.
 
 ### What installation does
 
@@ -50,7 +53,7 @@ hermes plugins install sherwoodagent/sherwood-hermes-plugin
 The Python package installs fine even if the sidecar build fails; XMTP is just disabled until you rebuild. To skip the build and rebuild manually:
 
 ```bash
-SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin
+SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0
 # find the installed location:
 python3 -c "import sherwood_monitor, pathlib; print(pathlib.Path(sherwood_monitor.__file__).parent.parent / 'xmtp_sidecar')"
 cd <that path>
@@ -111,20 +114,146 @@ hermes sherwood install-cron        # one-time: register the 15-min autonomous-d
 hermes sherwood fund-bind alpha-fund --host-telegram-id 123  # operator only: change a fund's vault/governor/chat/host
 ```
 
-### Group-chat fund: deployment boundary
+## Group-chat fund (Telegram)
 
-If you run a fund in a Telegram group (docs/fund-host-join.md, "Deployment
-boundary"):
+Your Hermes agent runs a Sherwood fund inside a Telegram group. Members pitch
+trade ideas by mentioning the bot, and the agent answers with a short take.
+When three people react 🔥 to an idea, or the host says "ship it", the agent
+drafts a proposal. Every proposal gets a card in the chat with a veto meter
+and a countdown. A member who disagrees taps ❌ Object, which opens a page
+where their own wallet votes Against. Other people can bring their own Hermes
+agents in as co-managers; each one proposes with its own WOOD bond. The chat
+is where the fund talks; the contracts decide what happens to the money.
 
-- Give the group a toolset **without** `terminal`, `write_file`, `patch` or
-  `execute_code` (`platform_toolsets.telegram`); the default `hermes-telegram`
-  toolset includes them.
-- Keep `plugins.isolation: in_process` (the default); under `host` nothing is
-  sender-checked.
-- In forum topics use `busy_input_mode: interrupt`, not `steer`.
-- Any allowlisted member can tap approval buttons: approve host actions in a
-  private chat with the bot or from the CLI, and never answer "Always".
-- Only the operator rebinds a fund, from their own shell: `hermes sherwood fund-bind`.
+- **Chain.** Robinhood Chain mainnet (chain 4663) only. The fund asset is USDG
+  (6 decimals). A WETH fund can be created and take deposits but cannot
+  propose (`AssetNotUsdPegged`), so the plugin refuses claims and drafts on
+  one. There is no testnet; test on mainnet with small amounts.
+- **Governance.** Optimistic veto: only Against votes count. A proposal passes
+  unless Against reaches 20% of share supply before the voting window ends
+  (1800 s on the demo vault). Silence means pass. 👍 Back it is social and
+  never votes.
+- **Deposits are restricted.** The host approves each member
+  (`approveDepositor`) before they can deposit.
+- **Nothing moves money from chat.** Every money action is a plain link to
+  `app.sherwood.sh` that the person signs with their own wallet. The plugin
+  builds unsigned transactions through the prepare API at `api.sherwood.sh`
+  and never signs or sends one. The host signs owner actions on `/tg/sign`,
+  members sign from their own wallets, and the agent never holds member funds.
+
+### App pages (app.sherwood.sh)
+
+| Page | Who | What it does |
+|---|---|---|
+| `/tg/join?fund=<vault>` | member | Telegram login, link a wallet, ask to join |
+| `/tg/deposit?fund=<vault>` | approved member | deposit USDG |
+| `/tg/withdraw?fund=<vault>` | member | redeem shares |
+| `/tg/vote?proposal=<governor>:<id>` | member | ❌ Object: cast an Against vote |
+| `/tg/sign?fund=<vault>&action=<route>&...` | host | sign an owner action: approve a member or agent, co-sign a proposal, set the agent fee |
+| `/tg/fund/<vault>` | anyone | public read-only fund page |
+
+Personal links carry the tapper's Telegram id, are signed with
+`SHERWOOD_TG_LINK_SECRET`, and expire (15 minutes for join and sign, 24 hours
+for deposit, withdraw and vote). The signature proves the bot issued the link;
+it does not authorize money: the wallet signs in the browser. There is no
+Telegram Mini App (Telegram's Bot Developer Terms allow blockchain Mini Apps
+only on TON), so each money step costs one extra tap. Link format and test
+vectors: [docs/telegram.md](docs/telegram.md).
+
+### Install
+
+```bash
+hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0
+```
+
+Once the plugin is listed in the Hermes catalog: `hermes plugins install
+sherwood-monitor`. The Telegram cards need python-telegram-bot, which comes
+with Hermes' Telegram extra (the Hermes gateway needs it anyway). The fund
+features do not need Node or the XMTP sidecar.
+
+### Required environment
+
+Set these in the Hermes profile `.env`. The plugin reads them through Hermes'
+secret scope (`agent.secret_scope.get_secret`) and never logs them.
+
+| Key | Secret | Meaning |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | yes | Bot token from @BotFather. Without it Hermes never connects the Telegram adapter and the cards stay off. |
+| `SHERWOOD_TG_LINK_SECRET` | yes | HMAC key for the personal `/tg` links and the host's `/tg/sign` links. Shared with the web app; never sent anywhere. |
+| `SHERWOOD_TG_API_TOKEN` | yes | Bearer token for the app's member-wallet lookup (`GET /api/tg/link`). A separate secret from the link key. |
+
+Optional: `TX_BUILDER_URL` (default `https://api.sherwood.sh/api/v1`) and
+`APP_BASE_URL` (default `https://app.sherwood.sh`). The Hermes Telegram
+gateway keys (`TELEGRAM_GROUP_ALLOWED_CHATS`, `require_mention`,
+`observe_unmentioned_group_messages`, `TELEGRAM_ALLOWED_USERS` for the host
+only) are in [docs/telegram.md](docs/telegram.md) and
+[docs/telegram.example.yaml](docs/telegram.example.yaml).
+
+### Configure
+
+In `~/.hermes/plugins/sherwood-monitor/config.yaml` (or the same keys under
+Hermes' plugin settings):
+
+```yaml
+fund:
+  agent_name: alpha                # this Hermes inside the fund (unique per fund)
+  agent_identity_id: "101"         # its ERC-8004 identity token id
+  agent_address: "0x..."           # its own scoped wallet; it bonds its own WOOD
+  owner_telegram_id: "123456789"   # Telegram user id of the human who runs this Hermes
+  default_fund: alpha-fund
+  app_link_hosts: app.sherwood.sh  # hosts the member-wallet lookup may call (https only)
+  proposal_signer: host            # host co-signs proposals while ownerOnlyProposals is on; `agent` after GA
+```
+
+Per fund, `fund_setup` records the rest once: `vault`, `governor`,
+`telegram_chat_id`, `host_telegram_id` (the host's Telegram user id: only the
+host approves members and agents, ships drafts and co-signs), the
+per-proposal ceilings `max_capital` and `max_drawdown_bps`, and
+`agent_fee_bps`. The agent fee must be at most 1500 bps (15%): guardians
+refuse to approve near the 20% cap, so claims and drafts are refused while
+the fee is unknown or above 1500. Set 500 with `prepare/set-agent-fee` before
+the first proposal. After that only the operator changes a fund's vault,
+governor, chat or host, from their own shell:
+`hermes sherwood fund-bind <fund> [--vault 0x..] [--governor 0x..] [--telegram-chat-id -100..] [--host-telegram-id 123]`.
+
+Host and join steps, the coordination rules (one open proposal per agent, two
+per fund, claim before proposing) and the Telegram wiring:
+[docs/fund-host-join.md](docs/fund-host-join.md). BotFather and gateway
+setup: [docs/telegram.md](docs/telegram.md).
+
+### Deployment boundary (required)
+
+The plugin checks who started each turn, but it cannot make a chat-driven agent
+safe if the agent holds general-purpose tools. For a fund group:
+
+- **No terminal, file or code tools in the group's toolset.** Set
+  `platform_toolsets.telegram` to a toolset without `terminal`, `write_file`,
+  `patch` or `execute_code` (the default `hermes-telegram` toolset includes
+  them). An agent that has them in the group can rewrite fund state or the
+  plugin config whatever the plugin does. The plugin's `pre_tool_call` guard
+  refuses, in chat turns, terminal / file / code calls whose arguments name the
+  rebind command, the fund state directory or a `config.yaml`, and
+  `hermes sherwood fund-bind` refuses when it inherits a chat turn's
+  `HERMES_SESSION_*` env: both are best effort (a determined model can
+  obfuscate a command or strip env).
+- **`plugins.isolation: in_process`** (Hermes' default). Under
+  `isolation: host` the plugin's hooks and tools run in a child process whose
+  session ContextVars are empty, so every turn looks like the operator surface:
+  nothing is sender-checked (everything goes to the approval prompt), and the
+  Telegram handler and CLI command are not registered.
+- **Forum topics:** sessions in a topic are shared. With
+  `busy_input_mode: steer`, another member's text lands inside the host's
+  running turn, which carries the host's identity. Use `interrupt`.
+- **Approval buttons:** any allowlisted member of the chat can tap the buttons
+  on an approval prompt (Hermes checks only the allowlist), "Always" included.
+  Run host approvals in a private chat with the bot or from the operator CLI,
+  and never answer "Always" to a fund prompt (each prompt's allowlist key is
+  per action, so an "Always" covers only that exact action, but it still skips
+  the human next time).
+- Rebinding a fund (vault, governor, chat, host) is the operator's job, from
+  their own shell: `hermes sherwood fund-bind <fund> [--vault 0x..]
+  [--governor 0x..] [--telegram-chat-id -100..] [--host-telegram-id 123]`.
+  Tool and chat error messages never name this command.
 
 ## What the plugin does
 
@@ -163,7 +292,7 @@ git clone git@github.com:sherwoodagent/sherwood-hermes-plugin.git
 cd sherwood-hermes-plugin
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" # also builds the sidecar into xmtp_sidecar/dist/
-pytest -v               # ~139 tests
+pytest -v               # ~480 tests
 ```
 
 Test the sidecar separately:
@@ -275,7 +404,7 @@ If `npm` isn't on PATH at install time, the sidecar build is skipped (with a lou
 - Cross-fund exposure → unaffected
 - Cron digests → unaffected (they deliver via Hermes' gateway, not XMTP)
 
-Install Node ≥ 20, rebuild via the manual steps above, and XMTP lights up on next restart.
+Install Node ≥ 22, rebuild via the manual steps above, and XMTP lights up on next restart.
 
 ## Institutional memory
 
@@ -294,6 +423,41 @@ tool and store a one-line record. Over weeks this becomes a fund history the
 agent can query: "Has the Aerodrome LP strategy been profitable?", "Which
 proposer has the best track record?", "What's our average P&L on 7-day
 strategies for alpha-fund?"
+
+## What the plugin touches (disclosure)
+
+What you would want to know before installing. The full account, including
+who signs what and the known limitations, is in
+[docs/hackathon-disclosure.md](docs/hackathon-disclosure.md).
+
+- **No signing, no custody.** The plugin never signs or sends a transaction
+  and never holds member funds or a wallet credential. It builds unsigned
+  transactions and posts links; wallets sign in the browser.
+- **Network calls.** `api.sherwood.sh` (the prepare API for unsigned
+  transactions, the fund-card read every 60 s while a card is live, and the
+  Chainlink-backed price list), `app.sherwood.sh` (the member-wallet lookup,
+  sent with `SHERWOOD_TG_API_TOKEN`, and a check that a share image is ready
+  before posting it), the Telegram Bot API through Hermes' own adapter, the
+  XMTP network through the sidecar, and the RPC URLs in your Sherwood CLI
+  config (the gas watchdog's balance check). No telemetry.
+- **Shell commands and background processes.** One long-running
+  `sherwood session check` subprocess per monitored fund, one-shot
+  `sherwood` reads, `hermes cron` calls from `hermes sherwood install-cron`,
+  and a long-running Node process for the XMTP sidecar.
+- **Reads outside its own data.** `~/.sherwood/config.json`, the Sherwood
+  CLI's config, including its `privateKey`: the plugin derives a separate
+  XMTP sidecar key from it (`keccak256(key + "sherwood-monitor-sidecar-v1")`,
+  handed only to the local sidecar process) and, in the gas watchdog, the
+  agent's address. The key is not sent anywhere. This is a read of another
+  tool's credential file; without the file, XMTP and the gas watchdog are
+  off and everything else works.
+- **Writes.** Fund state (one JSON file per fund, mode 0600) and watchdog
+  state under `~/.hermes/plugins/sherwood-monitor/`; the sidecar's XMTP
+  database under `~/.hermes/xmtp/`.
+- **Install-time download.** `npm ci` in `xmtp_sidecar/` fetches
+  `@xmtp/node-bindings`, a native binary, from the npm registry, pinned by
+  `package-lock.json` integrity hashes. `SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1`
+  skips it.
 
 ## License
 

@@ -1,6 +1,6 @@
 manifest_version: 2
 name: sherwood-monitor
-version: "0.6.0"
+version: "0.7.0"
 description: >-
   Bridges Sherwood fund events (on-chain + XMTP) into Hermes, and runs a
   group-chat fund: your Hermes pitches trades in a Telegram group, members
@@ -26,14 +26,8 @@ requires_env:
     description: Bot token for the fund's Telegram group (from @BotFather)
     url: https://core.telegram.org/bots/features#botfather
     secret: true
-  - name: PRIVY_APP_ID
-    description: Privy app id for members' and the host's embedded wallets
-    url: https://dashboard.privy.io
-    secret: false
-  - name: PRIVY_APP_SECRET
-    description: Privy app secret (server-side wallet actions)
-    url: https://dashboard.privy.io
-    secret: true
+  # No Privy keys: members' and the host's wallets live in the web app
+  # (app.sherwood.sh); this plugin never holds a wallet credential.
   - name: SHERWOOD_TG_LINK_SECRET
     description: Shared HMAC secret that signs the bot's personal /tg links (the app verifies it)
     url: https://docs.sherwood.sh

@@ -2,7 +2,7 @@
 
 ## What this repo is
 
-The Sherwood plugin for Hermes Agent — adds always-on event streaming, no_agent watchdog crons + an agent reasoning cron, risk guardrails (`pre_tool_call`), and institutional memory on top of the Sherwood CLI. Plugin name in Hermes: `sherwood-monitor`.
+The Sherwood plugin for Hermes Agent — adds always-on event streaming, no_agent watchdog crons + an agent reasoning cron, risk guardrails (`pre_tool_call`), and institutional memory on top of the Sherwood CLI, plus the group-chat fund (a Sherwood fund run in a Telegram group: `sherwood_monitor/fund/`, `sherwood_monitor/telegram/`, `docs/fund-host-join.md`). Plugin name in Hermes: `sherwood-monitor`.
 
 ## Version-bump checklist (REQUIRED on every release PR)
 
@@ -14,7 +14,8 @@ When bumping the plugin version, ALL of these must move together:
 | `pyproject.toml` | `version` field |
 | `BOOT.md` (if behavior changed) | reflect new cron entries / hooks |
 | `README.md` (if install / UX changed) | install command, cron list, config keys |
-| Git tag | Create `v<version>` tag pointing at the merge commit |
+| `catalog/sherwood-monitor.yaml` | `version`, and `capabilities` if tools / hooks / env changed (`tests/test_catalog_entry.py` checks it against `plugin.yaml`); the `sha` is filled in only in the catalog PR, after the tag (`docs/catalog-submission.md`) |
+| Git tag | `.github/workflows/release.yml` creates `v<version>` on the merge commit when the version has no tag; check that it exists |
 
 Then open follow-up PRs in the consumer repos:
 
@@ -32,7 +33,7 @@ Then open follow-up PRs in the consumer repos:
 
 If you bump `MIN_CLI_VERSION`, the consumer-repo updates above also need to bump their CLI pin to ≥ the new floor.
 
-## Cron stack (current as of v0.6.0)
+## Cron stack (current as of v0.7.0)
 
 Five entries registered by `hermes sherwood install-cron`:
 - `sherwood-monitor-digest` (no_agent, every 15m)
@@ -48,4 +49,4 @@ When this set changes (add / remove / rename / cadence change), update:
 
 ## Don't reintroduce testnet examples
 
-Beta is mainnet-only on Base + HyperEVM (Robinhood L2 testnet is a deliberate exception in the consumer docs but is NOT relevant here — this plugin doesn't deploy contracts). Don't add `--testnet` flags to README / BOOT examples.
+Sherwood is mainnet-only on Robinhood Chain (4663); the group-chat fund uses USDG there. This plugin deploys no contracts. Don't add `--testnet` flags or testnet chains to README / BOOT / docs examples.
