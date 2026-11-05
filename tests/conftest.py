@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from sherwood_monitor.fund import applink
+
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 
@@ -30,3 +32,15 @@ def mock_ctx():
     ctx.register_cli_command = MagicMock()
     ctx.register_skill = MagicMock()
     return ctx
+
+
+@pytest.fixture(autouse=True)
+def _no_app_link_network(monkeypatch):
+    """The app-link lookup (GET /api/tg/link) never leaves the test process: 'not linked' unless a test stubs it."""
+    monkeypatch.setattr(applink, "_http_get_json", lambda url, headers, timeout: (404, {}))
+
+
+@pytest.fixture(autouse=True)
+def _no_share_image_network(monkeypatch):
+    """Share-image readiness checks never leave the test process: 404 (send text only) unless stubbed."""
+    monkeypatch.setattr(applink, "_image_status", lambda url, timeout: 404)

@@ -253,8 +253,21 @@ def _eth_balance(rpc_url: str, address: str) -> float | None:
         wei = int(result, 16)
         return wei / 1e18
     except Exception as exc:
-        _log.warning("eth_getBalance failed (%s): %s", rpc_url, exc)
+        _log.warning("eth_getBalance failed (%s): %s", _redact_url(rpc_url), exc)
         return None
+
+
+def _redact_url(url: str) -> str:
+    """scheme://host only: provider RPC URLs carry API keys in the path or query."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return "<rpc>"
+    host = parts.hostname or "<rpc>"
+    tail = "/<redacted>" if (parts.path not in ("", "/") or parts.query or parts.username) else ""
+    return f"{parts.scheme or 'https'}://{host}{tail}"
 
 
 def _gas(cfg: Config) -> str:

@@ -10,18 +10,24 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Sherwood" }]
+# Upper bounds per the Hermes catalog dependency policy; plugin.yaml
+# python_dependencies mirrors this list.
 dependencies = [
-    "PyYAML>=6.0",
-    "eth-keys>=0.5",
-    "eth-utils>=4.0",
-    "eth-hash[pycryptodome]>=0.5",
+    "PyYAML>=6.0,<7",
+    "eth-keys>=0.5,<1",
+    "eth-utils>=4.0,<7",
+    "eth-hash[pycryptodome]>=0.5,<1",
 ]
 
 [project.optional-dependencies]
+# python-telegram-bot is deliberately NOT a runtime dependency: Hermes' own
+# Telegram extra provides it (python-telegram-bot[webhooks]==22.8) and every
+# PTB import here is guarded. Tests and scripts/telegram_smoke.py use it.
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "pytest-mock>=3.12",
+    "pytest>=8.0,<10",
+    "pytest-asyncio>=0.23,<2",
+    "pytest-mock>=3.12,<4",
+    "python-telegram-bot[job-queue]>=22,<23",
 ]
 
 [project.entry-points."hermes_agent.plugins"]

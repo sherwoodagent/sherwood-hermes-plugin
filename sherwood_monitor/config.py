@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import yaml
+from .yamlio import YAMLError, safe_load
 
 DEFAULT_CONFIG_YAML = """# sherwood-monitor config
 # Edit `funds` to add subdomains you want to monitor.
@@ -49,8 +49,8 @@ def load_config(path: Path) -> Config:
         return Config()
 
     try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except yaml.YAMLError as exc:
+        raw = safe_load(path.read_text()) or {}
+    except YAMLError as exc:
         raise ValueError(f"config parse error: {exc}") from exc
 
     funds = raw.get("funds", [])

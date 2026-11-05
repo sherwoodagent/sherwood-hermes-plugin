@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import load_config
 from .supervisor import Supervisor
@@ -125,11 +126,18 @@ def _create_cron(spec: _CronSpec, plugin_root: Path) -> tuple[bool, str]:
     return False, (stderr or "").strip() or f"rc={rc}"
 
 
-def register_cli(ctx: Any, sup: Supervisor) -> None:
-    """Register `hermes sherwood start|stop|status|tail|install-cron` commands."""
+# `hermes sherwood <sub>`: (help, takes a fund subdomain)
+SUBCOMMANDS: dict[str, tuple[str, bool]] = {
+    "start": ("start monitoring a fund", True),
+    "stop": ("stop monitoring a fund", True),
+    "status": ("show monitor status", False),
+    "tail": ("tail stderr of a monitor", True),
+    "install-cron": ("register all sherwood crons with Hermes (no_agent watchdogs + reasoning; idempotent)", False),
+}
 
-    def _setup_common(parser: Any) -> None:
-        parser.add_argument("subdomain", help="fund subdomain")
+
+def build_cli_handlers(sup: Supervisor) -> dict[str, Callable[[Any], int]]:
+    """The `hermes sherwood <sub>` handlers, keyed by subcommand name."""
 
     def start_handler(args: Any) -> int:
         async def _start() -> None:
@@ -198,21 +206,101 @@ def register_cli(ctx: Any, sup: Supervisor) -> None:
         print(json.dumps(result))
         return 1 if result["errors"] else 0
 
+    return {
+        "start": start_handler,
+        "stop": stop_handler,
+        "status": status_handler,
+        "tail": tail_handler,
+        "install-cron": install_cron_handler,
+    }
+
+
+FUND_BIND = "fund-bind"
+FUND_BIND_HELP = (
+    "operator only: set or change a fund's vault, governor, Telegram chat id or host Telegram id "
+    "(the agent's fund_setup tool may set them once, never change them)"
+)
+FUND_BIND_FLAGS = ("vault", "governor", "telegram-chat-id", "host-telegram-id")
+_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_TG_RE = re.compile(r"^-?\d{1,20}$")
+
+
+def fund_bind(fund_rt: Any, args: Any) -> int:
+    """`hermes sherwood fund-bind <fund> [--vault 0x..] [--governor 0x..] [--telegram-chat-id -100..] [--host-telegram-id 123]`."""
+    if fund_rt is None:
+        print(json.dumps({"ok": False, "error": "fund features are not loaded"}))
+        return 1
+    from .session import current_caller
+
+    caller = current_caller()
+    if caller.messaging:
+        # Run by the agent from a chat turn: the terminal child inherits HERMES_SESSION_*.
+        # Defense in depth only (env can be stripped); the boundary is the toolset.
+        print(json.dumps({"ok": False, "error": "fund-bind is for the operator's own shell, not a chat turn"}))
+        return 3
+    values = {flag.replace("-", "_"): getattr(args, flag.replace("-", "_"), None) for flag in FUND_BIND_FLAGS}
+    values = {k: str(v).strip() for k, v in values.items() if v not in (None, "")}
+    if not values:
+        print(json.dumps({"ok": False, "error": "pass at least one of --" + ", --".join(FUND_BIND_FLAGS)}))
+        return 2
+    for key in ("vault", "governor"):
+        if key in values and not _ADDR_RE.match(values[key]):
+            print(json.dumps({"ok": False, "error": f"{key} must be a 0x address"}))
+            return 2
+    for key in ("telegram_chat_id", "host_telegram_id"):
+        if key in values and not _TG_RE.match(values[key]):
+            print(json.dumps({"ok": False, "error": f"{key} must be a numeric Telegram id"}))
+            return 2
+
+    def mutate(state: Any) -> dict:
+        before = {k: getattr(state.fund, k) for k in values}
+        for k, v in values.items():
+            setattr(state.fund, k, v)
+        return before
+
+    try:
+        before = fund_rt.service.backend.update(args.fund, mutate)
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    print(json.dumps({"ok": True, "fund": args.fund, "changed": {k: {"from": before[k], "to": v} for k, v in values.items()}}))
+    return 0
+
+
+def register_cli(ctx: Any, sup: Supervisor, fund_rt: Any = None) -> None:
+    """Register ONE top-level `hermes sherwood` command with subcommands.
+
+    Hermes turns every `register_cli_command` into a top-level `hermes <name>`
+    parser, so registering `status` / `tail` / `install-cron` on their own
+    collides with Hermes' built-in `hermes status` (argparse raises, Hermes
+    swallows it, and the later commands never attach). One `sherwood` parser
+    with subparsers is the documented `hermes sherwood <sub>` CLI.
+    """
+    handlers = build_cli_handlers(sup)
+    handlers[FUND_BIND] = lambda args: fund_bind(fund_rt, args)
+
+    def setup(parser: Any) -> None:
+        subs = parser.add_subparsers(dest="sherwood_command", metavar="<command>")
+        for name, (help_text, takes_fund) in SUBCOMMANDS.items():
+            sub = subs.add_parser(name, help=help_text, description=help_text)
+            if takes_fund:
+                sub.add_argument("subdomain", help="fund subdomain")
+        bind = subs.add_parser(FUND_BIND, help=FUND_BIND_HELP, description=FUND_BIND_HELP)
+        bind.add_argument("fund", help="fund name (subdomain)")
+        for flag in FUND_BIND_FLAGS:
+            bind.add_argument(f"--{flag}", default=None)
+
+    def dispatch(args: Any) -> int:
+        handler = handlers.get(getattr(args, "sherwood_command", None) or "")
+        if handler is None:
+            print("usage: hermes sherwood {" + ",".join([*SUBCOMMANDS, FUND_BIND]) + "} ...", flush=True)
+            return 2
+        return handler(args)
+
     ctx.register_cli_command(
-        name="start", help="start monitoring a fund", setup_fn=_setup_common, handler_fn=start_handler
-    )
-    ctx.register_cli_command(
-        name="stop", help="stop monitoring a fund", setup_fn=_setup_common, handler_fn=stop_handler
-    )
-    ctx.register_cli_command(
-        name="status", help="show monitor status", setup_fn=lambda p: None, handler_fn=status_handler
-    )
-    ctx.register_cli_command(
-        name="tail", help="tail stderr of a monitor", setup_fn=_setup_common, handler_fn=tail_handler
-    )
-    ctx.register_cli_command(
-        name="install-cron",
-        help="register all sherwood crons with Hermes (no_agent watchdogs + reasoning; idempotent)",
-        setup_fn=lambda p: None,
-        handler_fn=install_cron_handler,
+        name="sherwood",
+        help="Sherwood fund monitor: start | stop | status | tail | install-cron | fund-bind",
+        setup_fn=setup,
+        handler_fn=dispatch,
+        description="Monitor Sherwood funds and register the Sherwood crons.",
     )

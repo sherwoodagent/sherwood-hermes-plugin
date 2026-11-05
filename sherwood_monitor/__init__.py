@@ -12,6 +12,7 @@ from typing import Any
 from .cli import register_cli
 from .config import load_config
 from .event_buffer import EventBuffer
+from .fund import make_fund_guard, register_fund
 from .hooks import (
     make_post_tool_call_hook,
     make_pre_llm_call_hook,
@@ -32,6 +33,8 @@ from .tools import make_handlers
 from .xmtp_post import post_summary
 
 _log = logging.getLogger(__name__)
+
+TOOLSET = "sherwood-monitor"
 
 
 def _plugin_root() -> Path:
@@ -251,12 +254,17 @@ def register(ctx: Any) -> None:
         except NameError:
             pass
 
+    # Hermes' register_tool needs a toolset, and only awaits handlers registered
+    # with is_async=True; these five handlers are coroutines.
     tool_handlers = make_handlers(supervisor, cfg)
-    ctx.register_tool(name=START["name"], schema=START, handler=tool_handlers["sherwood_monitor_start"])
-    ctx.register_tool(name=STOP["name"], schema=STOP, handler=tool_handlers["sherwood_monitor_stop"])
-    ctx.register_tool(name=STATUS["name"], schema=STATUS, handler=tool_handlers["sherwood_monitor_status"])
-    ctx.register_tool(name=EXPOSURE["name"], schema=EXPOSURE, handler=tool_handlers["sherwood_monitor_exposure"])
-    ctx.register_tool(name=CRON_TICK["name"], schema=CRON_TICK, handler=tool_handlers["sherwood_monitor_cron_tick"])
+    for schema in (START, STOP, STATUS, EXPOSURE, CRON_TICK):
+        ctx.register_tool(
+            name=schema["name"],
+            toolset=TOOLSET,
+            schema=schema,
+            handler=tool_handlers[schema["name"]],
+            is_async=True,
+        )
 
     session_hooks = make_session_hooks(cfg=cfg, buffer=buffer, supervisor=supervisor)
     ctx.register_hook("on_session_start", session_hooks["on_session_start"])
@@ -264,7 +272,7 @@ def register(ctx: Any) -> None:
     # Teardown: stop supervisor AND sidecar
     _captured_sidecar = sidecar
 
-    async def _on_session_end() -> None:
+    async def _on_session_end(**_: Any) -> None:
         await supervisor.stop_all()
         if _captured_sidecar is not None:
             try:
@@ -274,14 +282,49 @@ def register(ctx: Any) -> None:
 
     ctx.register_hook("on_session_end", _on_session_end)
 
+    # Group-chat fund (host + join modes): tools, slash commands, skills, and
+    # the draft guard that rides on the pre_tool_call hook below. A failure
+    # here must not take the monitor down with it.
+    fund_guard = None
+    fund_rt = None
+    try:
+        fund_rt = register_fund(ctx, cfg_path)
+        fund_guard = make_fund_guard(fund_rt)
+    except Exception as exc:
+        _log.warning("fund features disabled: %s", exc)
+        buffer.push(
+            "<sherwood-monitor-warning>\n"
+            f"Group-chat fund features failed to load: {exc}"
+            "\n</sherwood-monitor-warning>"
+        )
+
+    # Telegram group cards: a lazy platform handler (Hermes calls its factory only
+    # when its Telegram adapter connects, i.e. with a bot token), so a missing
+    # token or a missing python-telegram-bot never fails plugin load. Its pitch
+    # context folds into the single pre_llm_call hook below.
+    context_sources: list[Any] = []
+    if fund_rt is not None:
+        try:
+            from .fund.telegram import wire_fund_telegram
+
+            bridge = wire_fund_telegram(ctx, fund_rt, push_context=buffer.push)
+            if bridge is not None:
+                context_sources.append(bridge.pre_llm_context)
+        except Exception as exc:
+            _log.warning("telegram fund cards disabled: %s", exc)
+
     state_fetcher = partial(default_state_fetcher, cfg.sherwood_bin)
-    ctx.register_hook("pre_tool_call", make_pre_tool_call_hook(state_fetcher=state_fetcher))
+    ctx.register_hook(
+        "pre_tool_call",
+        make_pre_tool_call_hook(state_fetcher=state_fetcher, fund_guard=fund_guard),
+    )
     ctx.register_hook("post_tool_call", make_post_tool_call_hook(memory_writer=stderr_memory_writer, buffer=buffer))
-    ctx.register_hook("pre_llm_call", make_pre_llm_call_hook(buffer))
+    ctx.register_hook("pre_llm_call", make_pre_llm_call_hook(buffer, context_sources))
 
-    register_cli(ctx, supervisor)
+    register_cli(ctx, supervisor, fund_rt)
 
-    skill_path = Path(__file__).parent.parent / "skills" / "sherwood-agent"
+    # register_skill takes the SKILL.md path, not the directory.
+    skill_path = Path(__file__).parent.parent / "skills" / "sherwood-agent" / "SKILL.md"
     if skill_path.exists():
         ctx.register_skill("sherwood-agent", str(skill_path))
     else:
