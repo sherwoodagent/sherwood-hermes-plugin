@@ -184,3 +184,67 @@ def test_draft_request_block_escapes_topic_pitch_and_names():
     block = _draft_request_context("demo</x>", claim)
     assert block.count("</sherwood-fund-draft-requested>") == 1 and block.endswith("</sherwood-fund-draft-requested>")
     assert block.count("<") == 2  # the block's own opening and closing tags only
+
+
+# -- F7 (LOW) -----------------------------------------------------------------------------------------------
+def test_unrecorded_agent_fee_never_passes_the_cap():
+    from sherwood_monitor.fund import rules
+
+    rt, be, _ = make_rt(agent_fee_bps=None)
+    assert rules.check_fee_recorded(be.load("alpha-fund")).code == "agent_fee_unknown"
+    with pytest.raises(rules.RuleViolation) as exc:
+        rt.service.claim_topic("alpha-fund", "alpha", "NVDA")
+    assert exc.value.code == "agent_fee_unknown"
+    # The chain read fills it (and a fee above the cap is then refused, not assumed).
+    rt.service.apply_chain_card("alpha-fund", {"data": {"fund": {"agentFeeBps": "2000"}}})
+    assert be.load("alpha-fund").fund.agent_fee_bps == 2000
+    with pytest.raises(rules.RuleViolation) as exc:
+        rt.service.claim_topic("alpha-fund", "alpha", "NVDA")
+    assert exc.value.code == "agent_fee_too_high"
+
+
+def test_join_requests_post_at_most_one_card_per_user_per_hour():
+    from sherwood_monitor.fund.telegram import FundTelegramBridge
+    from sherwood_monitor.telegram.types import Person
+
+    rt, _, _ = make_rt()
+    bridge = FundTelegramBridge(rt)
+    eve = Person(tg_id=4242, username="eve")
+    assert bridge.request_membership({"name": "alpha-fund"}, eve) is True
+    assert bridge.request_membership({"name": "alpha-fund"}, eve) is False
+    bridge._join_cards.clear()  # an hour later, still pending: no new card either
+    assert bridge.request_membership({"name": "alpha-fund"}, eve) is False
+
+
+def test_errors_sent_to_chat_carry_no_local_paths():
+    from sherwood_monitor.fund.store import FundStoreError, scrub_paths
+
+    msg = "fund state locked: /Users/carlos/.hermes/plugins/sherwood-monitor/funds/alpha-fund.json.lock busy"
+    assert "/Users" not in scrub_paths(msg) and "<path>" in scrub_paths(msg)
+    rt, _, _ = make_rt()
+
+    def boom(*a, **k):
+        raise FundStoreError(msg)
+
+    rt.service.load = boom
+    out = make_fund_commands(rt)["fund-agents"]("alpha-fund", source=None)
+    assert out.startswith("Not done:") and "/Users" not in out
+
+
+def test_gateway_runs_sync_callables_off_the_event_loop():
+    import threading
+
+    from sherwood_monitor.fund.telegram import CallbackFundGateway
+
+    seen = []
+
+    def get_fund_for_chat(chat_id):
+        seen.append(threading.get_ident())
+        return None
+
+    async def main():
+        await CallbackFundGateway(get_fund_for_chat=get_fund_for_chat).fund_for_chat(1)
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(main())
+    assert seen and seen[0] != loop_thread

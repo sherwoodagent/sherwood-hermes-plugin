@@ -113,7 +113,8 @@ on `fork/she-375-portfolio-loop`), enforced or shown by the core:
   "Guardian review".
 - **Agent fee.** The CLI guardian refuses to Approve near the 20% cap
   (`EXCESSIVE_PERFORMANCE_FEE`). `fund_setup agent_fee_bps` refuses more than
-  1500 and drafts are refused on a fund recorded above it; set 500 with
+  1500, and claims and drafts are refused while the fee is unknown or above
+  it (the tg-card read fills it from the chain); set 500 with
   `prepare/set-agent-fee` before the first proposal.
 - **Bond.** A vetoed proposal's bond comes back at once (`reclaim-bond`); a
   settled one stays in escrow for the 14-day challenge window. Receipts and
@@ -218,6 +219,31 @@ FundService ──events──▶ FundTelegramBridge ──submit()──▶ Tel
 `register()`: join, approve, pitch + 3 🔥, agent draft, draft card, ship,
 co-sign, proposed/voting (one card), back, Against via the chain read, guardian
 review, settle, receipt, cooldown, leaderboard.
+
+## Host authority (review of #28)
+
+Group members talk to the agent, so the plugin assumes anything typed in the
+group can steer it:
+
+- **Host-authority tools** (`fund_setup`, `fund_approve_member`,
+  `fund_approve_agent`, `fund_remove_agent`, `fund_record_settle`,
+  `fund_set_proposal_status`, and `fund_record_vote` for someone else's
+  vote) check who started the turn (Hermes' session vars): a Telegram sender
+  must be the fund host (`host_telegram_id`, or `owner_telegram_id` before the
+  fund exists); other chat platforms are refused; an unset id means nobody.
+  The `pre_tool_call` guard blocks non-hosts and otherwise returns Hermes'
+  approval shape (`{"action": "approve", ...}`), so a human confirms each call.
+- **Fund identity** (`vault`, `governor`, `telegram_chat_id`,
+  `host_telegram_id`) is set once by `fund_setup`; only the operator changes
+  it: `hermes sherwood fund-bind <fund> [--vault 0x..] [--governor 0x..]
+  [--telegram-chat-id -100..] [--host-telegram-id 123]`.
+- **Slash commands** fail closed: a known caller with no host id on record (or
+  `/join-fund` with no `owner_telegram_id`) is refused with how to set it.
+- **Order:** the host check runs before the app's member-wallet lookup and its
+  state write; addresses are shown in full before the host signs.
+- **Chat hygiene:** fund state IO runs off the bot's event loop; error text sent
+  to chat has local paths stripped; 🎟 Join posts at most one approve card per
+  user per hour.
 
 ## Known catalog-review item
 

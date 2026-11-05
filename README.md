@@ -108,6 +108,7 @@ hermes sherwood start alpha-fund
 hermes sherwood stop alpha-fund
 hermes sherwood tail alpha-fund
 hermes sherwood install-cron        # one-time: register the 15-min autonomous-digest cron
+hermes sherwood fund-bind alpha-fund --host-telegram-id 123  # operator only: change a fund's vault/governor/chat/host
 ```
 
 ## What the plugin does

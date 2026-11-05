@@ -54,6 +54,7 @@ def host(tmp_path, monkeypatch):
     out = ctx.call_tool("fund_setup", {
         "fund": "alpha-fund", "vault": VAULT, "governor": GOVERNOR, "telegram_chat_id": "-100500",
         "host_telegram_id": "900", "max_capital": "1000", "max_drawdown_bps": 2000, "voting_period": 1800,
+        "agent_fee_bps": 500,
     })
     assert out["ok"] and out["created"], out
     return ctx

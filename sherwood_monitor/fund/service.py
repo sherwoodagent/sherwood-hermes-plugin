@@ -680,7 +680,9 @@ class FundService:
             rows.append(data["activeProposal"])
         gov = data.get("governor") if isinstance(data.get("governor"), dict) else {}
         gate = data.get("proposeGate") if isinstance(data.get("proposeGate"), dict) else {}
-        if gov or gate:
+        fund_info = data.get("fund") if isinstance(data.get("fund"), dict) else {}
+        fee = _opt_int(fund_info.get("agentFeeBps"))
+        if gov or gate or fee is not None:
             def fund_mutate(state: FundState) -> None:
                 if str(gov.get("cooldownPeriod") or "").isdigit():
                     state.fund.cooldown_period = int(gov["cooldownPeriod"])
@@ -689,6 +691,8 @@ class FundService:
                 if "cooldownUntil" in gate:
                     until = _opt_float(gate.get("cooldownUntil"))
                     state.fund.cooldown_until = until
+                if fee is not None:
+                    state.fund.agent_fee_bps = fee  # the chain's value; drafts refuse it above the cap
 
             self.backend.update(fund, fund_mutate)
         state = self.backend.load(fund)

@@ -389,11 +389,21 @@ Bot API only lets its `url` open a game or a `t.me/<bot>?start=` link. Set
 2. The group 🔥s it: reactions on the pitch or the riff (admin only), or
    replies whose whole text is 🔥 (any mode). Distinct people across the pitch
    and its riff count together.
-3. At 3 people, or when the host replies "ship it" (to the pitch or the riff,
-   or with a mention, which targets the latest open pitch), the flow emits
+3. At 3 distinct accounts other than the pitch's author, or when the host
+   replies "ship it" to the pitch or the riff (or says "ship it" naming the
+   pitch: one of its `$TICKER`s or the author's `@handle`; an unnamed one never
+   picks "the latest" pitch), the flow emits
    `DraftRequested(idea_by, text, source_message_id, chat_id, trigger, ...)`
    once per pitch through `on_draft_requested`. If that callback raises, the
    next 🔥 or "ship it" retries.
+
+Only senders Hermes' Telegram allowlist admits count. The plugin's observers
+run ahead of Hermes' core handlers, so `wire()` takes the adapter's own check
+(`_is_callback_user_authorized`, the inline-button chain) and the flow asks it
+for every pitch, 🔥 and "ship it"; without it only the fund's host and approved
+members count. The pitch context and the draft-request block are bound to the
+chat (and the sender they are for) and reach only a Telegram turn from that
+chat; every user-derived string in them is escaped and capped.
 
 The bot never receives its own messages and Hermes has no hook that returns
 the message id of the agent's reply. The flow learns riff ids from replies to

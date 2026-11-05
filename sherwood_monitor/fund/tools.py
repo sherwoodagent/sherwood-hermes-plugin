@@ -20,7 +20,7 @@ from .models import TOKEN_ADDRESSES_4663, WOOD_DECIMALS, Agent, Fund, FundState,
 from .rules import RuleViolation
 from .runtime import FundRuntime
 from .service import FundServiceError
-from .store import FundExists, FundNotFound, FundStoreError
+from .store import FundExists, FundNotFound, FundStoreError, scrub_paths
 
 # Set once, then only the operator changes them (`hermes sherwood fund-bind`), never a tool.
 LOCKED_FUND_FIELDS = ("vault", "governor", "telegram_chat_id", "host_telegram_id")
@@ -254,7 +254,7 @@ def _guarded(fn: Callable[[dict[str, Any]], dict[str, Any]]) -> ToolHandler:
         except RuleViolation as exc:
             return _json({"ok": False, "blocked": True, "code": exc.code, "error": exc.reason})
         except (FundServiceError, FundStoreError, UnitsError, TxBuilderError, ValueError, TypeError) as exc:
-            return _json({"ok": False, "error": str(exc)})
+            return _json({"ok": False, "error": scrub_paths(exc)})
 
     handler.__name__ = fn.__name__
     return handler

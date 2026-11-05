@@ -203,6 +203,17 @@ def check_agent_fee(fee_bps: int | None) -> Verdict:
     return ALLOW
 
 
+def check_fee_recorded(state: FundState) -> Verdict:
+    """Drafting needs the vault's agent fee on record, and within the cap (never assumed)."""
+    if state.fund.agent_fee_bps is None:
+        return deny(
+            "agent_fee_unknown",
+            "the vault's agent fee is not on record; set it (<= 1500 bps, 500 recommended) with "
+            "prepare/set-agent-fee and record it with fund_setup agent_fee_bps, or let the tg-card read fill it",
+        )
+    return check_agent_fee(state.fund.agent_fee_bps)
+
+
 def _hhmm(ts: float) -> str:
     import time as _time
 
@@ -219,7 +230,9 @@ def check_claim(
     max_open: int = MAX_OPEN_PER_FUND,
     max_open_per_agent: int = MAX_OPEN_PER_AGENT,
 ) -> Verdict:
-    v = first_failure([check_agent_can_act(state, agent), check_proposable_asset(state), check_cooldown(state, now)])
+    v = first_failure([
+        check_agent_can_act(state, agent), check_proposable_asset(state), check_fee_recorded(state), check_cooldown(state, now),
+    ])
     if not v.ok:
         return v
     key = normalize_topic(topic)
@@ -328,7 +341,7 @@ def check_draft(
     v = first_failure([
         check_agent_can_act(state, agent),
         check_proposable_asset(state),
-        check_agent_fee(state.fund.agent_fee_bps),
+        check_fee_recorded(state),
         check_cooldown(state, now),
     ])
     if not v.ok:

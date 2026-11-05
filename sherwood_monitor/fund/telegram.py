@@ -29,6 +29,7 @@ import asyncio
 import collections
 import dataclasses
 import html
+import inspect
 import json
 import logging
 import time
@@ -58,7 +59,7 @@ from . import service as fund_service
 from .applink import ensure_member_address
 from .models import WOOD_DECIMALS, FundState, Member, ProposalRecord
 from .rules import RuleViolation, check_caller_is_host, check_host_action
-from .store import FundStoreError
+from .store import FundStoreError, scrub_paths
 from .txbuilder import TxBuilderClient, TxBuilderError
 
 _log = logging.getLogger(__name__)
@@ -203,6 +204,17 @@ def _person(tg_id: int, value: Any) -> Person:
     )
 
 
+async def _run(fn: Callable[..., Any], *args: Any) -> Any:
+    """Call a gateway callable without blocking the bot loop.
+
+    Sync callables (fund state file IO, up to a 10 s lock wait) run in a worker
+    thread; async ones are awaited (they move their own IO off the loop).
+    """
+    if inspect.iscoroutinefunction(fn):
+        return await fn(*args)
+    return await maybe_await(await asyncio.to_thread(fn, *args))
+
+
 @dataclass
 class CallbackFundGateway:
     """``FundGateway`` built from plain (sync or async) callables over plugin-core records."""
@@ -228,14 +240,14 @@ class CallbackFundGateway:
     request_membership_fn: Callable[[Any, Person], Any] | None = None
 
     async def _fund_record(self, chat_id: int) -> Any:
-        return await maybe_await(self.get_fund_for_chat(int(chat_id)))
+        return await _run(self.get_fund_for_chat, int(chat_id))
 
     async def _view(self, fund: Any) -> FundView | None:
         if fund is None:
             return None
         proposals = None
         if self.resolve_proposals_fn is not None:
-            proposals = await maybe_await(self.resolve_proposals_fn(fund))
+            proposals = await _run(self.resolve_proposals_fn, fund)
         return fund_to_view(fund, proposals)
 
     async def fund_for_chat(self, chat_id: int) -> FundView | None:
@@ -244,7 +256,7 @@ class CallbackFundGateway:
     async def fund_by_vault(self, vault: str) -> FundView | None:
         if self.get_fund_by_vault is None:
             return None
-        return await self._view(await maybe_await(self.get_fund_by_vault(vault)))
+        return await self._view(await _run(self.get_fund_by_vault, vault))
 
     async def proposal(self, chat_id: int, proposal_id: str) -> ProposalView | None:
         if self.get_proposal is None:
@@ -252,7 +264,7 @@ class CallbackFundGateway:
         fund = await self._fund_record(chat_id)
         if fund is None:
             return None
-        record = await maybe_await(self.get_proposal(fund, str(proposal_id)))
+        record = await _run(self.get_proposal, fund, str(proposal_id))
         return None if record is None else proposal_to_view(record)
 
     async def people(self, chat_id: int) -> dict[int, Person]:
@@ -264,7 +276,7 @@ class CallbackFundGateway:
             if m.username or m.first_name:
                 out[m.tg_id] = m.person
         if self.people_fn is not None:
-            extra = await maybe_await(self.people_fn(fund)) or {}
+            extra = await _run(self.people_fn, fund) or {}
             for tg, value in dict(extra).items():
                 tg_i = _int_or_none(tg)
                 if tg_i is not None:
@@ -274,7 +286,7 @@ class CallbackFundGateway:
     async def wood_usd(self) -> float | None:
         if self.wood_usd_fn is None:
             return None
-        value = await maybe_await(self.wood_usd_fn())
+        value = await _run(self.wood_usd_fn)
         return None if value is None else float(value)
 
     async def _action(self, fn: Callable[..., Any] | None, chat_id: int, *args: Any, what: str) -> Any:
@@ -283,7 +295,7 @@ class CallbackFundGateway:
         fund = await self._fund_record(chat_id)
         if fund is None:
             raise FundActionError("No fund is linked to this chat.")
-        return await maybe_await(fn(fund, *args))
+        return await _run(fn, fund, *args)
 
     async def toggle_backer(self, chat_id: int, proposal_id: str, tg_id: int) -> ProposalView | None:
         if self.toggle_backer_fn is None:
@@ -291,7 +303,7 @@ class CallbackFundGateway:
         fund = await self._fund_record(chat_id)
         if fund is None:
             return None
-        record = await maybe_await(self.toggle_backer_fn(fund, str(proposal_id), int(tg_id)))
+        record = await _run(self.toggle_backer_fn, fund, str(proposal_id), int(tg_id))
         return None if record is None else proposal_to_view(record)
 
     async def set_card_message_id(self, chat_id: int, proposal_id: str, message_id: int) -> None:
@@ -299,7 +311,7 @@ class CallbackFundGateway:
             return
         fund = await self._fund_record(chat_id)
         if fund is not None:
-            await maybe_await(self.set_card_message_id_fn(fund, str(proposal_id), int(message_id)))
+            await _run(self.set_card_message_id_fn, fund, str(proposal_id), int(message_id))
 
     async def ship_draft(self, chat_id: int, draft_id: str, by_tg_id: int) -> str:
         return str(await self._action(self.ship_draft_fn, chat_id, str(draft_id), int(by_tg_id), what="Shipping drafts") or "")
@@ -310,7 +322,7 @@ class CallbackFundGateway:
         fund = await self._fund_record(chat_id)
         if fund is None:
             return None
-        url = await maybe_await(self.host_signing_url_fn(fund, str(draft_id), int(host_tg_id)))
+        url = await _run(self.host_signing_url_fn, fund, str(draft_id), int(host_tg_id))
         return str(url) if url else None
 
     async def host_action_url(self, chat_id: int, action: str, arg: str, by_tg_id: int) -> str | None:
@@ -319,7 +331,7 @@ class CallbackFundGateway:
         fund = await self._fund_record(chat_id)
         if fund is None:
             return None
-        url = await maybe_await(self.host_action_url_fn(fund, str(action), str(arg), int(by_tg_id)))
+        url = await _run(self.host_action_url_fn, fund, str(action), str(arg), int(by_tg_id))
         return str(url) if url else None
 
     async def request_membership(self, chat_id: int, person: Person) -> bool:
@@ -328,7 +340,7 @@ class CallbackFundGateway:
         fund = await self._fund_record(chat_id)
         if fund is None:
             return False
-        return bool(await maybe_await(self.request_membership_fn(fund, person)))
+        return bool(await _run(self.request_membership_fn, fund, person))
 
     async def approve_member(self, chat_id: int, tg_id: int, by_tg_id: int) -> str:
         return str(await self._action(self.approve_member_fn, chat_id, int(tg_id), int(by_tg_id), what="Member approval") or "")
@@ -345,7 +357,7 @@ class CallbackFundGateway:
         fund = await self._fund_record(chat_id)
         if fund is None:
             return []
-        rows = await maybe_await(self.leaderboard_fn(fund)) or []
+        rows = await _run(self.leaderboard_fn, fund) or []
         out: list[LeaderRow] = []
         for r in rows:
             tg = _int_or_none(_get(r, "tg_id", "telegram_id", "idea_by"))
@@ -365,7 +377,7 @@ class CallbackFundGateway:
         if self.on_draft_requested_fn is None:
             _log.info("DraftRequested for message %s but no handler is wired", event.source_message_id)
             return
-        await maybe_await(self.on_draft_requested_fn(event))
+        await _run(self.on_draft_requested_fn, event)
 
 
 def register_telegram(
@@ -605,6 +617,7 @@ class FundTelegramBridge:
         self._secret = secret
         self.runtime: TelegramRuntime | None = None
         self._card_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._join_cards: dict[tuple[str, str], float] = {}
         # Agent context bound to a chat (and the senders whose turn may receive it).
         self._chat_context: collections.deque[tuple[float, str, frozenset[str], str]] = collections.deque(maxlen=50)
         self.context_ttl_s = 900.0
@@ -666,14 +679,14 @@ class FundTelegramBridge:
 
     async def get_proposal(self, fund: Any, proposal_id: str) -> dict[str, Any] | None:
         name = self._name(fund)
-        st = self._load(name)
+        st = await asyncio.to_thread(self._load, name)
         record = None if st is None else st.proposal(proposal_id)
         if st is None or record is None:
             return None
         if (self.chain_sync is not None and record.onchain_id is not None
                 and record.status in ("proposed", "voting", "review", "approved") and self.chain_sync.due(name)):
             await asyncio.to_thread(self.chain_sync.sync, name, st.fund.vault)
-            st = self._load(name) or st
+            st = await asyncio.to_thread(self._load, name) or st
             record = st.proposal(proposal_id) or record
         return proposal_dict(st, record)
 
@@ -763,14 +776,17 @@ class FundTelegramBridge:
         return None
 
     async def approve_member(self, fund: Any, tg_id: int, by_tg_id: int) -> str:
+        return await asyncio.to_thread(self._approve_member, fund, tg_id, by_tg_id)  # file + HTTP IO off the loop
+
+    def _approve_member(self, fund: Any, tg_id: int, by_tg_id: int) -> str:
         name = self._name(fund)
         st = self.service.load(name)
         # Authorize first; only then the credentialed app lookup and its state write.
         for verdict in (check_caller_is_host(st, str(by_tg_id)), check_host_action(st, self._host_actor(st))):
             if not verdict.ok:
                 raise FundActionError(verdict.reason)
-        # The wallet the member linked in /tg/join (app GET /api/tg/link), off the bot loop.
-        await asyncio.to_thread(ensure_member_address, self.rt, name, str(tg_id))
+        # The wallet the member linked in /tg/join (app GET /api/tg/link).
+        ensure_member_address(self.rt, name, str(tg_id))
         st = self.service.load(name)
         try:
             member, _body = self.service.approve_member(
@@ -804,13 +820,22 @@ class FundTelegramBridge:
             raise FundActionError(exc.reason) from exc
         return f"🗑 {agent.name} removed: its claims are dropped and its drafts cancelled."
 
+    JOIN_CARD_INTERVAL_S = 3600.0
+
     def request_membership(self, fund: Any, person: Person) -> bool:
+        """Record a 🎟 Join request. True = show the host an Approve card (at most one per user per hour)."""
         name = self._name(fund)
+        key = (name, str(person.tg_id))
+        now = time.time()
+        if now - self._join_cards.get(key, -1e18) < self.JOIN_CARD_INTERVAL_S:
+            return False
         st = self.service.load(name)
         existing = st.member(str(person.tg_id))
         if existing is not None and (existing.approved or existing.joined_at):
+            self._join_cards[key] = now
             return False
         self.service.request_membership(name, str(person.tg_id), username=person.username or "")
+        self._join_cards[key] = now
         return True
 
     def leaderboard(self, fund: Any) -> list[dict[str, Any]]:
@@ -824,22 +849,27 @@ class FundTelegramBridge:
         cooldown, the agent busy) is said in the chat once; it is not raised,
         so the flow does not retry on every further 🔥.
         """
-        st = self.state_for_chat(event.chat_id)
+        st = await asyncio.to_thread(self.state_for_chat, event.chat_id)
         if st is None:
             return
         who = event.idea_by_name or f"user{event.idea_by}"
         try:
-            self.service.request_draft(
-                st.fund.name,
-                self._agent(st),
-                idea_by=str(event.idea_by),
-                pitch=event.text,
-                chat_id=str(event.chat_id),
-                source_message_id=event.source_message_id,
+            await asyncio.to_thread(
+                lambda: self.service.request_draft(
+                    st.fund.name,
+                    self._agent(st),
+                    idea_by=str(event.idea_by),
+                    pitch=event.text,
+                    chat_id=str(event.chat_id),
+                    source_message_id=event.source_message_id,
+                )
             )
         except (RuleViolation, FundActionError) as exc:
             reason = getattr(exc, "reason", None) or str(exc)
-            await self._say(event.chat_id, f"Can't draft {who}'s idea yet: {reason}", reply_to=event.source_message_id)
+            await self._say(event.chat_id, f"Can't draft {who}'s idea yet: {scrub_paths(reason)}", reply_to=event.source_message_id)
+        except FundStoreError as exc:
+            _log.warning("draft request for %s not recorded: %s", event.source_message_id, exc)
+            await self._say(event.chat_id, "Fund state is busy; react again in a moment.", reply_to=event.source_message_id)
 
     # -- observer: FundService -> cards ----------------------------------------------------
     def attach(self, runtime: TelegramRuntime | None) -> None:

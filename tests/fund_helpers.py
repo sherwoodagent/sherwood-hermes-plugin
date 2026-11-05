@@ -35,7 +35,7 @@ def guest_agent(name: str = "beta", address: str = GUEST_ADDR, registered: bool 
 
 def fund(**kw) -> Fund:
     base = dict(name="alpha-fund", vault=VAULT, governor=GOVERNOR, host=HOST_ADDR, host_telegram_id="900",
-                telegram_chat_id="-100500", max_capital="1000000000", max_drawdown_bps=2000)
+                telegram_chat_id="-100500", max_capital="1000000000", max_drawdown_bps=2000, agent_fee_bps=500)
     base.update(kw)
     return Fund(**base)
 

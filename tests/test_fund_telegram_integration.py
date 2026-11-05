@@ -172,7 +172,7 @@ async def test_register_wires_one_pre_llm_hook_and_a_lazy_telegram_factory(tmp_p
     assert len(ctx.platform_handlers["telegram"]) == 1
     # Nothing touched Telegram before the adapter connected, and a card post is a no-op until then.
     ctx.call_tool("fund_setup", {"fund": "alpha-fund", "vault": VAULT, "governor": GOVERNOR,
-                                 "telegram_chat_id": str(CHAT), "host_telegram_id": str(HOST_TG)})
+                                 "telegram_chat_id": str(CHAT), "host_telegram_id": str(HOST_TG), "agent_fee_bps": 500})
     assert ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})["ok"]
 
 
@@ -335,7 +335,7 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
 async def test_cards_are_a_noop_until_the_adapter_connects(tmp_path, monkeypatch):
     ctx = boot(tmp_path, monkeypatch, ChainStub())
     ctx.call_tool("fund_setup", {"fund": "alpha-fund", "vault": VAULT, "governor": GOVERNOR,
-                                 "telegram_chat_id": str(CHAT), "host_telegram_id": str(HOST_TG)})
+                                 "telegram_chat_id": str(CHAT), "host_telegram_id": str(HOST_TG), "agent_fee_bps": 500})
     ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})
     d = ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", "thesis": "t", "legs": [{"summary": "buy NVDA", "symbol": "NVDA", "weight_bps": 10000}],
                                               "max_capital": "10", "max_drawdown_bps": 100, "strategy_duration_seconds": 3600})

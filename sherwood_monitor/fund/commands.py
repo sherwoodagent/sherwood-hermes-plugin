@@ -19,7 +19,7 @@ from .models import Agent
 from .rules import RuleViolation, check_caller_is_host, check_host_action, is_address, require
 from .runtime import FundRuntime, session_ids
 from .service import FundServiceError
-from .store import FundNotFound, FundStoreError
+from .store import FundNotFound, FundStoreError, scrub_paths
 from .units import UnitsError
 
 CommandHandler = Callable[..., str]
@@ -42,9 +42,9 @@ def _safe(fn: Callable[..., str]) -> CommandHandler:
         except RuleViolation as exc:
             return f"Not done: {exc.reason}"
         except FundNotFound as exc:
-            return f"{exc}. Ask the host which fund to use, or check fund_state_backend."
+            return f"{scrub_paths(exc)}. Ask the host which fund to use, or check fund_state_backend."
         except (FundServiceError, FundStoreError, UnitsError, ValueError) as exc:
-            return f"Not done: {exc}"
+            return f"Not done: {scrub_paths(exc)}"
 
     handler.__name__ = fn.__name__
     return handler

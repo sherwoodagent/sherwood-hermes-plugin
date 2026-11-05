@@ -305,3 +305,11 @@ def open_backend(
     if kind == "http":
         return HttpFundStateBackend(state_url)
     raise FundStoreError(f"unknown fund_state_backend {kind!r} (use local or http)")
+
+
+_PATH_RE = re.compile(r"(?:[A-Za-z]:)?(?:[\\/][^\\/\s'\"`]+){2,}")
+
+
+def scrub_paths(text: object) -> str:
+    """Error text for chat or the model, without local file paths (`<path>` instead)."""
+    return _PATH_RE.sub("<path>", str(text))
