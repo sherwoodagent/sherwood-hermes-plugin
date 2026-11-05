@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
@@ -133,8 +134,8 @@ def test_create_argv_is_positional():
     gas = create_argv(by_name["sherwood-gas-watchdog"])
     assert gas[:3] == ["cron", "create", "*/30 * * * *"]
     assert "--schedule" not in gas and "--prompt" not in gas
-    assert gas[gas.index("--script") + 1] == "sherwood-monitor-gas.sh"  # relative to $HERMES_HOME/scripts
-    assert "--no-agent" in gas and gas[-1] == "sherwood-monitor-gas.sh"  # no trailing mode argument
+    assert gas[gas.index("--script") + 1] == "sherwood-monitor-gas.py"  # relative to $HERMES_HOME/scripts
+    assert "--no-agent" in gas and gas[-1] == "sherwood-monitor-gas.py"  # no trailing mode argument
     reasoning = create_argv(by_name["sherwood-proposal-reasoning"])
     assert reasoning[:4] == ["cron", "create", "0 */6 * * *", PROPOSAL_REASONING_PROMPT]
     assert "--no-agent" not in reasoning
@@ -144,20 +145,27 @@ def test_edit_argv_restores_the_definition():
     by_name = {c.name: c for c in CRONS}
     argv = edit_argv(by_name["sherwood-stream-watchdog"], "534f2b79fff9")
     assert argv[:5] == ["cron", "edit", "534f2b79fff9", "--schedule", "*/5 * * * *"]
-    assert argv[argv.index("--script") + 1] == "sherwood-monitor-stream.sh" and "--no-agent" in argv
+    assert argv[argv.index("--script") + 1] == "sherwood-monitor-stream.py" and "--no-agent" in argv
     argv = edit_argv(by_name["sherwood-proposal-reasoning"], "90d2adf38572")
     assert argv[argv.index("--prompt") + 1] == PROPOSAL_REASONING_PROMPT
 
 
-def test_wrappers_bake_in_the_mode_and_the_watchdog_path(_scratch_hermes_home):
+def test_wrappers_are_python_with_the_mode_fixed(_scratch_hermes_home):
+    """`.py` wrappers: Hermes runs them on its current dependency environment, so no
+    interpreter or site-packages path is baked in (they survive Hermes updates)."""
     plugin_root = Path(__file__).resolve().parent.parent
-    written = write_wrappers(_scratch_hermes_home / "scripts", plugin_root, python="/opt/py/bin/python3")
+    scripts = _scratch_hermes_home / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "sherwood-monitor-gas.sh").write_text("# a pre-release wrapper\n")
+    written = write_wrappers(scripts, plugin_root)
     assert set(written) == {c.name for c in CRONS if c.mode == "no_agent"}
-    gas = (_scratch_hermes_home / "scripts" / "sherwood-monitor-gas.sh").read_text()
-    assert f"exec bash {plugin_root / 'scripts' / 'watchdog.sh'} gas" in gas
-    assert "export SHERWOOD_MONITOR_PYTHON=/opt/py/bin/python3" in gas
-    assert f"export PYTHONPATH={plugin_root}" in gas
-    assert oct((_scratch_hermes_home / "scripts" / "sherwood-monitor-gas.sh").stat().st_mode & 0o777) == "0o700"
+    gas = (scripts / "sherwood-monitor-gas.py").read_text()
+    assert "from sherwood_monitor.cli_watchdog import main" in gas
+    assert "raise SystemExit(main(['gas']))" in gas
+    assert f"sys.path.append({str(plugin_root)!r})" in gas
+    assert "site-packages" not in gas and "PYTHONPATH" not in gas
+    compile(gas, "sherwood-monitor-gas.py", "exec")
+    assert not (scripts / "sherwood-monitor-gas.sh").exists()  # the old .sh wrapper is removed
 
 
 def test_install_cron_missing_hermes_binary(install_cron_handler, capsys):
@@ -203,7 +211,7 @@ def test_install_cron_creates_missing_and_edits_existing(install_cron_handler, c
     ]
     assert [c[:2] for c in calls].count(["cron", "create"]) == 3
     assert [c[:2] for c in calls].count(["cron", "edit"]) == 3
-    assert (_scratch_hermes_home / "scripts" / "sherwood-monitor-digest.sh").is_file()
+    assert (_scratch_hermes_home / "scripts" / "sherwood-monitor-digest.py").is_file()
 
 
 def test_install_cron_reports_create_failure(install_cron_handler, capsys):
@@ -269,14 +277,15 @@ def test_install_cron_against_the_real_hermes_binary(install_cron_handler, capsy
         if spec.mode == "no_agent":
             assert f"Script:    {wrapper_name(spec)}" in listing.stdout
 
-    # What Hermes does at each tick: bash <wrapper>, no arguments, a bare environment.
+    # What Hermes does at each tick for a `.py` cron script: run it with its dependency
+    # environment's Python (here, this test's Python), no arguments, a minimal environment.
     (tmp_path / "home").mkdir(exist_ok=True)
     for spec in CRONS:
         if spec.mode != "no_agent":
             continue
         script = _scratch_hermes_home / "scripts" / wrapper_name(spec)
         res = subprocess.run(
-            ["bash", str(script)], capture_output=True, text=True, timeout=120,
+            [sys.executable, str(script)], capture_output=True, text=True, timeout=120,
             env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "home")},
         )
         assert res.returncode == 0, (spec.name, res.stderr[-400:])

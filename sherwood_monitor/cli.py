@@ -5,10 +5,8 @@ import asyncio
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,40 +90,34 @@ def hermes_home() -> Path:
 
 
 def wrapper_name(spec: _CronSpec) -> str:
-    """`sherwood-monitor-<mode>.sh`, the script Hermes runs for a no_agent cron."""
-    return f"{WRAPPER_PREFIX}{spec.payload}.sh"
+    """`sherwood-monitor-<mode>.py`, the script Hermes runs for a no_agent cron."""
+    return f"{WRAPPER_PREFIX}{spec.payload}.py"
 
 
-def _python_path(plugin_root: Path) -> list[str]:
-    """The plugin root plus this interpreter's site-packages (where its dependencies live).
+def wrapper_text(spec: _CronSpec, plugin_root: Path) -> str:
+    """One no_agent cron's wrapper, a `.py` file with the watchdog mode fixed.
 
-    Hermes runs a cron's `.sh` under bash with no arguments; a bare `python3`
-    there would import neither this plugin nor PyYAML / eth-keys.
+    Hermes runs a cron's `.py` script on its currently selected dependency
+    environment (where a catalog install puts this plugin and its
+    dependencies), so nothing about the interpreter or site-packages is baked
+    in and the wrapper survives Hermes updates. The plugin directory is
+    appended to sys.path only as a fallback for a plain checkout.
     """
-    entries = [str(plugin_root)]
-    for entry in sys.path:
-        if entry and "site-packages" in entry and entry not in entries and Path(entry).is_dir():
-            entries.append(entry)
-    return entries
-
-
-def wrapper_text(spec: _CronSpec, plugin_root: Path, python: str, python_path: list[str]) -> str:
-    """One no_agent cron's wrapper: the mode baked in, the plugin's watchdog.sh by absolute path."""
     return (
-        "#!/usr/bin/env bash\n"
         f"# Written by `hermes sherwood install-cron` (sherwood-monitor) for the {spec.name} cron.\n"
-        "# Hermes runs cron scripts from this folder with no arguments, so the watchdog mode is\n"
-        "# fixed here. Re-run `hermes sherwood install-cron` to rewrite it (e.g. after moving Hermes).\n"
-        f"export SHERWOOD_MONITOR_PYTHON={shlex.quote(python)}\n"
-        f"export PYTHONPATH={shlex.quote(os.pathsep.join(python_path))}\n"
-        f"exec bash {shlex.quote(str(plugin_root / _WATCHDOG_SCRIPT))} {shlex.quote(spec.payload)}\n"
+        "# Hermes runs cron scripts from this folder with no arguments, so the mode is fixed here.\n"
+        "import sys\n"
+        f"sys.path.append({str(plugin_root)!r})\n"
+        "from sherwood_monitor.cli_watchdog import main\n"
+        f"raise SystemExit(main([{spec.payload!r}]))\n"
     )
 
 
-def write_wrappers(scripts_dir: Path, plugin_root: Path, python: str | None = None) -> dict[str, Path]:
-    """Write (or rewrite) one wrapper per no_agent cron into Hermes' scripts folder."""
-    python = python or sys.executable
-    python_path = _python_path(plugin_root)
+def write_wrappers(scripts_dir: Path, plugin_root: Path) -> dict[str, Path]:
+    """Write (or rewrite) one wrapper per no_agent cron into Hermes' scripts folder.
+
+    Also removes this plugin's earlier `.sh` wrappers (pre-release 0.7.0 builds).
+    """
     scripts_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, Path] = {}
     for spec in CRONS:
@@ -135,8 +127,8 @@ def write_wrappers(scripts_dir: Path, plugin_root: Path, python: str | None = No
         fd, tmp = tempfile.mkstemp(prefix=".sherwood-monitor.", suffix=".tmp", dir=str(scripts_dir))
         try:
             with os.fdopen(fd, "w") as f:
-                f.write(wrapper_text(spec, plugin_root, python, python_path))
-            os.chmod(tmp, 0o700)
+                f.write(wrapper_text(spec, plugin_root))
+            os.chmod(tmp, 0o600)
             os.replace(tmp, target)
         except Exception:
             try:
@@ -145,6 +137,9 @@ def write_wrappers(scripts_dir: Path, plugin_root: Path, python: str | None = No
                 pass
             raise
         written[spec.name] = target
+        old_sh = scripts_dir / f"{WRAPPER_PREFIX}{spec.payload}.sh"
+        if old_sh.is_file():
+            old_sh.unlink()
     return written
 
 

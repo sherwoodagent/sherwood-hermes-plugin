@@ -20,8 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Tags are needed for the "tag already exists" check below; the
-          # default shallow checkout fetches none, so the check never fired.
+          # The "tag already exists" check below needs every tag. A depth-1
+          # checkout only auto-follows tags on the fetched commit, so the
+          # check missed existing tags; full history brings them all.
+          fetch-depth: 0
           fetch-tags: true
 
       - name: Read version from pyproject.toml
