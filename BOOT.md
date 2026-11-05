@@ -14,6 +14,14 @@ If `sherwood_monitor_status()` returns an empty list, note that no
 funds are configured and remind the user how to add one:
 `edit ~/.hermes/plugins/sherwood-monitor/config.yaml`.
 
+XMTP and the gas watchdog need the monitor wallet in the Hermes profile
+`.env`: `SHERWOOD_PRIVATE_KEY` (secret; the XMTP sidecar derives its own key
+from it) and `SHERWOOD_AGENT_ADDRESS` (the address the gas watchdog checks).
+Without them both stay off and everything else works. Since 0.7.0 the plugin
+never reads the Sherwood CLI's `~/.sherwood/config.json`; if a user upgraded
+from 0.6.0 and XMTP went quiet, tell them to set these two variables. Never
+ask for the key in chat.
+
 ## Group-chat fund (one-time check per session)
 
 If the fund settings (the `fund:` section of the config, or the plugin's

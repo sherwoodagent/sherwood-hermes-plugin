@@ -13,6 +13,8 @@ from .cli import register_cli
 from .config import load_config
 from .event_buffer import EventBuffer
 from .fund import make_fund_guard, register_fund
+from .fund.secrets import SHERWOOD_PRIVATE_KEY, get_secret
+from .key_derivation import normalize_private_key
 from .hooks import (
     make_post_tool_call_hook,
     make_pre_llm_call_hook,
@@ -47,19 +49,21 @@ def _sidecar_dir() -> Path:
     return Path(__file__).parent.parent / "xmtp_sidecar"
 
 
-def _read_sherwood_private_key(home: Path) -> str | None:
-    """Read privateKey from ~/.sherwood/config.json. Returns None if missing."""
-    config_path = home / ".sherwood" / "config.json"
-    if not config_path.exists():
+def _monitor_private_key() -> str | None:
+    """The monitor wallet's key, from the declared secret ``SHERWOOD_PRIVATE_KEY``.
+
+    Read through Hermes' secret scope only; the plugin never reads the Sherwood
+    CLI's config file. Unset or malformed -> ``None`` and the XMTP sidecar is
+    not started. The value is never logged.
+    """
+    raw = get_secret(SHERWOOD_PRIVATE_KEY)
+    if not raw:
+        _log.info("XMTP sidecar not started: %s is not set", SHERWOOD_PRIVATE_KEY)
         return None
-    try:
-        data = json.loads(config_path.read_text())
-        key = data.get("privateKey") or data.get("private_key")
-        if key and isinstance(key, str):
-            return key
-    except Exception as exc:
-        _log.warning("failed to read sherwood config.json: %s", exc)
-    return None
+    key = normalize_private_key(raw)
+    if key is None:
+        _log.warning("XMTP sidecar not started: %s is not a 32-byte hex key", SHERWOOD_PRIVATE_KEY)
+    return key
 
 
 def _iso_from_ns(sent_at_ns: Any) -> str:
@@ -100,14 +104,10 @@ def register(ctx: Any) -> None:
 
     effective_post_fn = _noop_post
 
-    private_key = _read_sherwood_private_key(home)
+    private_key = _monitor_private_key()
     if private_key is None:
-        buffer.push(
-            "<sherwood-monitor-warning>\n"
-            "XMTP disabled: ~/.sherwood/config.json not found. "
-            "Run `sherwood config set` to enable."
-            "\n</sherwood-monitor-warning>"
-        )
+        # XMTP is optional: one log line (in _monitor_private_key), no chat warning.
+        pass
     elif not pre.sidecar_built:
         # Warning already injected by run_preflight; skip spawn, keep _noop_post
         pass

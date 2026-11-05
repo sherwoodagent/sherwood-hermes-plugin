@@ -3,6 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Test-only key (not a real wallet). The plugin takes it from the declared secret
+# SHERWOOD_PRIVATE_KEY, never from the Sherwood CLI's config file.
+TEST_KEY = "0x" + "11" * 32
+
 
 def _make_mock_sidecar(*, address="0xSIDECARWALLET", member_of: list[str] | None = None):
     """Build a mock Sidecar suitable for register() tests."""
@@ -19,11 +23,8 @@ def _make_mock_sidecar(*, address="0xSIDECARWALLET", member_of: list[str] | None
     return mock
 
 
-def test_register_calls_all_ctx_methods(tmp_path: Path, mock_ctx):
-    (tmp_path / ".sherwood").mkdir()
-    (tmp_path / ".sherwood" / "config.json").write_text(
-        '{"privateKey": "0xdeadbeef01234567890abcdef01234567890abcdef01234567890abcdef01234"}'
-    )
+def test_register_calls_all_ctx_methods(tmp_path: Path, mock_ctx, monkeypatch):
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
 
     # Sidecar dist exists so sidecar is attempted
     sidecar_dir = tmp_path / "xmtp_sidecar"
@@ -51,8 +52,9 @@ def test_register_calls_all_ctx_methods(tmp_path: Path, mock_ctx):
     assert mock_ctx.register_skill.call_count == 4
 
 
-def test_register_with_missing_cli_still_registers(tmp_path: Path, mock_ctx):
-    # No privateKey in config — sidecar will be skipped (no-op path)
+def test_register_with_missing_cli_still_registers(tmp_path: Path, mock_ctx, monkeypatch):
+    # No SHERWOOD_PRIVATE_KEY — sidecar will be skipped (no-op path)
+    monkeypatch.delenv("SHERWOOD_PRIVATE_KEY", raising=False)
     with patch("pathlib.Path.home", return_value=tmp_path), \
          patch("sherwood_monitor.preflight.subprocess.run", MagicMock(side_effect=FileNotFoundError)):
         from sherwood_monitor import register
@@ -65,13 +67,9 @@ def test_register_with_missing_cli_still_registers(tmp_path: Path, mock_ctx):
     assert "pre_llm_call" in hook_names
 
 
-def test_register_starts_sidecar_when_config_present(tmp_path: Path, mock_ctx):
-    """Sidecar constructor is called and start() is scheduled when config is present."""
-    sherwood_dir = tmp_path / ".sherwood"
-    sherwood_dir.mkdir()
-    (sherwood_dir / "config.json").write_text(
-        '{"privateKey": "0xdeadbeef01234567890abcdef01234567890abcdef01234567890abcdef01234"}'
-    )
+def test_register_starts_sidecar_when_key_is_set(tmp_path: Path, mock_ctx, monkeypatch):
+    """Sidecar constructor is called and start() is scheduled when SHERWOOD_PRIVATE_KEY is set."""
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
 
     sidecar_dir = tmp_path / "xmtp_sidecar"
     (sidecar_dir / "dist").mkdir(parents=True)
@@ -97,13 +95,9 @@ def test_register_starts_sidecar_when_config_present(tmp_path: Path, mock_ctx):
     assert "sidecar_dir" in call_kwargs.kwargs or len(call_kwargs.args) >= 1
 
 
-def test_register_injects_membership_warnings(tmp_path: Path, mock_ctx):
+def test_register_injects_membership_warnings(tmp_path: Path, mock_ctx, monkeypatch):
     """When sidecar.is_member returns False, a warning is pushed to the buffer."""
-    sherwood_dir = tmp_path / ".sherwood"
-    sherwood_dir.mkdir()
-    (sherwood_dir / "config.json").write_text(
-        '{"privateKey": "0xdeadbeef01234567890abcdef01234567890abcdef01234567890abcdef01234"}'
-    )
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
 
     sidecar_dir = tmp_path / "xmtp_sidecar"
     (sidecar_dir / "dist").mkdir(parents=True)
@@ -156,13 +150,9 @@ def test_register_injects_membership_warnings(tmp_path: Path, mock_ctx):
     assert "0xABCDEF" in all_text or "sherwood chat alpha-fund add" in all_text
 
 
-def test_register_stream_starts_per_fund(tmp_path: Path, mock_ctx):
+def test_register_stream_starts_per_fund(tmp_path: Path, mock_ctx, monkeypatch):
     """stream_start is called for each fund where the sidecar is a member."""
-    sherwood_dir = tmp_path / ".sherwood"
-    sherwood_dir.mkdir()
-    (sherwood_dir / "config.json").write_text(
-        '{"privateKey": "0xdeadbeef01234567890abcdef01234567890abcdef01234567890abcdef01234"}'
-    )
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
 
     sidecar_dir = tmp_path / "xmtp_sidecar"
     (sidecar_dir / "dist").mkdir(parents=True)
@@ -194,3 +184,62 @@ def test_register_stream_starts_per_fund(tmp_path: Path, mock_ctx):
 
     # stream_start should be called once (only for alpha-fund, the member)
     mock_sidecar_instance.stream_start.assert_awaited_once_with("alpha-fund")
+
+
+def test_register_never_reads_the_sherwood_cli_config(tmp_path: Path, mock_ctx, monkeypatch):
+    """A key in ~/.sherwood/config.json is ignored: no SHERWOOD_PRIVATE_KEY, no sidecar (catalog rule 11)."""
+    monkeypatch.delenv("SHERWOOD_PRIVATE_KEY", raising=False)
+    (tmp_path / ".sherwood").mkdir()
+    (tmp_path / ".sherwood" / "config.json").write_text('{"privateKey": "' + TEST_KEY + '"}')
+    sidecar_dir = tmp_path / "xmtp_sidecar"
+    (sidecar_dir / "dist").mkdir(parents=True)
+    (sidecar_dir / "dist" / "index.js").write_text("// built")
+    mock_sidecar_cls = MagicMock()
+
+    real_read_text = Path.read_text
+    real_read_bytes = Path.read_bytes
+    real_open = Path.open
+    opened: list[str] = []
+
+    def spy_read_text(self, *args, **kwargs):
+        opened.append(str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    def spy_read_bytes(self, *args, **kwargs):
+        opened.append(str(self))
+        return real_read_bytes(self, *args, **kwargs)
+
+    def spy_open(self, *args, **kwargs):
+        opened.append(str(self))
+        return real_open(self, *args, **kwargs)
+
+    fake_version = MagicMock(returncode=0, stdout="0.71.0")
+    with patch("pathlib.Path.home", return_value=tmp_path), \
+         patch("sherwood_monitor.preflight.subprocess.run", MagicMock(return_value=fake_version)), \
+         patch("sherwood_monitor._sidecar_dir", return_value=sidecar_dir), \
+         patch("sherwood_monitor.Sidecar", mock_sidecar_cls), \
+         patch.object(Path, "read_text", spy_read_text), \
+         patch.object(Path, "read_bytes", spy_read_bytes), \
+         patch.object(Path, "open", spy_open):
+        from sherwood_monitor import register
+        register(mock_ctx)
+
+    mock_sidecar_cls.assert_not_called()
+    assert not any(p.endswith("/.sherwood/config.json") for p in opened)
+
+
+def test_register_refuses_a_malformed_key(tmp_path: Path, mock_ctx, monkeypatch):
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", "not-a-key")
+    sidecar_dir = tmp_path / "xmtp_sidecar"
+    (sidecar_dir / "dist").mkdir(parents=True)
+    (sidecar_dir / "dist" / "index.js").write_text("// built")
+    mock_sidecar_cls = MagicMock()
+    fake_version = MagicMock(returncode=0, stdout="0.71.0")
+    with patch("pathlib.Path.home", return_value=tmp_path), \
+         patch("sherwood_monitor.preflight.subprocess.run", MagicMock(return_value=fake_version)), \
+         patch("sherwood_monitor._sidecar_dir", return_value=sidecar_dir), \
+         patch("sherwood_monitor.Sidecar", mock_sidecar_cls):
+        from sherwood_monitor import register
+        register(mock_ctx)
+    mock_sidecar_cls.assert_not_called()
+    assert mock_ctx.register_tool.call_count == 16

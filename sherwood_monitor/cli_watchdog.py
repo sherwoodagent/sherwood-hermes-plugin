@@ -35,13 +35,16 @@ from typing import Any
 from .config import Config, load_config
 from .cron_tick import cron_tick
 from .exposure import aggregate_exposure
+from .fund.secrets import SHERWOOD_AGENT_ADDRESS, SHERWOOD_PRIVATE_KEY, get_secret
+from .key_derivation import address_from_private_key, normalize_address, normalize_private_key
 
 _log = logging.getLogger(__name__)
 
 PLUGIN_ROOT = Path.home() / ".hermes" / "plugins" / "sherwood-monitor"
 CONFIG_PATH = PLUGIN_ROOT / "config.yaml"
 WATCHDOG_STATE_PATH = PLUGIN_ROOT / "watchdog_state.json"
-SHERWOOD_CONFIG_PATH = Path.home() / ".sherwood" / "config.json"
+# The gas watchdog checks one chain: Robinhood Chain (4663), RPC from `gas_rpc_url`.
+GAS_CHAIN_LABEL = "robinhood"
 
 # Stream watchdog reads supervisor in-process status via a one-shot
 # `hermes sherwood status` call. The supervisor lives in the Hermes runtime,
@@ -78,32 +81,40 @@ def _save_state(state: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sherwood config reader (for gas watchdog — RPC URLs + agent privkey)
+# Monitor wallet (for the gas watchdog). Declared secrets only: the plugin
+# never reads the Sherwood CLI's config file.
 # ---------------------------------------------------------------------------
 
 
-def _read_sherwood_config() -> dict[str, Any]:
-    if not SHERWOOD_CONFIG_PATH.exists():
-        return {}
-    try:
-        return json.loads(SHERWOOD_CONFIG_PATH.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        _log.warning("sherwood config unreadable: %s", exc)
-        return {}
+def _agent_address() -> str | None:
+    """``SHERWOOD_AGENT_ADDRESS``, else the address of ``SHERWOOD_PRIVATE_KEY``, else ``None``.
 
-
-def _agent_address_from_privkey(priv_hex: str) -> str | None:
-    """Derive 0x-prefixed checksum-less address from a hex private key."""
-    try:
-        from eth_keys import keys
-        from eth_utils import to_checksum_address
-
-        key_hex = priv_hex[2:] if priv_hex.startswith("0x") else priv_hex
-        pk = keys.PrivateKey(bytes.fromhex(key_hex))
-        return to_checksum_address(pk.public_key.to_address())
-    except Exception as exc:
-        _log.warning("agent address derivation failed: %s", exc)
-        return None
+    Logs one warning (stderr, never stdout: stdout is the alert) when neither is
+    usable. Never logs a value.
+    """
+    raw_address = get_secret(SHERWOOD_AGENT_ADDRESS)
+    if raw_address:
+        address = normalize_address(raw_address)
+        if address is None:
+            _log.warning("gas watchdog skipped: %s is not a 0x address", SHERWOOD_AGENT_ADDRESS)
+        return address
+    raw_key = get_secret(SHERWOOD_PRIVATE_KEY)
+    if raw_key:
+        key = normalize_private_key(raw_key)
+        if key is None:
+            _log.warning("gas watchdog skipped: %s is not a 32-byte hex key", SHERWOOD_PRIVATE_KEY)
+            return None
+        try:
+            return address_from_private_key(key)
+        except Exception as exc:
+            _log.warning("gas watchdog skipped: address derivation failed (%s)", type(exc).__name__)
+            return None
+    _log.warning(
+        "gas watchdog unconfigured: set %s (or %s); skipping",
+        SHERWOOD_AGENT_ADDRESS,
+        SHERWOOD_PRIVATE_KEY,
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -271,36 +282,26 @@ def _redact_url(url: str) -> str:
 
 
 def _gas(cfg: Config) -> str:
-    sherwood = _read_sherwood_config()
-    priv = sherwood.get("privateKey") or sherwood.get("private_key")
-    rpc_map = sherwood.get("rpc") or {}
-    if not priv or not isinstance(rpc_map, dict) or not rpc_map:
-        # No agent wallet or no RPCs configured — nothing to check. Silent.
-        return ""
+    """Alert when the monitor wallet's ETH on Robinhood Chain is below the floor.
 
-    address = _agent_address_from_privkey(str(priv))
+    Silent when the wallet is unconfigured (one stderr warning), when
+    `gas_rpc_url` is empty, or when the RPC call fails.
+    """
+    address = _agent_address()
     if address is None:
         return ""
-
-    low: list[tuple[str, float]] = []
-    for chain_name, rpc_url in rpc_map.items():
-        if not isinstance(rpc_url, str) or not rpc_url:
-            continue
-        balance_eth = _eth_balance(rpc_url, address)
-        if balance_eth is None:
-            continue
-        if balance_eth < cfg.gas_alert_min_eth:
-            low.append((str(chain_name), balance_eth))
-
-    if not low:
+    rpc_url = (cfg.gas_rpc_url or "").strip()
+    if not rpc_url:
         return ""
-
-    lines = [f"Sherwood gas alert — agent {address}:"]
-    for chain_name, bal in low:
-        lines.append(
-            f"- {chain_name}: {bal:.6f} ETH (below {cfg.gas_alert_min_eth} ETH floor)"
-        )
-    return "\n".join(lines)
+    balance_eth = _eth_balance(rpc_url, address)
+    if balance_eth is None or balance_eth >= cfg.gas_alert_min_eth:
+        return ""
+    return "\n".join(
+        [
+            f"Sherwood gas alert — agent {address}:",
+            f"- {GAS_CHAIN_LABEL}: {balance_eth:.6f} ETH (below {cfg.gas_alert_min_eth} ETH floor)",
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------

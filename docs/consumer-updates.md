@@ -15,6 +15,14 @@ What changed for consumers in 0.7.0:
 - New: the group-chat fund (a Sherwood fund run in a Telegram group). The old
   "predates the v1 launch" wording is now wrong: 0.7.0 targets Robinhood
   Chain (4663).
+- **Breaking for XMTP and the gas watchdog:** the plugin no longer reads the
+  Sherwood CLI's `~/.sherwood/config.json` (Hermes catalog rule 11). The
+  monitor wallet comes from `SHERWOOD_PRIVATE_KEY` (secret, optional) and
+  `SHERWOOD_AGENT_ADDRESS` (optional) in the Hermes profile `.env`; the gas
+  watchdog checks Robinhood Chain through the plugin's `gas_rpc_url` config
+  key (default `https://rpc.mainnet.chain.robinhood.com`). Any consumer text
+  that says the plugin uses `~/.sherwood/config.json` or its `privateKey` is
+  now wrong.
 
 ## 1. sherwoodagent/mintlify-docs
 
@@ -52,7 +60,7 @@ Plugin v0.6.0 predates the v1 launch on Robinhood Chain. It composes on top of w
 After:
 
 ```
-Plugin v0.7.0 runs on Robinhood Chain (4663). It composes on top of whichever CLI is installed (0.71.0 or later), so install the CLI first. For the group-chat fund (Telegram), see the plugin's [README](https://github.com/sherwoodagent/sherwood-hermes-plugin#group-chat-fund-telegram).
+Plugin v0.7.0 runs on Robinhood Chain (4663). It composes on top of whichever CLI is installed (0.71.0 or later), so install the CLI first. It does not read the CLI's config: for XMTP and the gas watchdog, set `SHERWOOD_PRIVATE_KEY` and `SHERWOOD_AGENT_ADDRESS` in the Hermes profile `.env`. For the group-chat fund (Telegram), see the plugin's [README](https://github.com/sherwoodagent/sherwood-hermes-plugin#group-chat-fund-telegram).
 ```
 
 ### `cli/cron-jobs.mdx`
@@ -69,8 +77,32 @@ After:
 - **Sherwood plugin** installed via `hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0`. It composes on top of whichever CLI is installed, so install the CLI first
 ```
 
-The cron table (lines 30-36) and "Verify" (`5 active sherwood-* entries`)
-stay as they are: the cron set did not change.
+After line 17 (`- **At least one fund configured** ...`), add:
+
+```
+- **Monitor wallet** for the gas watchdog: `SHERWOOD_AGENT_ADDRESS=0x...` in the Hermes profile `.env` (or `SHERWOOD_PRIVATE_KEY`, which also enables XMTP). The plugin does not read the Sherwood CLI's config
+```
+
+Line 34 (the `sherwood-gas-watchdog` row), before:
+
+```
+| `sherwood-gas-watchdog` | no_agent | every 30 min | Alerts when the agent wallet's ETH balance on Robinhood Chain falls below `gas_alert_min_eth` (default 0.002 ETH). |
+```
+
+After:
+
+```
+| `sherwood-gas-watchdog` | no_agent | every 30 min | Alerts when the monitor wallet's (`SHERWOOD_AGENT_ADDRESS`) ETH balance on Robinhood Chain falls below `gas_alert_min_eth` (default 0.002 ETH). Silent when no wallet is set. |
+```
+
+After line 51 (`gas_alert_min_eth: 0.002 ...`) in the thresholds block, add:
+
+```
+gas_rpc_url: https://rpc.mainnet.chain.robinhood.com   # default; set a dedicated RPC if the public one throttles
+```
+
+The other cron rows and "Verify" (`5 active sherwood-* entries`) stay as
+they are: the cron set did not change.
 
 ## 2. sherwoodagent/skill
 
@@ -105,9 +137,50 @@ with:
 The current plugin release (v0.7.0) runs on Robinhood Chain (4663) and adds a group-chat fund: a Sherwood fund run inside a Telegram group, where members deposit and object from their own wallets and the plugin never signs. Its risk guardrails on `sherwood proposal create` are advisory (they fail open when vault state is unavailable), so rely on the CLI's own preflights.
 ```
 
+Line 1746 ("How XMTP works"), replace `a separate XMTP identity from your
+Sherwood agent key` with `a separate XMTP identity derived from
+SHERWOOD_PRIVATE_KEY (set in the Hermes profile .env; the plugin does not read
+the CLI's config)`.
+
 Lines 1757 and 1767: `sherwood-hermes-plugin@v0.6.0` becomes
 `sherwood-hermes-plugin@v0.7.0` (the plain install and the
 `SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1` install).
+
+Line 1759, before:
+
+```
+Requirements: Python ≥ 3.11, **Node ≥ 22 and npm** (for the bundled sidecar build), and a configured Sherwood CLI (`~/.sherwood/config.json` with a `privateKey`). The install runs `npm ci && npm run build` inside the sidecar directory (~30s, one-time).
+```
+
+After:
+
+```
+Requirements: Python ≥ 3.11, **Node ≥ 22 and npm** (for the bundled sidecar build), and a configured Sherwood CLI (the monitor runs it). For XMTP and the gas watchdog, set the monitor wallet in the Hermes profile `.env`: `SHERWOOD_PRIVATE_KEY` (secret; the sidecar derives its own key from it) and `SHERWOOD_AGENT_ADDRESS`. The plugin never reads the CLI's `~/.sherwood/config.json`. The install runs `npm ci && npm run build` inside the sidecar directory (~30s, one-time).
+```
+
+Line 1761, before:
+
+```
+The plugin runs a preflight on load. If it doesn't find `sherwood --version`, a configured `~/.sherwood/config.json`, or a built sidecar (`xmtp_sidecar/dist/index.js`), it injects a one-time warning with remediation steps. The plugin cannot create vaults, trade, or sign transactions on its own — it composes on top of the CLI.
+```
+
+After:
+
+```
+The plugin runs a preflight on load. If it doesn't find `sherwood --version` or a built sidecar (`xmtp_sidecar/dist/index.js`), it injects a one-time warning with remediation steps; without `SHERWOOD_PRIVATE_KEY` it skips the sidecar and logs one line. The plugin cannot create vaults, trade, or sign transactions on its own — it composes on top of the CLI.
+```
+
+Line 1773 ("One-time onboarding per vault"), before:
+
+```
+On first Hermes boot after install, the plugin derives the sidecar wallet and checks membership in each configured vault's XMTP group.
+```
+
+After:
+
+```
+On first Hermes boot after install (with `SHERWOOD_PRIVATE_KEY` set), the plugin derives the sidecar wallet and checks membership in each configured vault's XMTP group.
+```
 
 Line 1787, the config block: the plugin reads `funds:`, not `syndicates:`
 (`sherwood_monitor/config.py`). Before / after:

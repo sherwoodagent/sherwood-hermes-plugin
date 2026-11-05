@@ -27,7 +27,7 @@ requires_env:
     url: https://core.telegram.org/bots/features#botfather
     secret: true
   # No Privy keys: members' and the host's wallets live in the web app
-  # (app.sherwood.sh); this plugin never holds a wallet credential.
+  # (app.sherwood.sh); the fund features never hold a wallet credential.
   - name: SHERWOOD_TG_LINK_SECRET
     description: Shared HMAC secret that signs the bot's personal /tg links (the app verifies it)
     url: https://docs.sherwood.sh
@@ -36,6 +36,23 @@ requires_env:
     description: Bearer token for the app's /api/tg/link member-wallet lookup (separate from the link-signing secret)
     url: https://docs.sherwood.sh
     secret: true
+  # The monitor wallet. The plugin never reads the Sherwood CLI's config file.
+  - name: SHERWOOD_PRIVATE_KEY
+    description: >-
+      Optional; leave blank to run without XMTP. The monitor wallet's private key: the XMTP
+      sidecar derives its own separate key from it (the key never leaves this machine), and
+      the gas watchdog uses its address when SHERWOOD_AGENT_ADDRESS is unset
+    url: https://docs.sherwood.sh
+    secret: true
+  - name: SHERWOOD_AGENT_ADDRESS
+    description: >-
+      Optional. The monitor wallet's 0x address, for the gas watchdog's balance check
+      (derived from SHERWOOD_PRIVATE_KEY when unset; without either the watchdog is off)
+    url: https://docs.sherwood.sh
+    secret: false
+# Not prompted at install: both have defaults (config_schema tx_builder_url /
+# app_base_url); the env var only overrides them.
+optional_env:
   - name: TX_BUILDER_URL
     description: Prepare API base URL (unsigned transactions); defaults to https://api.sherwood.sh/api/v1
     url: https://docs.sherwood.sh

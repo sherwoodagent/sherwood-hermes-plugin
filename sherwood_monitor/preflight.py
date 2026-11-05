@@ -1,4 +1,8 @@
-"""Preflight checks for Sherwood CLI installation and config."""
+"""Preflight checks for the Sherwood CLI and the XMTP sidecar.
+
+The plugin never opens or inspects the Sherwood CLI's own config file; the CLI
+reports its own configuration errors when the supervisor runs it.
+"""
 from __future__ import annotations
 
 import logging
@@ -24,7 +28,6 @@ _log = logging.getLogger(__name__)
 class PreflightResult:
     cli_ok: bool
     cli_version: str | None
-    config_ok: bool
     sidecar_built: bool
     sidecar_ok: bool
     sidecar_address: str | None
@@ -61,11 +64,6 @@ def check_cli_installed(
         return False, version
 
     return True, version
-
-
-def check_cli_configured(home: Path) -> bool:
-    """Return True if `~/.sherwood/config.json` exists."""
-    return (home / ".sherwood" / "config.json").exists()
 
 
 def check_sidecar_built(sidecar_dir: Path) -> bool:
@@ -107,8 +105,11 @@ def run_preflight(
     an async context and an already-running sidecar.  Call
     ``check_sidecar_health`` and ``check_memberships`` from ``register()``
     after the sidecar is spawned.
+
+    ``home`` is accepted for call-site compatibility and unused: nothing here
+    reads files under the user's home.
     """
-    home = home or Path.home()
+    del home
     warnings: list[str] = []
 
     cli_ok, cli_version = check_cli_installed(sherwood_bin)
@@ -122,12 +123,6 @@ def run_preflight(
                 f"Sherwood CLI version {cli_version} is below minimum "
                 f"{MIN_CLI_VERSION}. Upgrade: npm i -g @sherwoodagent/cli@latest"
             )
-
-    config_ok = check_cli_configured(home)
-    if not config_ok:
-        warnings.append(
-            "Sherwood CLI not configured. Run: sherwood config set"
-        )
 
     # Synchronous sidecar-built check (no running sidecar needed)
     if sidecar_dir is None:
@@ -146,7 +141,6 @@ def run_preflight(
     return PreflightResult(
         cli_ok=cli_ok,
         cli_version=cli_version,
-        config_ok=config_ok,
         sidecar_built=sidecar_built,
         sidecar_ok=False,       # filled in after async health check
         sidecar_address=None,   # filled in after async health check

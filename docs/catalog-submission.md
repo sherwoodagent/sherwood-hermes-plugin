@@ -100,16 +100,25 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
 
 ## Expect in review
 
-- **Rule 11 (credentials come through Hermes).** The plugin reads
-  `~/.sherwood/config.json`, including the Sherwood CLI's `privateKey`, to
-  derive the XMTP sidecar key (`sherwood_monitor/__init__.py`,
-  `_read_sherwood_private_key`) and the agent address for the gas watchdog
-  (`sherwood_monitor/cli_watchdog.py`). That is a read of another tool's
-  credential file, which rule 11 forbids. It is disclosed in the entry, the
-  README and the disclosure doc. If the reviewer asks for changes, the fix is
-  to take the sidecar key and the agent address through a declared secret or
-  config key (read with `agent.secret_scope.get_secret`) and drop the file
-  read, in a new release and a new pin.
+- **Rule 11 (credentials come through Hermes): resolved in 0.7.0.** Up to
+  0.6.0 the plugin read the Sherwood CLI's `~/.sherwood/config.json`
+  (including its `privateKey`) for the XMTP sidecar key and the gas
+  watchdog's address. 0.7.0 deletes both readers: the monitor wallet comes
+  only from the declared `requires_env` entries `SHERWOOD_PRIVATE_KEY`
+  (secret, optional) and `SHERWOOD_AGENT_ADDRESS` (optional), read with
+  `agent.secret_scope.get_secret`; the gas watchdog's RPC is the plugin's own
+  `gas_rpc_url` config key. Preflight no longer checks for the CLI's config
+  file either. `tests/test_register.py` and `tests/test_cli_watchdog.py`
+  assert the file is never opened, even when it exists. If a reviewer asks,
+  say so and point at those tests.
+- **Declared env.** `requires_env` (prompted at install, all optional except
+  for the Telegram features): `TELEGRAM_BOT_TOKEN`,
+  `SHERWOOD_TG_LINK_SECRET`, `SHERWOOD_TG_API_TOKEN`,
+  `SHERWOOD_PRIVATE_KEY`, `SHERWOOD_AGENT_ADDRESS`. `TX_BUILDER_URL` and
+  `APP_BASE_URL` are under `optional_env` (URL overrides with defaults in
+  `config_schema`, not prompted). The catalog schema has no optional-env
+  list, so the entry's `capabilities.requires_env` mirrors `requires_env`
+  only.
 - **Rule 17 (no unscannable payloads).** Nothing binary is committed. The
   install runs `npm ci` in `xmtp_sidecar/`, which downloads
   `@xmtp/node-bindings` (native) from the npm registry, pinned by

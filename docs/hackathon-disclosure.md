@@ -63,12 +63,15 @@ person or the agent signs each one with their own wallet.
 | Host (vault owner) | create the fund; approve each depositor (`approveDepositor`); register each guest agent (`registerAgent`); set the agent fee; co-sign proposals while the protocol requires owner-only proposals (`proposal_signer: host`) | `app.sherwood.sh/tg/sign`, from a link issued to the host's Telegram id. The page's contract: check the link and that the connected wallet owns the vault, show every address in full, and send the prepared transactions in order without editing them. |
 | Members | join (link a wallet), deposit, withdraw, Object (an Against vote) | `app.sherwood.sh/tg/join`, `/tg/deposit`, `/tg/withdraw`, `/tg/vote`, from their own wallets |
 | The agent | its own WOOD bond approval and the USDG to WOOD swap that tops up the bond; settling its own proposals; proposing directly once the protocol allows non-owner proposals (`proposal_signer: agent`) | its own scoped wallet (`fund.agent_address`) |
-| The plugin | nothing on chain; HMAC signatures on links only | |
+| The plugin | nothing on chain; HMAC signatures on links, and XMTP messages from the sidecar's own derived key when `SHERWOOD_PRIVATE_KEY` is set | |
 
 The agent never holds member funds. Deposits go into the vault, and a
 proposal's strategy spends vault funds only up to the proposal's max capital.
-The plugin holds no wallet credential: there are no Privy or wallet keys in
-its configuration.
+The fund features hold no wallet credential: there are no Privy keys and no
+host, member or agent keys in the plugin's configuration. The only key the
+plugin can hold is the optional monitor-wallet key `SHERWOOD_PRIVATE_KEY`,
+which the XMTP sidecar uses to derive its own separate messaging key. It is
+never used to sign a transaction.
 
 Gas: the plugin pays and sponsors no gas. If the web app sponsors gas for a
 member's transaction, that is the app's choice and applies on mainnet only.
@@ -95,10 +98,18 @@ unsigned calldata; it holds no keys and no funds.
 - **Telegram:** messages in the allowed group, through Hermes' Telegram
   adapter and allowlist. Only senders that allowlist admits count toward 🔥
   and "ship it".
-- **Local files:** `~/.sherwood/config.json` (the Sherwood CLI config,
-  including its `privateKey`, used to derive a separate XMTP sidecar key and
-  the agent's address for the gas watchdog; the key is not sent anywhere),
-  and the plugin's own config and state under `~/.hermes/plugins/sherwood-monitor/`.
+- **Credentials:** only through Hermes' secret scope
+  (`agent.secret_scope.get_secret`): `TELEGRAM_BOT_TOKEN`,
+  `SHERWOOD_TG_LINK_SECRET`, `SHERWOOD_TG_API_TOKEN`, and the optional
+  monitor wallet `SHERWOOD_PRIVATE_KEY` / `SHERWOOD_AGENT_ADDRESS`. The
+  XMTP sidecar's key is derived from the private key on this machine and
+  the key is not sent anywhere.
+- **Local files:** only the plugin's own config and state under
+  `~/.hermes/plugins/sherwood-monitor/` and `~/.hermes/xmtp/`. It does not
+  read the Sherwood CLI's `~/.sherwood/config.json` or any other tool's
+  credentials.
+- **RPC:** one Robinhood Chain RPC for the gas watchdog's balance check
+  (`gas_rpc_url`, default `https://rpc.mainnet.chain.robinhood.com`).
 
 The plugin sends no telemetry.
 
@@ -162,9 +173,10 @@ Only then can the member deposit.
 - **Feeds go stale over weekends and market holidays.** Stock-token Chainlink
   feeds stop updating when the market is closed. The skills tell the agent to
   say so and settle on schedule rather than guess a price.
-- **The plugin reads the Sherwood CLI's private key file** for the XMTP
-  sidecar and the gas watchdog (see "What it reads"). Without the file those
-  two features are off and everything else works.
+- **XMTP and the gas watchdog need the monitor wallet** in the Hermes
+  profile `.env` (`SHERWOOD_PRIVATE_KEY`, `SHERWOOD_AGENT_ADDRESS`). Without
+  them both are off and everything else works. Upgrading from 0.6.0 means
+  setting them: 0.7.0 no longer reads the Sherwood CLI's config.
 - **It depends on hosted routes.** The prepare API, the fund-card read, the
   member-wallet lookup and the `/tg` pages are served by Sherwood. When a
   route is missing, the plugin names it and the card shows less.

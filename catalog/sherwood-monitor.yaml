@@ -7,6 +7,9 @@
 #
 # The capabilities block below mirrors plugin.yaml at the pinned commit
 # (provides_tools, provides_hooks, requires_env names). Keep them identical.
+# plugin.yaml also declares TX_BUILDER_URL and APP_BASE_URL under optional_env
+# (URL overrides with defaults, not prompted at install); the catalog schema
+# has no optional-env list.
 name: sherwood-monitor
 title: Sherwood
 repo: https://github.com/sherwoodagent/sherwood-hermes-plugin
@@ -29,12 +32,15 @@ description: >-
   host's and members' own wallets sign. Network calls: api.sherwood.sh (prepare,
   fund-card and price reads), app.sherwood.sh (member-wallet lookup with
   SHERWOOD_TG_API_TOKEN, share-image checks), the Telegram Bot API through
-  Hermes' adapter, the XMTP network, and the RPC URLs in the Sherwood CLI config
-  (gas watchdog). Runs the `sherwood` CLI as subprocesses (one long-running
+  Hermes' adapter, the XMTP network, and one Robinhood Chain RPC (`gas_rpc_url`,
+  default the public rpc.mainnet.chain.robinhood.com) for the gas watchdog's
+  balance check. Runs the `sherwood` CLI as subprocesses (one long-running
   `session check` stream per monitored fund) and `hermes cron` to register crons,
-  and spawns a long-running Node XMTP sidecar. Reads the Sherwood CLI's
-  ~/.sherwood/config.json, including its privateKey, to derive a separate XMTP
-  sidecar key and the agent's address; the key is not sent anywhere. Writes fund
+  and spawns a long-running Node XMTP sidecar. Credentials come only through
+  Hermes' secret scope: the optional SHERWOOD_PRIVATE_KEY (the monitor wallet;
+  the XMTP sidecar derives its own separate key from it, and the key never
+  leaves the machine) and SHERWOOD_AGENT_ADDRESS. The plugin reads no file
+  outside its own data, including the Sherwood CLI's config. Writes fund
   state under ~/.hermes/plugins/sherwood-monitor/ and the XMTP database under
   ~/.hermes/xmtp/. Install runs `npm ci` in xmtp_sidecar/, which downloads
   @xmtp/node-bindings (a native binary) from the npm registry, pinned by
@@ -52,7 +58,7 @@ known_issues:
   - "A fund group's toolset must not include terminal, write_file, patch or execute_code; the default hermes-telegram toolset does (README: Deployment boundary)."
   - "Approve host actions in a private chat with the bot or from the CLI, and never answer Always to a fund prompt: any allowlisted group member can tap approval buttons."
   - "Telegram fund cards need python-telegram-bot (Hermes' Telegram extra) and a Hermes with register_platform_handler; without them the plugin loads with cards off."
-  - "XMTP needs Node 22+ and npm at install and a configured Sherwood CLI (~/.sherwood/config.json); without them the plugin loads with XMTP off."
+  - "XMTP needs Node 22+ and npm at install and SHERWOOD_PRIVATE_KEY; without them the plugin loads with XMTP off. Upgrading from 0.6.0: set SHERWOOD_PRIVATE_KEY and SHERWOOD_AGENT_ADDRESS, since the plugin no longer reads the Sherwood CLI's config."
 capabilities:
   provides_tools:
     - sherwood_monitor_start
@@ -82,5 +88,5 @@ capabilities:
     - TELEGRAM_BOT_TOKEN
     - SHERWOOD_TG_LINK_SECRET
     - SHERWOOD_TG_API_TOKEN
-    - TX_BUILDER_URL
-    - APP_BASE_URL
+    - SHERWOOD_PRIVATE_KEY
+    - SHERWOOD_AGENT_ADDRESS

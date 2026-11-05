@@ -21,7 +21,9 @@ def _redirect_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(wd, "PLUGIN_ROOT", tmp_path)
     monkeypatch.setattr(wd, "CONFIG_PATH", tmp_path / "config.yaml")
     monkeypatch.setattr(wd, "WATCHDOG_STATE_PATH", tmp_path / "watchdog_state.json")
-    monkeypatch.setattr(wd, "SHERWOOD_CONFIG_PATH", tmp_path / "sherwood_config.json")
+    # The monitor wallet comes from env only; clear it so tests never see a real one.
+    monkeypatch.delenv("SHERWOOD_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("SHERWOOD_AGENT_ADDRESS", raising=False)
 
 
 def _cfg(**overrides) -> Config:
@@ -179,73 +181,120 @@ async def test_aum_silent_on_aggregate_failure(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_gas_silent_when_no_sherwood_config(monkeypatch, tmp_path):
+TEST_KEY = "0x" + "11" * 32  # test-only key, not a real wallet
+ADDR = "0x1234567890123456789012345678901234567890"
+
+
+def test_gas_silent_and_warns_when_unconfigured(monkeypatch, tmp_path, caplog):
     _redirect_paths(monkeypatch, tmp_path)
-    # Don't create sherwood_config.json — _read_sherwood_config returns {}
-    out = wd._gas(_cfg())
+    with patch("sherwood_monitor.cli_watchdog._eth_balance") as bal, caplog.at_level("WARNING"):
+        out = wd._gas(_cfg())
     assert out == ""
+    bal.assert_not_called()
+    assert "gas watchdog unconfigured" in caplog.text
+
+
+def test_gas_never_reads_the_sherwood_cli_config(monkeypatch, tmp_path):
+    """A key and RPCs in ~/.sherwood/config.json are ignored (catalog rule 11)."""
+    _redirect_paths(monkeypatch, tmp_path)
+    (tmp_path / ".sherwood").mkdir()
+    (tmp_path / ".sherwood" / "config.json").write_text(
+        json.dumps({"privateKey": TEST_KEY, "rpc": {"robinhood": "https://example.invalid"}})
+    )
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.0) as bal:
+        out = wd._gas(_cfg())
+    assert out == ""
+    bal.assert_not_called()
+    assert not hasattr(wd, "SHERWOOD_CONFIG_PATH")
 
 
 def test_gas_alerts_when_balance_below_floor(monkeypatch, tmp_path):
     _redirect_paths(monkeypatch, tmp_path)
-    (tmp_path / "sherwood_config.json").write_text(
-        json.dumps(
-            {
-                # 32-byte test private key (NOT a real key — keccak("test-only"))
-                "privateKey": "0x" + "11" * 32,
-                "rpc": {"base": "https://example.invalid/rpc"},
-            }
-        )
-    )
-    # 0.001 ETH = 10^15 wei = 0x38d7ea4c68000
-    with patch(
-        "sherwood_monitor.cli_watchdog._eth_balance", return_value=0.001
-    ), patch(
-        "sherwood_monitor.cli_watchdog._agent_address_from_privkey",
-        return_value="0x1234567890123456789012345678901234567890",
-    ):
-        out = wd._gas(_cfg(gas_alert_min_eth=0.002))
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.001) as bal:
+        out = wd._gas(_cfg(gas_alert_min_eth=0.002, gas_rpc_url="https://rpc.example.invalid/key"))
+    bal.assert_called_once_with("https://rpc.example.invalid/key", ADDR)
     assert "Sherwood gas alert" in out
-    assert "base: 0.001000 ETH" in out
-    assert "0x1234567890123456789012345678901234567890" in out
+    assert "robinhood: 0.001000 ETH" in out
+    assert ADDR in out
+
+
+def test_gas_defaults_to_the_public_robinhood_rpc(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=1.0) as bal:
+        wd._gas(_cfg())
+    bal.assert_called_once_with("https://rpc.mainnet.chain.robinhood.com", ADDR)
+
+
+def test_gas_derives_the_address_from_the_key(monkeypatch, tmp_path):
+    from sherwood_monitor.key_derivation import address_from_private_key
+
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.001) as bal:
+        out = wd._gas(_cfg(gas_alert_min_eth=0.002))
+    expected = address_from_private_key(TEST_KEY)
+    assert bal.call_args.args[1] == expected
+    assert expected in out
+    assert TEST_KEY not in out
+
+
+def test_gas_address_wins_over_the_key(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=1.0) as bal:
+        wd._gas(_cfg())
+    assert bal.call_args.args[1] == ADDR
+
+
+def test_gas_skips_a_malformed_address_without_echoing_it(monkeypatch, tmp_path, caplog):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", "0xnope-secretish")
+    with patch("sherwood_monitor.cli_watchdog._eth_balance") as bal, caplog.at_level("WARNING"):
+        out = wd._gas(_cfg())
+    assert out == ""
+    bal.assert_not_called()
+    assert "not a 0x address" in caplog.text
+    assert "secretish" not in caplog.text
+
+
+def test_gas_skips_a_malformed_key_without_echoing_it(monkeypatch, tmp_path, caplog):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", "0xdeadbeef")
+    with patch("sherwood_monitor.cli_watchdog._eth_balance") as bal, caplog.at_level("WARNING"):
+        out = wd._gas(_cfg())
+    assert out == ""
+    bal.assert_not_called()
+    assert "deadbeef" not in caplog.text
 
 
 def test_gas_silent_when_balance_above_floor(monkeypatch, tmp_path):
     _redirect_paths(monkeypatch, tmp_path)
-    (tmp_path / "sherwood_config.json").write_text(
-        json.dumps({"privateKey": "0x" + "11" * 32, "rpc": {"base": "https://example.invalid"}})
-    )
-    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.5), patch(
-        "sherwood_monitor.cli_watchdog._agent_address_from_privkey",
-        return_value="0xabc",
-    ):
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.5):
         out = wd._gas(_cfg(gas_alert_min_eth=0.002))
     assert out == ""
 
 
-def test_gas_skips_unreadable_rpc(monkeypatch, tmp_path):
-    """An RPC that returns None (network down, malformed) must not block other chains."""
+def test_gas_silent_when_rpc_unreadable(monkeypatch, tmp_path):
+    """An RPC that returns None (network down, malformed) is not a false alarm."""
     _redirect_paths(monkeypatch, tmp_path)
-    (tmp_path / "sherwood_config.json").write_text(
-        json.dumps(
-            {
-                "privateKey": "0x" + "11" * 32,
-                "rpc": {"base": "https://up.invalid", "hyperevm": "https://down.invalid"},
-            }
-        )
-    )
-    # base returns low balance, hyperevm returns None (failed call).
-    def _bal(rpc, _addr):
-        return 0.001 if "up.invalid" in rpc else None
-
-    with patch("sherwood_monitor.cli_watchdog._eth_balance", side_effect=_bal), patch(
-        "sherwood_monitor.cli_watchdog._agent_address_from_privkey",
-        return_value="0xabc",
-    ):
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=None):
         out = wd._gas(_cfg(gas_alert_min_eth=0.002))
-    # Alert on base; hyperevm silently dropped (not False-positive flagged).
-    assert "base: 0.001000 ETH" in out
-    assert "hyperevm" not in out
+    assert out == ""
+
+
+def test_gas_silent_when_rpc_url_blank(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance") as bal:
+        out = wd._gas(_cfg(gas_rpc_url=""))
+    assert out == ""
+    bal.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

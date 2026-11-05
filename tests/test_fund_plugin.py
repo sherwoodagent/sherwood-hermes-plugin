@@ -112,12 +112,18 @@ def test_manifest_v2_matches_registrations(tmp_path, monkeypatch):
     assert set(manifest["provides_hooks"]) == set(ctx.hooks)
     assert manifest.get("capabilities", []) == []
     env = {e["name"]: e for e in manifest["requires_env"]}
-    # Every declared env var is read somewhere; the plugin holds no wallet credential (no Privy keys).
+    # Every declared env var is read somewhere (no Privy keys). The monitor wallet comes from
+    # SHERWOOD_PRIVATE_KEY / SHERWOOD_AGENT_ADDRESS, never from the Sherwood CLI's config file.
     assert set(env) == {"TELEGRAM_BOT_TOKEN", "SHERWOOD_TG_LINK_SECRET", "SHERWOOD_TG_API_TOKEN",
-                        "TX_BUILDER_URL", "APP_BASE_URL"}
+                        "SHERWOOD_PRIVATE_KEY", "SHERWOOD_AGENT_ADDRESS"}
     assert {n for n, e in env.items() if e["secret"]} == {"TELEGRAM_BOT_TOKEN", "SHERWOOD_TG_LINK_SECRET",
-                                                          "SHERWOOD_TG_API_TOKEN"}
+                                                          "SHERWOOD_TG_API_TOKEN", "SHERWOOD_PRIVATE_KEY"}
     assert all(e.get("description") and e.get("url") for e in env.values())
+    # URL overrides have defaults (config_schema), so they sit in optional_env: no install prompt.
+    optional = {e["name"]: e for e in manifest["optional_env"]}
+    assert set(optional) == {"TX_BUILDER_URL", "APP_BASE_URL"}
+    assert not any(e["secret"] for e in optional.values())
+    assert {"tx_builder_url", "app_base_url"} <= set(manifest["config_schema"])
     settings_keys = {f.name for f in fields(FundSettings)}
     assert set(manifest["config_schema"]) <= settings_keys
     for key, spec in manifest["config_schema"].items():

@@ -120,7 +120,7 @@ Goal: confirm the XMTP sidecar is alive, the sidecar wallet is a member of the t
 
     ps aux | grep xmtp_sidecar | grep -v grep > "$RUN_DIR/2.5-ps-sidecar.txt"
 
-Expected: one process running something like `node .../xmtp_sidecar/dist/index.js`. Non-zero pid. If absent, the sidecar didn't spawn — check `/tmp/sherwood-monitor.log` for the reason (most common: `npm` missing at install time, or `~/.sherwood/config.json` missing).
+Expected: one process running something like `node .../xmtp_sidecar/dist/index.js`. Non-zero pid. If absent, the sidecar didn't spawn — check `/tmp/sherwood-monitor.log` for the reason (most common: `npm` missing at install time, or `SHERWOOD_PRIVATE_KEY` unset in the Hermes profile `.env`; the plugin does not read `~/.sherwood/config.json`).
 
 ### Read the sidecar address
 
