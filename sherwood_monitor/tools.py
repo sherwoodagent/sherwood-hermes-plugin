@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Coroutine
 from typing import Any, Awaitable, Callable
 
 from .config import Config
@@ -12,13 +13,26 @@ from .supervisor import Supervisor
 ToolHandler = Callable[[dict], Awaitable[str]]
 
 
-def make_handlers(sup: Supervisor, cfg: Config | None = None) -> dict[str, ToolHandler]:
+async def _await(coro: Coroutine[Any, Any, Any]) -> Any:
+    return await coro
+
+
+def make_handlers(
+    sup: Supervisor,
+    cfg: Config | None = None,
+    runner: Callable[[Coroutine[Any, Any, Any]], Awaitable[Any]] | None = None,
+) -> dict[str, ToolHandler]:
+    """Tool handlers. `runner` runs supervisor work on the plugin's own loop
+    (register() passes BackgroundLoop.call), so a stream started in one turn
+    keeps running after the tool call returns."""
+    run = runner or _await
+
     async def start(args: dict, **_: Any) -> str:
         try:
             sub = args.get("subdomain")
             if not sub:
                 return json.dumps({"error": "subdomain required"})
-            pid = await sup.start(sub)
+            pid = await run(sup.start(sub))
             return json.dumps({"started": True, "pid": pid})
         except Exception as exc:
             return json.dumps({"error": str(exc)})
@@ -28,7 +42,7 @@ def make_handlers(sup: Supervisor, cfg: Config | None = None) -> dict[str, ToolH
             sub = args.get("subdomain")
             if not sub:
                 return json.dumps({"error": "subdomain required"})
-            await sup.stop(sub)
+            await run(sup.stop(sub))
             return json.dumps({"stopped": True})
         except Exception as exc:
             return json.dumps({"error": str(exc)})

@@ -54,15 +54,29 @@ def _format_catchup_injection(subdomain: str, payload: dict) -> str:
 
 
 def make_session_hooks(
-    cfg: Config, buffer: EventBuffer, supervisor: Supervisor
+    cfg: Config,
+    buffer: EventBuffer,
+    supervisor: Supervisor,
+    ensure_streams: Callable[[], None] | None = None,
 ) -> dict[str, Callable[..., Awaitable[None]]]:
+    """`on_session_start`: catch-up for every fund, then make sure the streams run.
+
+    `ensure_streams` (from register()) starts the auto_start streams on the
+    plugin's own loop once per process; without it (unit tests) auto_start
+    awaits `supervisor.start` directly.
+    """
+
     # Hermes passes hook payloads as keyword arguments; every callback takes **kwargs.
     async def on_session_start(**_: Any) -> None:
         for sub in cfg.funds:
             payload = await _catchup_one(cfg.sherwood_bin, sub)
             if payload is not None:
                 buffer.push(_format_catchup_injection(sub, payload))
-            if cfg.auto_start:
+        if ensure_streams is not None:
+            ensure_streams()
+            return
+        if cfg.auto_start:
+            for sub in cfg.funds:
                 try:
                     await supervisor.start(sub)
                 except Exception as exc:
@@ -71,28 +85,50 @@ def make_session_hooks(
     return {"on_session_start": on_session_start}
 
 
-def on_session_end_factory(supervisor: Supervisor) -> Callable[..., Awaitable[None]]:
-    async def on_session_end(**_: Any) -> None:
-        await supervisor.stop_all()
+SHUTDOWN_REASON = "shutdown"
 
-    return on_session_end
+
+def make_session_finalize_hook(teardown: Callable[[], None]) -> Callable[..., None]:
+    """`on_session_finalize` -> teardown, only when Hermes is shutting down.
+
+    Hermes 0.22 fires `on_session_end` at every turn's end and
+    `on_session_finalize` on /new as well (reason "session_boundary", or the
+    gateway's reset); only CLI quit and gateway shutdown pass
+    reason="shutdown". The streams belong to the Hermes process, so nothing
+    else stops them.
+    """
+
+    def on_session_finalize(**kwargs: Any) -> None:
+        if kwargs.get("reason") == SHUTDOWN_REASON:
+            teardown()
+
+    return on_session_finalize
 
 
 ContextSource = Callable[..., Any]  # (**hook kwargs) -> {"context": str} | None (sync or async)
 
 
 def make_pre_llm_call_hook(
-    buffer: EventBuffer, extra_sources: list[ContextSource] | tuple[ContextSource, ...] = ()
+    buffer: EventBuffer,
+    extra_sources: list[ContextSource] | tuple[ContextSource, ...] = (),
+    before: Callable[[], None] | None = None,
 ) -> Callable[..., Awaitable[dict | None]]:
     """The plugin's ONE pre_llm_call hook.
 
-    It drains the event buffer (monitor warnings, settlements, fund draft
-    requests) and folds in every `extra_sources` callback (the Telegram pitch
-    context), so the plugin never registers a second pre_llm_call hook. A
-    failing source is logged and skipped.
+    It drains the event buffer (everything the streams routed since the last
+    turn: chain events, monitor warnings, settlements, fund draft requests)
+    and folds in every `extra_sources` callback (the Telegram pitch context),
+    so the plugin never registers a second pre_llm_call hook. A failing source
+    is logged and skipped. `before` runs first (register() uses it to start the
+    auto_start streams on the first turn of the process).
     """
 
     async def hook(**kwargs: Any) -> dict | None:
+        if before is not None:
+            try:
+                before()
+            except Exception as exc:
+                _log.warning("pre_llm_call setup failed: %s", exc)
         blocks = buffer.drain()
         for source in extra_sources:
             try:

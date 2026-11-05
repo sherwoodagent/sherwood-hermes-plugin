@@ -8,6 +8,19 @@ import pytest
 TEST_KEY = "0x" + "11" * 32
 
 
+def _first_turn(mock_ctx) -> None:
+    """Fire the plugin's pre_llm_call (the first turn starts the sidecar on the plugin's
+    own loop), then give that loop a moment and stop it."""
+    import asyncio
+
+    import sherwood_monitor
+
+    (pre_llm,) = [c.args[1] for c in mock_ctx.register_hook.call_args_list if c.args[0] == "pre_llm_call"]
+    asyncio.run(pre_llm(session_id="s1"))
+    sherwood_monitor._RUNTIME["bg"].run(asyncio.sleep(0.2), timeout=5)
+    sherwood_monitor._RUNTIME["teardown"]()
+
+
 def _make_mock_sidecar(*, address="0xSIDECARWALLET", member_of: list[str] | None = None):
     """Build a mock Sidecar suitable for register() tests."""
     member_of = member_of if member_of is not None else []
@@ -141,8 +154,7 @@ def test_register_injects_membership_warnings(tmp_path: Path, mock_ctx, monkeypa
         register(mock_ctx)
 
         # Run the event loop briefly to let the background start task execute
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(asyncio.sleep(0.1))
+        _first_turn(mock_ctx)
 
     # The background task should have pushed a membership warning
     all_text = "\n".join(injected_warnings)
@@ -179,8 +191,7 @@ def test_register_stream_starts_per_fund(tmp_path: Path, mock_ctx, monkeypatch):
         from sherwood_monitor import register
         register(mock_ctx)
 
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(asyncio.sleep(0.1))
+        _first_turn(mock_ctx)
 
     # stream_start should be called once (only for alpha-fund, the member)
     mock_sidecar_instance.stream_start.assert_awaited_once_with("alpha-fund")

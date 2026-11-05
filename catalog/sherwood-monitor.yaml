@@ -41,8 +41,9 @@ description: >-
   mainnet.base.org (to read each fund's group id from the Durin L2Registry)
   and the XMTP network. Runs the `sherwood` CLI as subprocesses (one
   long-running `session check --stream --no-xmtp` per monitored fund, which
-  reads its own ~/.sherwood/config.json), `hermes cron list/create/edit` from
-  install-cron (which writes four wrapper scripts to $HERMES_HOME/scripts/),
+  reads its own ~/.sherwood/config.json) for the life of the Hermes process,
+  `hermes cron list/create/edit` from install-cron (which writes four .py
+  wrapper scripts to $HERMES_HOME/scripts/),
   and, with SHERWOOD_PRIVATE_KEY, a long-running Node XMTP sidecar; children
   get the environment without the plugin's secrets. Credentials come only
   through Hermes' secret scope: the Telegram/app secrets, the optional
@@ -68,6 +69,8 @@ known_issues:
   - "Telegram fund cards need python-telegram-bot (Hermes' Telegram extra) and a Hermes with register_platform_handler; without them the plugin loads with cards off."
   - "XMTP works only for funds whose XMTP group id is in their ENS record on Base; current Sherwood CLI releases write none and Robinhood Chain funds have none, so they get on-chain events only. XMTP also needs Node 22+ and npm at install and SHERWOOD_PRIVATE_KEY."
   - "Upgrading from 0.6.0: the plugin no longer reads the Sherwood CLI's config and updates do not prompt for new env vars. Set SHERWOOD_AGENT_ADDRESS (gas watchdog) and, only for XMTP, SHERWOOD_PRIVATE_KEY; then re-run `hermes sherwood install-cron`."
+  - "Fund streams run for the life of the Hermes process (from the first turn with auto_start, or sherwood_monitor_start) and stop at Hermes shutdown; they do not survive a restart, and the next session catches up."
+  - "Plugin config and state live under ~/.hermes/plugins/sherwood-monitor (the user's home), not $HERMES_HOME: profiles share them, and where cron children get another HOME (containers) the watchdogs see an empty config and stay silent."
 capabilities:
   provides_tools:
     - sherwood_monitor_start
@@ -88,7 +91,7 @@ capabilities:
     - fund_remove_agent
   provides_hooks:
     - on_session_start
-    - on_session_end
+    - on_session_finalize
     - pre_tool_call
     - post_tool_call
     - pre_llm_call

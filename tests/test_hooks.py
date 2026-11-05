@@ -5,7 +5,7 @@ import pytest
 
 from sherwood_monitor.config import Config
 from sherwood_monitor.event_buffer import EventBuffer
-from sherwood_monitor.hooks import make_session_hooks, on_session_end_factory
+from sherwood_monitor.hooks import make_pre_llm_call_hook, make_session_finalize_hook, make_session_hooks
 
 
 @pytest.mark.asyncio
@@ -53,13 +53,50 @@ async def test_session_start_auto_starts_supervisors(fixture):
     sup.start.assert_awaited_once_with("alpha")
 
 
+def test_session_finalize_tears_down_only_at_shutdown():
+    """Hermes 0.22: on_session_end fires every turn, on_session_finalize also on /new.
+    Only reason="shutdown" (CLI quit, gateway shutdown) stops the streams."""
+    teardown = MagicMock()
+    hook = make_session_finalize_hook(teardown)
+    hook(session_id="s1", platform="cli", reason="session_boundary")  # CLI /new
+    hook(session_id="s1", platform="telegram", reason="new_session")
+    hook(session_id="s1", platform="telegram")
+    teardown.assert_not_called()
+    hook(session_id="s1", platform="cli", reason="shutdown")
+    teardown.assert_called_once()
+
+
 @pytest.mark.asyncio
-async def test_session_end_stops_all():
+async def test_session_start_calls_ensure_streams_after_catchup():
+    cfg = Config(sherwood_bin="sherwood", funds=["alpha"], auto_start=True)
     sup = MagicMock()
-    sup.stop_all = AsyncMock()
-    end = on_session_end_factory(sup)
-    await end()
-    sup.stop_all.assert_awaited_once()
+    sup.start = AsyncMock()
+    ensure = MagicMock()
+    proc = MagicMock()
+    proc.communicate = AsyncMock(return_value=(b"{}", b""))
+    proc.wait = AsyncMock(return_value=0)
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        hooks = make_session_hooks(cfg=cfg, buffer=EventBuffer(), supervisor=sup, ensure_streams=ensure)
+        await hooks["on_session_start"]()
+    ensure.assert_called_once()
+    sup.start.assert_not_awaited()  # the plugin loop starts streams, not the hook's loop
+
+
+@pytest.mark.asyncio
+async def test_pre_llm_call_runs_before_then_drains_the_buffer():
+    buffer = EventBuffer()
+    calls = []
+
+    def before():
+        calls.append("before")
+        if len(calls) == 1:  # e.g. a stream event routed between turns
+            buffer.push("<sherwood-event a/>")
+
+    hook = make_pre_llm_call_hook(buffer, before=before)
+    out = await hook(session_id="s1")
+    assert out == {"context": "<sherwood-event a/>"}
+    assert await hook(session_id="s1") is None  # drained
+    assert calls == ["before", "before"]
 
 
 from unittest.mock import AsyncMock

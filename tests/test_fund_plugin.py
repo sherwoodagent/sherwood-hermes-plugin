@@ -83,7 +83,7 @@ def test_registers_against_the_real_hermes_signatures(tmp_path, monkeypatch):
     assert set(ctx.commands) == {"fund", "join-fund", "fund-approve", "fund-agents", "leaderboard"}
     assert set(ctx.skills) == {"sherwood-agent", "fund-pitch", "fund-propose", "fund-settle"}
     assert all(p.name == "SKILL.md" for p in ctx.skills.values())
-    assert set(ctx.hooks) == {"on_session_start", "on_session_end", "pre_tool_call", "post_tool_call", "pre_llm_call"}
+    assert set(ctx.hooks) == {"on_session_start", "on_session_finalize", "pre_tool_call", "post_tool_call", "pre_llm_call"}
 
 
 def test_fund_skills_stay_short():
@@ -96,7 +96,8 @@ def test_hooks_accept_hermes_kwargs(tmp_path, monkeypatch):
     ctx = boot(tmp_path, monkeypatch)
     kw = {"session_id": "s1", "platform": "telegram", "task_id": "t1"}
     asyncio.run(ctx.fire("on_session_start", **kw))
-    asyncio.run(ctx.fire("on_session_end", **kw))
+    asyncio.run(ctx.fire("on_session_end", **kw))  # not registered: a turn's end stops nothing
+    asyncio.run(ctx.fire("on_session_finalize", reason="session_boundary", **kw))
     asyncio.run(ctx.fire("pre_llm_call", **kw))
     asyncio.run(ctx.fire("post_tool_call", tool_name="terminal", args={"command": "ls"}, result="", **kw))
 

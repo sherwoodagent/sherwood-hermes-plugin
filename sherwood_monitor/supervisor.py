@@ -26,6 +26,32 @@ TERMINATION_GRACE_SEC = 5.0
 STATUS_WRITE_MIN_INTERVAL_S = 30.0
 
 
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def kill_quietly(pid: Any) -> None:
+    """SIGTERM a child we spawned, if it is still there (sync; for process-exit teardown)."""
+    if not _pid_alive(pid):
+        return
+    import signal
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
 def default_status_path() -> Path:
     """``~/.hermes/plugins/sherwood-monitor/stream_status.json`` (resolved at call time)."""
     return Path.home() / ".hermes" / "plugins" / "sherwood-monitor" / "stream_status.json"
@@ -110,6 +136,14 @@ class Supervisor:
             return_exceptions=True,
         )
 
+    def kill_all_sync(self) -> None:
+        """Last-resort teardown without an event loop: SIGTERM every stream child."""
+        for state in list(self._states.values()):
+            state.stop_requested = True
+            if state.proc is not None:
+                kill_quietly(getattr(state.proc, "pid", None))
+        self.write_status(force=True)
+
     async def wait_until_exit(self, subdomain: str) -> None:
         """Wait until the current subprocess run finishes (fires after each _run_once)."""
         state = self._states.get(subdomain)
@@ -134,6 +168,24 @@ class Supervisor:
                 }
             )
         return {"funds": out}
+
+    def clear_stale_status(self) -> bool:
+        """At boot: blank a status file left by a Hermes that died without stopping
+        its streams (kill -9, OOM, reboot), so the stream watchdog does not report
+        "Hermes is not running" while this one is. A file written by a live
+        process (another Hermes on this machine) is left alone. Returns True when
+        it cleared the file."""
+        path = self._status_path or default_status_path()
+        try:
+            data = json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return False
+        host_pid = data.get("host_pid") if isinstance(data, dict) else None
+        funds = data.get("funds") if isinstance(data, dict) else None
+        if not funds or host_pid == os.getpid() or _pid_alive(host_pid):
+            return False
+        self.write_status(force=True)
+        return True
 
     def write_status(self, *, force: bool = False) -> None:
         """Persist the live funds' stream status for the stream watchdog (atomic, best effort)."""

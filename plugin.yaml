@@ -135,7 +135,7 @@ provides_tools:
   - fund_remove_agent
 provides_hooks:
   - on_session_start
-  - on_session_end
+  - on_session_finalize
   - pre_tool_call
   - post_tool_call
   - pre_llm_call
