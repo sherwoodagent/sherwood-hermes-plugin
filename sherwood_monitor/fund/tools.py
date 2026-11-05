@@ -12,7 +12,8 @@ import json
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
-from . import rules
+from ..session import current_caller
+from . import authz, rules
 from .applink import ensure_member_address
 from .cards import render_fund_card, render_receipt
 from .models import TOKEN_ADDRESSES_4663, WOOD_DECIMALS, Agent, Fund, FundState, Leg
@@ -20,6 +21,9 @@ from .rules import RuleViolation
 from .runtime import FundRuntime
 from .service import FundServiceError
 from .store import FundExists, FundNotFound, FundStoreError
+
+# Set once, then only the operator changes them (`hermes sherwood fund-bind`), never a tool.
+LOCKED_FUND_FIELDS = ("vault", "governor", "telegram_chat_id", "host_telegram_id")
 from .txbuilder import TxBuilderError
 from .units import UnitsError, parse_base_units, to_base_units
 
@@ -259,6 +263,16 @@ def _guarded(fn: Callable[[dict[str, Any]], dict[str, Any]]) -> ToolHandler:
 def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
     svc = rt.service
 
+    def host_gate(fund: str | None) -> str | None:
+        """Refuse unless this turn's sender may use the host's authority; returns the caller's tg id."""
+        caller = current_caller()
+        try:
+            state = svc.load(fund) if fund else None
+        except FundNotFound:
+            state = None
+        rules.require(authz.check_caller(state, caller, rt.settings.owner_telegram_id))
+        return caller.telegram_user
+
     def fund_status(args: dict[str, Any]) -> dict[str, Any]:
         state = svc.load(rt.fund_for(args.get("fund")))
         now = svc.clock()
@@ -279,6 +293,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
 
     def fund_setup(args: dict[str, Any]) -> dict[str, Any]:
         name = rt.fund_for(args.get("fund"))
+        host_gate(name)
         agent = rt.agent_name()
         fields_ = {
             k: str(args[k])
@@ -324,6 +339,14 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                 rules.require(rules.check_host_action(st, agent))
                 if asset_arg and asset_arg != st.fund.asset:
                     raise UnitsError(f"the fund asset is fixed once the fund exists ({st.fund.asset})")
+                for key in LOCKED_FUND_FIELDS:
+                    current = str(getattr(st.fund, key) or "")
+                    if key in fields_ and current and fields_[key].lower() != current.lower():
+                        raise rules.RuleViolation(rules.deny(
+                            "locked",
+                            f"{key} is already set ({current}); only the operator changes it: "
+                            f"`hermes sherwood fund-bind {st.fund.name} --{key.replace('_', '-')} <value>`",
+                        ))
                 for k, v in {**fields_, **limits_for(st.fund)}.items():
                     setattr(st.fund, k, v)
                 if host_address and not st.fund.host:
@@ -392,8 +415,10 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
 
     def fund_set_proposal_status(args: dict[str, Any]) -> dict[str, Any]:
         onchain = args.get("onchain_id")
+        fund = rt.fund_for(args.get("fund"))
+        host_gate(fund)
         record = svc.set_proposal_status(
-            rt.fund_for(args.get("fund")),
+            fund,
             rt.agent_name(),
             str(args.get("proposal_id") or ""),
             str(args.get("status") or ""),
@@ -406,8 +431,12 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
     def fund_record_vote(args: dict[str, Any]) -> dict[str, Any]:
         kind = str(args.get("voter_kind") or ("member" if args.get("voter") else "agent"))
         voter = str(args.get("voter") or "") if kind == "member" else rt.agent_name()
+        fund = rt.fund_for(args.get("fund"))
+        if kind == "member":
+            caller = current_caller()
+            rules.require(authz.check_member_vote_caller(svc.load(fund), caller, voter, rt.settings.owner_telegram_id))
         record = svc.record_vote(
-            rt.fund_for(args.get("fund")),
+            fund,
             str(args.get("proposal_id") or ""),
             voter=voter,
             side=str(args.get("side") or ""),
@@ -418,6 +447,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
 
     def fund_record_settle(args: dict[str, Any]) -> dict[str, Any]:
         fund = rt.fund_for(args.get("fund"))
+        host_gate(fund)
         state = svc.load(fund)
         pnl = to_base_units(str(args.get("pnl", "")), state.fund.asset_decimals, allow_negative=True)
         receipt = svc.record_settle(
@@ -432,6 +462,11 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
 
     def fund_approve_member(args: dict[str, Any]) -> dict[str, Any]:
         fund = rt.fund_for(args.get("fund"))
+        caller_tg = host_gate(fund)
+        state = svc.load(fund)
+        # Authorize first; only then the credentialed app lookup and its state write.
+        rules.require(rules.check_caller_is_host(state, caller_tg))
+        rules.require(rules.check_host_action(state, rt.agent_name()))
         if not args.get("address"):
             ensure_member_address(rt, fund, str(args.get("member") or ""))  # app link lookup
         member, body = svc.approve_member(
@@ -440,15 +475,19 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             str(args.get("member") or ""),
             address=str(args.get("address") or ""),
             tx_hash=str(args.get("tx_hash") or ""),
+            caller_telegram_id=caller_tg,
         )
         return {"member": asdict(member), "prepare": {"route": "approve-depositor", "url": f"{svc.tx_builder_url}/prepare/approve-depositor", "body": body}}
 
     def fund_approve_agent(args: dict[str, Any]) -> dict[str, Any]:
+        fund = rt.fund_for(args.get("fund"))
+        caller_tg = host_gate(fund)
         agent, body = svc.approve_agent(
-            rt.fund_for(args.get("fund")),
+            fund,
             rt.agent_name(),
             str(args.get("agent") or ""),
             tx_hash=str(args.get("tx_hash") or ""),
+            caller_telegram_id=caller_tg,
         )
         out: dict[str, Any] = {"agent": asdict(agent)}
         if not agent.registered:
@@ -456,7 +495,9 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         return out
 
     def fund_remove_agent(args: dict[str, Any]) -> dict[str, Any]:
-        agent = svc.remove_agent(rt.fund_for(args.get("fund")), rt.agent_name(), str(args.get("agent") or ""))
+        fund = rt.fund_for(args.get("fund"))
+        caller_tg = host_gate(fund)
+        agent = svc.remove_agent(fund, rt.agent_name(), str(args.get("agent") or ""), caller_telegram_id=caller_tg)
         return {"agent": asdict(agent), "note": "proposals already on-chain keep running; veto them if needed"}
 
     fns = [

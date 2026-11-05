@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -214,7 +215,51 @@ def build_cli_handlers(sup: Supervisor) -> dict[str, Callable[[Any], int]]:
     }
 
 
-def register_cli(ctx: Any, sup: Supervisor) -> None:
+FUND_BIND = "fund-bind"
+FUND_BIND_HELP = (
+    "operator only: set or change a fund's vault, governor, Telegram chat id or host Telegram id "
+    "(the agent's fund_setup tool may set them once, never change them)"
+)
+FUND_BIND_FLAGS = ("vault", "governor", "telegram-chat-id", "host-telegram-id")
+_ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_TG_RE = re.compile(r"^-?\d{1,20}$")
+
+
+def fund_bind(fund_rt: Any, args: Any) -> int:
+    """`hermes sherwood fund-bind <fund> [--vault 0x..] [--governor 0x..] [--telegram-chat-id -100..] [--host-telegram-id 123]`."""
+    if fund_rt is None:
+        print(json.dumps({"ok": False, "error": "fund features are not loaded"}))
+        return 1
+    values = {flag.replace("-", "_"): getattr(args, flag.replace("-", "_"), None) for flag in FUND_BIND_FLAGS}
+    values = {k: str(v).strip() for k, v in values.items() if v not in (None, "")}
+    if not values:
+        print(json.dumps({"ok": False, "error": "pass at least one of --" + ", --".join(FUND_BIND_FLAGS)}))
+        return 2
+    for key in ("vault", "governor"):
+        if key in values and not _ADDR_RE.match(values[key]):
+            print(json.dumps({"ok": False, "error": f"{key} must be a 0x address"}))
+            return 2
+    for key in ("telegram_chat_id", "host_telegram_id"):
+        if key in values and not _TG_RE.match(values[key]):
+            print(json.dumps({"ok": False, "error": f"{key} must be a numeric Telegram id"}))
+            return 2
+
+    def mutate(state: Any) -> dict:
+        before = {k: getattr(state.fund, k) for k in values}
+        for k, v in values.items():
+            setattr(state.fund, k, v)
+        return before
+
+    try:
+        before = fund_rt.service.backend.update(args.fund, mutate)
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}))
+        return 1
+    print(json.dumps({"ok": True, "fund": args.fund, "changed": {k: {"from": before[k], "to": v} for k, v in values.items()}}))
+    return 0
+
+
+def register_cli(ctx: Any, sup: Supervisor, fund_rt: Any = None) -> None:
     """Register ONE top-level `hermes sherwood` command with subcommands.
 
     Hermes turns every `register_cli_command` into a top-level `hermes <name>`
@@ -224,6 +269,7 @@ def register_cli(ctx: Any, sup: Supervisor) -> None:
     with subparsers is the documented `hermes sherwood <sub>` CLI.
     """
     handlers = build_cli_handlers(sup)
+    handlers[FUND_BIND] = lambda args: fund_bind(fund_rt, args)
 
     def setup(parser: Any) -> None:
         subs = parser.add_subparsers(dest="sherwood_command", metavar="<command>")
@@ -231,17 +277,21 @@ def register_cli(ctx: Any, sup: Supervisor) -> None:
             sub = subs.add_parser(name, help=help_text, description=help_text)
             if takes_fund:
                 sub.add_argument("subdomain", help="fund subdomain")
+        bind = subs.add_parser(FUND_BIND, help=FUND_BIND_HELP, description=FUND_BIND_HELP)
+        bind.add_argument("fund", help="fund name (subdomain)")
+        for flag in FUND_BIND_FLAGS:
+            bind.add_argument(f"--{flag}", default=None)
 
     def dispatch(args: Any) -> int:
         handler = handlers.get(getattr(args, "sherwood_command", None) or "")
         if handler is None:
-            print("usage: hermes sherwood {" + ",".join(SUBCOMMANDS) + "} ...", flush=True)
+            print("usage: hermes sherwood {" + ",".join([*SUBCOMMANDS, FUND_BIND]) + "} ...", flush=True)
             return 2
         return handler(args)
 
     ctx.register_cli_command(
         name="sherwood",
-        help="Sherwood fund monitor: start | stop | status | tail | install-cron",
+        help="Sherwood fund monitor: start | stop | status | tail | install-cron | fund-bind",
         setup_fn=setup,
         handler_fn=dispatch,
         description="Monitor Sherwood funds and register the Sherwood crons.",

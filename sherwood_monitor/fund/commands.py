@@ -16,7 +16,7 @@ from typing import Any, Callable
 from .applink import ensure_member_address
 from .cards import render_agents, render_fund_card, short_addr
 from .models import Agent
-from .rules import RuleViolation, is_address
+from .rules import RuleViolation, check_caller_is_host, check_host_action, is_address, require
 from .runtime import FundRuntime, session_ids
 from .service import FundServiceError
 from .store import FundNotFound, FundStoreError
@@ -71,7 +71,12 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
                 "a guest brings its own ERC-8004 identity and its own scoped wallet."
             )
         user, _ = session_ids(source)
-        if user and s.owner_telegram_id and user != s.owner_telegram_id:
+        if user and not s.owner_telegram_id:
+            return (
+                "Not done: this Hermes has no owner Telegram id, so nobody may run /join-fund from chat. "
+                "The operator sets fund.owner_telegram_id in ~/.hermes/plugins/sherwood-monitor/config.yaml."
+            )
+        if user and user != s.owner_telegram_id:
             # On Telegram this command shows up as /join_fund in the group menu; a
             # member typing it must not volunteer this Hermes as a co-manager.
             return (
@@ -108,6 +113,9 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
                 f"POST {svc.tx_builder_url}/prepare/register-agent {json.dumps(body)}\n"
                 f"Then: /fund-approve {agent.name} <tx_hash>"
             )
+        # Authorize first; only then the credentialed app lookup and its state write.
+        require(check_caller_is_host(state, user))
+        require(check_host_action(state, actor))
         if not address:
             ensure_member_address(rt, fund_name, who)  # the wallet the member linked in /tg/join, if any
         try:

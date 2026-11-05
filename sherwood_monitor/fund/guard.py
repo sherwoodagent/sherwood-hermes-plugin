@@ -10,21 +10,57 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from . import rules
+from ..session import current_caller
+from . import authz, rules
 from .runtime import FundRuntime
+from .store import FundNotFound
 from .tools import GUARD_ERRORS, parse_draft_args
 
-GUARDED_TOOLS = frozenset({"fund_draft_proposal"})
+GUARDED_TOOLS = frozenset({"fund_draft_proposal"}) | authz.HOST_TOOLS | {"fund_record_vote"}
 
-FundGuard = Callable[[str, dict[str, Any]], "str | None"]
+FundGuard = Callable[[str, dict[str, Any]], "str | dict | None"]
 
 
 def make_fund_guard(rt: FundRuntime) -> FundGuard:
-    """Return `guard(tool_name, args) -> block reason | None`. Synchronous and fast."""
+    """Return `guard(tool_name, args) -> block reason | approval directive | None`. Synchronous and fast.
 
-    def guard(tool_name: str, args: dict[str, Any]) -> str | None:
+    - `fund_draft_proposal`: blocked when it would break a rule (fails closed).
+    - Host-authority tools (and recording a member vote for someone else): blocked
+      when the turn's sender is not the host; otherwise Hermes' approval gate
+      (`{"action": "approve"}`) asks the human before the tool runs.
+    """
+
+    def host_directive(tool_name: str, args: dict[str, Any]) -> str | dict | None:
+        try:
+            fund = rt.fund_for((args or {}).get("fund"))
+        except GUARD_ERRORS:
+            fund = ""
+        try:
+            state = rt.service.load(fund) if fund else None
+        except FundNotFound:
+            state = None
+        except GUARD_ERRORS as exc:
+            return f"fund action blocked: cannot read fund state ({exc})"
+        caller = current_caller()
+        if tool_name == "fund_record_vote":
+            kind = str((args or {}).get("voter_kind") or ("member" if (args or {}).get("voter") else "agent"))
+            if kind != "member":
+                return None  # an agent's own review of another agent's proposal: chat signal only
+            voter = str((args or {}).get("voter") or "")
+            if caller.telegram_user and caller.user_id == voter:
+                return None  # a member recording their own back/object
+            verdict = authz.check_member_vote_caller(state, caller, voter, rt.settings.owner_telegram_id)
+        else:
+            verdict = authz.check_caller(state, caller, rt.settings.owner_telegram_id)
+        if not verdict.ok:
+            return f"fund action blocked ({verdict.code}): {verdict.reason}"
+        return authz.approve_directive(tool_name, fund, args or {})
+
+    def guard(tool_name: str, args: dict[str, Any]) -> str | dict | None:
         if tool_name not in GUARDED_TOOLS:
             return None
+        if tool_name != "fund_draft_proposal":
+            return host_directive(tool_name, args)
         try:
             fund = rt.fund_for((args or {}).get("fund"))
             state = rt.service.load(fund)

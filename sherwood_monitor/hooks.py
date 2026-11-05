@@ -152,9 +152,10 @@ def _parse_propose_command(command: str) -> tuple[str, float, str] | None:
     return subdomain, size_usd, protocol
 
 
-# A guard returns a block reason, or None to allow. Fund drafts use one
+# A guard returns a block reason, a ready Hermes directive (e.g. the approval
+# shape {"action": "approve", ...}), or None to allow
 # (sherwood_monitor.fund.guard.make_fund_guard).
-ToolGuard = Callable[[str, dict], "str | None"]
+ToolGuard = Callable[[str, dict], "str | dict | None"]
 
 
 def block_directive(reason: str) -> dict:
@@ -180,6 +181,8 @@ def make_pre_tool_call_hook(state_fetcher: StateFetcher, fund_guard: ToolGuard |
             except Exception as exc:  # the guard must never crash the turn
                 _log.warning("fund guard failed for %s: %s", tool_name, exc)
                 reason = f"fund guard error: {exc}"
+            if isinstance(reason, dict):
+                return reason
             if reason:
                 return block_directive(reason)
         if tool_name not in _TERMINAL_TOOLS:

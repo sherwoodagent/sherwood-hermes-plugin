@@ -211,7 +211,9 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
     action, body = verify_sign_url(buttons(signed[0])[0]["url"])
     assert action == "approve-depositor" and body == {"chainId": 4663, "vault": VAULT, "depositor": MEMBER_ADDR}
     member_card = next(t for t in sent_texts(bot) if "Member #1" in t)
-    assert f"🔗 wallet linked {MEMBER_ADDR[:6]}…{MEMBER_ADDR[-4:]}" in member_card
+    assert f"🔗 wallet linked <code>{MEMBER_ADDR}</code>" in member_card  # full address, never truncated
+    sign_msg = signed[0].kwargs["text"]
+    assert f"Depositor: <code>{MEMBER_ADDR}</code>" in sign_msg and "approve-depositor" in sign_msg
     # A stranger cannot approve.
     q = await tap(rt, bot, f"shfund:approve_member:{BOB}", BOB)
     assert "Only the fund host" in q.answer.await_args.kwargs["text"]

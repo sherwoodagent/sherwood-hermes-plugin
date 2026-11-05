@@ -379,7 +379,7 @@ def render_member_card(
         f"<b>{esc(fund.name)}</b>",
     ]
     if m.address:
-        lines.append(f"🔗 wallet linked {esc(m.address[:6])}…{esc(m.address[-4:])}")
+        lines.append(f"🔗 wallet linked <code>{esc(m.address)}</code>")
     return "\n".join(lines), _kb([[_view_button(fund.vault, base_url)]])
 
 
@@ -502,6 +502,32 @@ def render_leaderboard(
     return "\n".join(lines), _kb(kb_rows)
 
 
+SIGN_DETAIL_KEYS = (("depositor", "Depositor"), ("depositors", "Depositors"), ("agentAddress", "Agent wallet"),
+                    ("agentId", "Agent id"), ("proposer", "Proposer"), ("vault", "Vault"))
+
+
+def sign_link_details(url: str) -> list[str]:
+    """Full addresses from a /tg/sign link's body, so the host checks them before signing."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from .links import decode_sign_body
+
+    try:
+        q = parse_qs(urlsplit(url).query)
+        action = q.get("action", [""])[0]
+        body = decode_sign_body(q.get("body", [""])[0])
+    except Exception:
+        return []
+    lines = [f"Action: <code>{esc(action)}</code>"] if action else []
+    for key, label in SIGN_DETAIL_KEYS:
+        value = body.get(key) if isinstance(body, dict) else None
+        if isinstance(value, list):
+            value = ", ".join(str(v) for v in value)
+        if value not in (None, ""):
+            lines.append(f"{label}: <code>{esc(value)}</code>")
+    return lines
+
+
 def render_personal_link(kind: str, url: str, fund_name: str) -> tuple[str, InlineKeyboardMarkup]:
     """The per-user message holding a signed URL button."""
     noun, label = LINK_LABELS.get(kind, (kind, "Open in browser"))
@@ -511,4 +537,8 @@ def render_personal_link(kind: str, url: str, fund_name: str) -> tuple[str, Inli
         f"It is tied to your Telegram account and expires in {minutes} minutes. "
         "Your wallet signs in the browser."
     )
+    if kind == "sign":
+        details = sign_link_details(url)
+        if details:
+            text += "\n\nCheck before you sign:\n" + "\n".join(details)
     return text, _kb([[InlineKeyboardButton(label, url=url)]])

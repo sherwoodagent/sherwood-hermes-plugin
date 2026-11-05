@@ -142,15 +142,24 @@ def check_host_action(state: FundState, actor: str) -> Verdict:
     return ALLOW
 
 
+HOST_ID_UNSET = (
+    "this fund has no host Telegram id, so nobody may do that from chat. The operator sets it: "
+    "`hermes sherwood fund-bind <fund> --host-telegram-id <id>`"
+)
+
+
 def check_caller_is_host(state: FundState, caller_telegram_id: str | None) -> Verdict:
     """When the chat tells us who typed a host command, it must be the host.
 
     `None` (CLI, cron, or a platform that does not say) passes: the command
     then runs with the local operator's authority. The on-chain step still
-    needs the host wallet's signature either way.
+    needs the host wallet's signature either way. A caller with no host id on
+    record is refused (fail closed): unset means nobody.
     """
-    if caller_telegram_id is None or not state.fund.host_telegram_id:
+    if caller_telegram_id is None:
         return ALLOW
+    if not state.fund.host_telegram_id:
+        return deny("host_unset", HOST_ID_UNSET)
     if str(caller_telegram_id) != str(state.fund.host_telegram_id):
         return deny("not_host", "only the fund host can approve or remove members and agents")
     return ALLOW

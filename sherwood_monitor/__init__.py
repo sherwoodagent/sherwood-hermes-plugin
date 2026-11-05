@@ -321,7 +321,7 @@ def register(ctx: Any) -> None:
     ctx.register_hook("post_tool_call", make_post_tool_call_hook(memory_writer=stderr_memory_writer, buffer=buffer))
     ctx.register_hook("pre_llm_call", make_pre_llm_call_hook(buffer, context_sources))
 
-    register_cli(ctx, supervisor)
+    register_cli(ctx, supervisor, fund_rt)
 
     # register_skill takes the SKILL.md path, not the directory.
     skill_path = Path(__file__).parent.parent / "skills" / "sherwood-agent" / "SKILL.md"

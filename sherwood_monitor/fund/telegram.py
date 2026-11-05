@@ -54,7 +54,7 @@ from ..telegram.types import (
 from . import service as fund_service
 from .applink import ensure_member_address
 from .models import WOOD_DECIMALS, FundState, Member, ProposalRecord
-from .rules import RuleViolation
+from .rules import RuleViolation, check_caller_is_host, check_host_action
 from .store import FundStoreError
 from .txbuilder import TxBuilderClient, TxBuilderError
 
@@ -758,6 +758,11 @@ class FundTelegramBridge:
 
     async def approve_member(self, fund: Any, tg_id: int, by_tg_id: int) -> str:
         name = self._name(fund)
+        st = self.service.load(name)
+        # Authorize first; only then the credentialed app lookup and its state write.
+        for verdict in (check_caller_is_host(st, str(by_tg_id)), check_host_action(st, self._host_actor(st))):
+            if not verdict.ok:
+                raise FundActionError(verdict.reason)
         # The wallet the member linked in /tg/join (app GET /api/tg/link), off the bot loop.
         await asyncio.to_thread(ensure_member_address, self.rt, name, str(tg_id))
         st = self.service.load(name)
@@ -772,7 +777,8 @@ class FundTelegramBridge:
                     f"(or run /fund-approve {tg_id} <address>)."
                 ) from exc
             raise FundActionError(exc.reason) from exc
-        return f"✅ Member #{member.member_no} approved. Sign approveDepositor in your browser."
+        # The full address, so the host checks it before signing approveDepositor.
+        return f"✅ Member #{member.member_no} approved: {member.address}. Check it, then sign approveDepositor."
 
     def approve_agent(self, fund: Any, agent_name: str, by_tg_id: int) -> str:
         name = self._name(fund)

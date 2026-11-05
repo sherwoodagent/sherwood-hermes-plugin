@@ -225,7 +225,7 @@ def test_commands(host):
 
 
 def test_join_fund_command_for_a_guest(host, tmp_path, monkeypatch):
-    guest_cfg = {"agent_name": "beta", "agent_identity_id": "202", "agent_address": GUEST_ADDR}
+    guest_cfg = {"agent_name": "beta", "agent_identity_id": "202", "agent_address": GUEST_ADDR, "owner_telegram_id": "555"}
     guest = boot(tmp_path, monkeypatch, guest_cfg)  # same machine, same state dir
     out = guest.run_command("join-fund", "alpha-fund", source=SimpleNamespace(user_id="555", chat_id="-100500"))
     assert out.startswith("Asked to join alpha-fund as beta")
