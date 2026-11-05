@@ -137,7 +137,10 @@ class Member:
     address: str = ""
     approved: bool = False
     joined_at: float = 0  # when the member asked to join
-    member_no: int | None = None  # assigned in approval order, 1-based
+    member_no: int | None = None  # approval order, 1-based (internal; cards never show it)
+    # Member #N on cards: this wallet's deposit order on chain (Nth wallet to deposit), from the
+    # tg-card read. None until the chain says so.
+    deposit_no: int | None = None
     approved_at: float | None = None
     approve_tx: str = ""
     username: str = ""

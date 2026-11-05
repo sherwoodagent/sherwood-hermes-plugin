@@ -300,6 +300,35 @@ Authorization: Bearer <SHERWOOD_TG_API_TOKEN>
 - The app must require the Privy Telegram login to equal `tg` before it links
   a wallet.
 
+## Share images (sherwood-app #153)
+
+Card images live on the app and take bot-signed social fields (same
+`SHERWOOD_TG_LINK_SECRET`, HMAC-SHA256 hex, no timestamp; `links.py`):
+
+| Image | URL | Signed string |
+|---|---|---|
+| Settle receipt | `/tg/receipt/<Vault>/<id>.png?by=&backers=&sig=` | `receipt\|<Vault>:<id>\|<by>\|<backers>` |
+| Member #N | `/tg/member/<Vault>/<n>.png?handle=&joined=&sig=` | `member\|<Vault>:<n>\|<handle>\|<joined>` |
+| Leaderboard | `/tg/leaderboard/<Vault>.png?window=all&attrib=&sig=` | `attrib\|<Vault>\|<attrib>` (`8:alice,5:bob`: proposal id : idea author) |
+| Fund card | `/tg/fund/<Vault>/card.png` (`?square=1`) | unsigned |
+
+- `<Vault>` is the EIP-55 checksum address, as in the URL path (the app
+  redirects other casings). `<id>` is the on-chain proposal id. A missing
+  field signs as "". Handles are Telegram usernames without `@` (only
+  `[A-Za-z0-9_]`, at most 32). `joined` is `YYYY-MM-DD`.
+- `<n>` is the member's deposit order on chain, never Telegram join order:
+  the plugin reads it from the tg-card read (`members.depositOrder` or a
+  per-row `depositIndex`) and shows no number until then.
+- Before sending an image URL the bot checks it answers 200: a 503 means "not
+  readable yet" (retried, then the text card goes out instead), because
+  Telegram keeps the first image it fetches.
+- Vectors (secret `test-secret`, vault `0x7396CccbeC83fC06854Fcd307773da756b374ABc`):
+  receipt `…:8|alice|5` → `c6297495e1a01b6a58e65f32716540f33500d4c44e7c31b48f96e22bb44b4a5e`;
+  member `…:8|alice|2026-11-05` → `af2d07fd112b63d00e61589ea48e73ad803519f36aeaa3dc8b404a04f2823f81`;
+  member `…:8|alice|` → `312c8040ddffbcfbaac5437149e9d44c60100575284be974d78d1eae6198d0ec`;
+  attrib `…|8:alice,5:bob` → `af54afca06a4d855f57623b230000d33be20e6df8a8a6495d7ff2af18fb2dcbd`
+  (`tests/test_tg_links.py`).
+
 ## Deep links (contract with the web app)
 
 ```

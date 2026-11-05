@@ -373,11 +373,12 @@ def render_member_card(
 ) -> tuple[str, InlineKeyboardMarkup]:
     joined = _date(m.joined_at)
     second = f"{fmt_pct(m.share_bps)} of shares" + (f" · joined {joined}" if joined else "")
-    lines = [
-        f"🎟 <b>Member #{int(m.number)}</b> · {esc(m.person.handle)}",
-        second,
-        f"<b>{esc(fund.name)}</b>",
-    ]
+    # N is deposit order on chain (the share image uses the same number); until the
+    # first deposit lands there is no number yet.
+    title = f"🎟 <b>Member #{int(m.number)}</b>" if int(m.number or 0) > 0 else "🎟 <b>Member</b>"
+    lines = [f"{title} · {esc(m.person.handle)}", second, f"<b>{esc(fund.name)}</b>"]
+    if int(m.number or 0) <= 0:
+        lines.append("<i>Your member number is your deposit order: it shows after your first deposit.</i>")
     if m.address:
         lines.append(f"🔗 wallet linked <code>{esc(m.address)}</code>")
     return "\n".join(lines), _kb([[_view_button(fund.vault, base_url)]])

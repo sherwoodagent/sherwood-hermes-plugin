@@ -214,7 +214,9 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
     signed = [c for c in bot.send_message.await_args_list[n_before:] if buttons(c) and "/tg/sign" in buttons(c)[0].get("url", "")]
     action, body = verify_sign_url(buttons(signed[0])[0]["url"])
     assert action == "approve-depositor" and body == {"chainId": 4663, "vault": VAULT, "depositor": MEMBER_ADDR}
-    member_card = next(t for t in sent_texts(bot) if "Member #1" in t)
+    # Member #N is deposit order on chain (sherwood-app #153): no number before the first deposit.
+    member_card = next(t for t in sent_texts(bot) if "🎟 <b>Member</b>" in t)
+    assert "deposit order" in member_card
     assert f"🔗 wallet linked <code>{MEMBER_ADDR}</code>" in member_card  # full address, never truncated
     sign_msg = signed[0].kwargs["text"]
     assert f"Depositor: <code>{MEMBER_ADDR}</code>" in sign_msg and "approve-depositor" in sign_msg
@@ -318,12 +320,23 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
     # -- approved, executed, settled -> receipt; cooldown; leaderboard
     for status in ("approved", "executed"):
         assert ctx.call_tool("fund_set_proposal_status", {"proposal_id": "9", "status": status})["ok"]
+    # The share image (sherwood-app #153) answers 503 ("not readable yet") once, then 200: the bot
+    # waits and sends the photo only after the 200 (Telegram keeps the first image it fetches).
+    statuses = iter([503, 200])
+    seen_urls = []
+    monkeypatch.setattr(applink, "_image_status", lambda url, timeout: seen_urls.append(url) or next(statuses))
+    bridge.image_retry_delays = (0.01,)
     s = ctx.call_tool("fund_record_settle", {"proposal_id": "9", "pnl": "8.2", "pnl_bps": 820, "tx_hash": "0x" + "cd" * 32})
     assert s["ok"] and "14-day challenge window" in s["post"]
-    await settle_tasks(40)
-    receipt = next(t for t in sent_texts(bot) if "settled</b>" in t)
+    await settle_tasks(60)
+    photo = next(c for c in bot.send_photo.await_args_list if "settled</b>" in c.kwargs.get("caption", ""))
+    receipt = photo.kwargs["caption"]
     assert "<b>+8.2%</b> on NVDA/AAPL" in receipt and "idea by @alice" in receipt and "backed by 1" in receipt
     assert "14-day challenge window" in receipt
+    from sherwood_monitor.telegram.links import checksum_address
+
+    assert photo.kwargs["photo"] == seen_urls[0] == seen_urls[1]
+    assert photo.kwargs["photo"].startswith(f"https://app.example/tg/receipt/{checksum_address(VAULT)}/9.png?by=alice&backers=1&sig=")
     assert "SETTLED" in bot.edit_message_text.await_args_list[-1].kwargs["text"]
     assert svc.load("alpha-fund").fund.cooldown_until is not None
     blocked = ctx.call_tool("fund_claim_topic", {"topic": "TSLA"})

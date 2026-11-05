@@ -211,6 +211,117 @@ def build_sign_link(
     return url if len(url) <= SIGN_URL_MAX else None
 
 
+# ---------------------------------------------------------------------------
+# Share images (sherwood-app #153, docs/tg-cards.md): bot-signed social fields,
+# same SHERWOOD_TG_LINK_SECRET, HMAC-SHA256 hex, no timestamp (a card URL stays valid).
+#
+#   receipt|<Vault>:<proposalId>|<by>|<backers>   /tg/receipt/<Vault>/<proposalId>.png?by=&backers=&sig=
+#   member|<Vault>:<n>|<handle>|<joined>          /tg/member/<Vault>/<n>.png?handle=&joined=&sig=
+#   attrib|<Vault>|<attrib>                       /tg/leaderboard/<Vault>.png?window=all&attrib=&sig=
+#   (unsigned)                                    /tg/fund/<Vault>/card.png[?square=1]
+#
+# <Vault> is the EIP-55 checksum address, exactly as in the URL path (the app
+# redirects other casings, and Telegram keeps the first image it fetches). A
+# missing field signs as "". Handles are Telegram username characters only, no "@".
+# <n> is the member's deposit order on chain, never Telegram join order.
+# ---------------------------------------------------------------------------
+
+_HANDLE_RE = re.compile(r"[^A-Za-z0-9_]")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+ATTRIB_MAX_PAIRS = 100
+
+
+def checksum_address(address: str) -> str:
+    """EIP-55. Needs a keccak (eth-utils, or pycryptodome): the plugin's declared deps."""
+    lower = canonical_address(address)[2:]
+    try:
+        from eth_utils import keccak  # type: ignore[import-not-found]
+
+        digest = keccak(text=lower).hex()
+    except ImportError:
+        from Crypto.Hash import keccak as _k  # type: ignore[import-not-found]
+
+        digest = _k.new(digest_bits=256, data=lower.encode()).hexdigest()
+    return "0x" + "".join(c.upper() if c.isalpha() and int(digest[i], 16) >= 8 else c for i, c in enumerate(lower))
+
+
+def social_handle(handle: object) -> str:
+    """A Telegram username for a card: no "@", only [A-Za-z0-9_], at most 32 chars ("" when none)."""
+    return _HANDLE_RE.sub("", str(handle or "").lstrip("@"))[:32]
+
+
+def _proposal_ref(proposal_id: object) -> str:
+    pid = str(proposal_id).strip()
+    if not pid.isdigit():
+        raise ValueError(f"share cards need the on-chain proposal id, got {proposal_id!r}")
+    return pid
+
+
+def receipt_image_message(vault: str, proposal_id: object, by: object = "", backers: object = "") -> str:
+    by_s = social_handle(by)
+    backers_s = str(int(backers)) if str(backers).strip() not in ("", "None") else ""
+    return f"receipt|{checksum_address(vault)}:{_proposal_ref(proposal_id)}|{by_s}|{backers_s}"
+
+
+def member_image_message(vault: str, n: object, handle: object = "", joined: str = "") -> str:
+    if joined and not _DATE_RE.match(joined):
+        raise ValueError("joined must be YYYY-MM-DD")
+    return f"member|{checksum_address(vault)}:{int(n)}|{social_handle(handle)}|{joined or ''}"
+
+
+def leaderboard_attrib(pairs: list[tuple[object, object]]) -> str:
+    """``8:alice,5:bob``: (on-chain proposal id, idea author's handle), at most 100 pairs."""
+    out = []
+    for pid, handle in pairs[:ATTRIB_MAX_PAIRS]:
+        h = social_handle(handle)
+        if h and str(pid).strip().isdigit():
+            out.append(f"{int(pid)}:{h}")
+    return ",".join(out)
+
+
+def attrib_image_message(vault: str, attrib: str) -> str:
+    return f"attrib|{checksum_address(vault)}|{attrib or ''}"
+
+
+def _image_url(path: str, params: list[tuple[str, str]], base_url: str | None) -> str:
+    from urllib.parse import urlencode
+
+    query = urlencode([(k, v) for k, v in params if v != ""], safe=":,")
+    return f"{_base(base_url)}{path}" + (f"?{query}" if query else "")
+
+
+def receipt_image_url(
+    vault: str, proposal_id: object, *, by: object = "", backers: object = "", secret: str | bytes, base_url: str | None = None
+) -> str:
+    v = checksum_address(vault)
+    pid = _proposal_ref(proposal_id)
+    msg = receipt_image_message(v, pid, by, backers)
+    _, _, by_s, backers_s = msg.split("|")
+    sig = sign_link(secret, msg)
+    return _image_url(f"/tg/receipt/{v}/{pid}.png", [("by", by_s), ("backers", backers_s), ("sig", sig)], base_url)
+
+
+def member_image_url(
+    vault: str, n: object, *, handle: object = "", joined: str = "", secret: str | bytes, base_url: str | None = None
+) -> str:
+    v = checksum_address(vault)
+    msg = member_image_message(v, n, handle, joined)
+    sig = sign_link(secret, msg)
+    return _image_url(f"/tg/member/{v}/{int(n)}.png", [("handle", social_handle(handle)), ("joined", joined or ""), ("sig", sig)], base_url)
+
+
+def leaderboard_image_url(vault: str, attrib: str, *, secret: str | bytes, base_url: str | None = None, window: str = "all") -> str:
+    v = checksum_address(vault)
+    sig = sign_link(secret, attrib_image_message(v, attrib))
+    return _image_url(f"/tg/leaderboard/{v}.png", [("window", window), ("attrib", attrib or ""), ("sig", sig)], base_url)
+
+
+def fund_card_image_url(vault: str, *, square: bool = False, base_url: str | None = None) -> str:
+    """Unsigned fund card image."""
+    v = checksum_address(vault)
+    return f"{_base(base_url)}/tg/fund/{v}/card.png" + ("?square=1" if square else "")
+
+
 def fund_page_url(vault: str, base_url: str | None = None) -> str:
     """Public, unsigned fund page: ``${APP_BASE_URL}/tg/fund/<vault>``."""
     return f"{_base(base_url)}/tg/fund/{canonical_address(vault)}"

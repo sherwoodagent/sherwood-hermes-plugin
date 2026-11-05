@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
 
 from ..session import current_caller
-from ..telegram.links import build_sign_link
+from ..telegram.links import build_sign_link, receipt_image_url
 from ..telegram.runtime import TelegramRuntime
 from ..telegram.settings import TelegramSettings, link_secret
 from ..telegram.types import (
@@ -56,7 +56,7 @@ from ..telegram.types import (
     maybe_await,
 )
 from . import service as fund_service
-from .applink import ensure_member_address
+from .applink import ensure_member_address, image_ready
 from .models import WOOD_DECIMALS, FundState, Member, ProposalRecord
 from .rules import RuleViolation, check_caller_is_host, check_host_action
 from .store import FundStoreError, scrub_paths
@@ -480,7 +480,7 @@ def fund_dict(state: FundState) -> dict[str, Any]:
     """A fund shaped for :func:`fund_to_view` (approved members, active agents, open proposals)."""
     f = state.fund
     members = [
-        {"tg_id": m.telegram_id, "number": m.member_no or 0, "username": m.username or None, "joined_at": m.joined_at}
+        {"tg_id": m.telegram_id, "number": m.deposit_no or 0, "username": m.username or None, "joined_at": m.joined_at}
         for m in state.members
         if m.approved and m.telegram_id
     ]
@@ -804,7 +804,7 @@ class FundTelegramBridge:
                 ) from exc
             raise FundActionError(exc.reason) from exc
         # The full address, so the host checks it before signing approveDepositor.
-        return f"✅ Member #{member.member_no} approved: {member.address}. Check it, then sign approveDepositor."
+        return f"✅ Approved {member.address}. Check it, then sign approveDepositor."
 
     def approve_agent(self, fund: Any, agent_name: str, by_tg_id: int) -> str:
         name = self._name(fund)
@@ -955,6 +955,7 @@ class FundTelegramBridge:
             if rec is not None:
                 self._submit(self._sync_card(chat, ev.fund, rec.id))
             r = ev.receipt
+            image = self._receipt_image(st, rec, r)
             receipt = Receipt(
                 proposal_id=str(r.onchain_id) if r.onchain_id is not None else r.proposal_id,
                 pnl_bps=int(r.pnl_bps),
@@ -962,7 +963,7 @@ class FundTelegramBridge:
                 idea_by=_int_or_none(r.idea_by),
                 backers=len(rec.backers) if rec is not None else 0,
             )
-            self._submit(self._post_receipt(chat, receipt))
+            self._submit(self._post_receipt(chat, receipt, image))
         elif ev.kind == fund_service.EV_MEMBER_APPROVED and ev.member is not None:
             view = _member_view(ev.member)
             if view is not None:
@@ -997,8 +998,36 @@ class FundTelegramBridge:
                 await self.runtime.post_proposal_card(chat, pid)  # type: ignore[union-attr]
             # drafts / cancelled drafts never had a proposal card
 
-    async def _post_receipt(self, chat: int, receipt: Receipt) -> None:
-        await self.runtime.post_receipt(chat, receipt)  # type: ignore[union-attr]
+    # Waits before re-checking a share image that answered 503 ("not readable yet").
+    image_retry_delays: tuple[float, ...] = (5.0, 15.0)
+
+    def _receipt_image(self, st: FundState, rec: ProposalRecord | None, r: Any) -> str | None:
+        """The signed /tg/receipt/<Vault>/<id>.png URL (sherwood-app #153), or None."""
+        secret = self._secret()
+        if not secret or r.onchain_id is None or not st.fund.vault:
+            return None
+        author = st.member(str(r.idea_by)) if r.idea_by else None
+        try:
+            return receipt_image_url(
+                st.fund.vault, r.onchain_id, by=(author.username if author else ""),
+                backers=len(rec.backers) if rec is not None else 0, secret=secret, base_url=self.settings.app_base_url,
+            )
+        except (ValueError, ImportError) as exc:
+            _log.info("no receipt image: %s", exc)
+            return None
+
+    async def _post_receipt(self, chat: int, receipt: Receipt, image_url: str | None = None) -> None:
+        ready = None
+        if image_url:
+            # Telegram keeps the first image it fetches: send the URL only once it answers 200.
+            hosts = getattr(self.settings, "app_link_hosts", None)
+            for delay in (0.0, *self.image_retry_delays):
+                if delay:
+                    await asyncio.sleep(delay)
+                ready = await asyncio.to_thread(image_ready, image_url, allowed_hosts=hosts)
+                if ready is not None:
+                    break
+        await self.runtime.post_receipt(chat, receipt, image_url=image_url if ready else None)  # type: ignore[union-attr]
 
     async def _post_member(self, chat: int, view: MemberView) -> None:
         await self.runtime.post_member_card(chat, view)  # type: ignore[union-attr]
@@ -1046,7 +1075,7 @@ def _member_view(m: Member) -> MemberView | None:
     tg = _int_or_none(m.telegram_id)
     if tg is None:
         return None
-    return MemberView(tg_id=tg, number=int(m.member_no or 0), share_bps=0, joined_at=_int_or_none(m.joined_at),
+    return MemberView(tg_id=tg, number=int(m.deposit_no or 0), share_bps=0, joined_at=_int_or_none(m.joined_at),
                       username=m.username or None, address=m.address or None)
 
 

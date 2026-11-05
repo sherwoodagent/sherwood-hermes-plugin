@@ -118,3 +118,28 @@ def test_redirects_are_refused_and_the_bearer_stays_home():
         evil.shutdown()
     assert status == 302 and payload == {} and "auth" not in seen
 
+
+def test_share_image_ready_semantics():
+    from sherwood_monitor.fund.applink import image_ready
+
+    url = "https://app.sherwood.sh/tg/receipt/0x7396CccbeC83fC06854Fcd307773da756b374ABc/8.png?sig=x"
+    assert image_ready(url, get_status=lambda u, t: 200) is True
+    assert image_ready(url, get_status=lambda u, t: 503) is None  # not readable yet: retry, never send
+    assert image_ready(url, get_status=lambda u, t: 302) is False
+    assert image_ready(url.replace("https", "http"), get_status=lambda u, t: 200) is False
+    assert image_ready(url.replace("app.sherwood.sh", "evil.example"), get_status=lambda u, t: 200) is False
+
+    def boom(u, t):
+        raise OSError("down")
+
+    assert image_ready(url, get_status=boom) is False
+
+
+def test_member_numbers_come_from_chain_deposit_order(tmp_path):
+    svc = FundService(LocalJsonBackend(tmp_path), clock=Clock())
+    svc.create_fund(fund(), Agent(name="alpha", identity_id="101", address="0x" + "33" * 20))
+    svc.request_membership("alpha-fund", "77", address=MEMBER_ADDR)
+    svc.approve_member("alpha-fund", "alpha", "77")
+    assert svc.load("alpha-fund").member("77").deposit_no is None  # approval order is not the card number
+    svc.apply_chain_card("alpha-fund", {"data": {"members": {"approved": [{"address": MEMBER_ADDR, "depositIndex": 3}]}}})
+    assert svc.load("alpha-fund").member("77").deposit_no == 3

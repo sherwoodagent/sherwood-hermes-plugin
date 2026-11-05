@@ -143,3 +143,55 @@ def test_start_payload_roundtrip_and_limits():
         encode_start_payload("vote", VAULT, "9" * 20)
     assert decode_start_payload("hello") is None
     assert decode_start_payload("sfz_" + "1" * 40) is None
+
+
+# -- share images (sherwood-app #153): kind-tagged, checksum vault, no timestamp ---------------------------
+from sherwood_monitor.telegram import links as _links  # noqa: E402
+
+CARD_SECRET = "test-secret"
+CARD_VAULT = "0x7396CccbeC83fC06854Fcd307773da756b374ABc"  # checksum, as in the app's URL path
+CARD_VECTORS = [
+    ("receipt|0x7396CccbeC83fC06854Fcd307773da756b374ABc:8|alice|5",
+     "c6297495e1a01b6a58e65f32716540f33500d4c44e7c31b48f96e22bb44b4a5e"),
+    ("member|0x7396CccbeC83fC06854Fcd307773da756b374ABc:8|alice|2026-11-05",
+     "af2d07fd112b63d00e61589ea48e73ad803519f36aeaa3dc8b404a04f2823f81"),
+    ("member|0x7396CccbeC83fC06854Fcd307773da756b374ABc:8|alice|",
+     "312c8040ddffbcfbaac5437149e9d44c60100575284be974d78d1eae6198d0ec"),
+    ("attrib|0x7396CccbeC83fC06854Fcd307773da756b374ABc|8:alice,5:bob",
+     "af54afca06a4d855f57623b230000d33be20e6df8a8a6495d7ff2af18fb2dcbd"),
+]
+
+
+@pytest.mark.parametrize("message,sig", CARD_VECTORS)
+def test_share_image_vectors(message, sig):
+    assert hmac.new(CARD_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest() == sig
+    assert sign_link(CARD_SECRET, message) == sig
+
+
+def test_share_image_messages_and_urls():
+    lower = CARD_VAULT.lower()
+    assert _links.checksum_address(lower) == CARD_VAULT
+    assert _links.receipt_image_message(lower, 8, "@alice", 5) == CARD_VECTORS[0][0]
+    assert _links.member_image_message(lower, 8, "alice", "2026-11-05") == CARD_VECTORS[1][0]
+    assert _links.member_image_message(lower, 8, "alice") == CARD_VECTORS[2][0]  # a missing field signs as ""
+    assert _links.attrib_image_message(lower, _links.leaderboard_attrib([(8, "@alice"), (5, "bob")])) == CARD_VECTORS[3][0]
+    assert _links.receipt_image_url(lower, 8, by="@alice", backers=5, secret=CARD_SECRET) == (
+        f"https://app.sherwood.sh/tg/receipt/{CARD_VAULT}/8.png?by=alice&backers=5&sig={CARD_VECTORS[0][1]}"
+    )
+    assert _links.member_image_url(CARD_VAULT, 8, handle="alice", joined="2026-11-05", secret=CARD_SECRET) == (
+        f"https://app.sherwood.sh/tg/member/{CARD_VAULT}/8.png?handle=alice&joined=2026-11-05&sig={CARD_VECTORS[1][1]}"
+    )
+    assert _links.leaderboard_image_url(CARD_VAULT, "8:alice,5:bob", secret=CARD_SECRET) == (
+        f"https://app.sherwood.sh/tg/leaderboard/{CARD_VAULT}.png?window=all&attrib=8:alice,5:bob&sig={CARD_VECTORS[3][1]}"
+    )
+    assert _links.fund_card_image_url(lower, square=True) == f"https://app.sherwood.sh/tg/fund/{CARD_VAULT}/card.png?square=1"
+
+
+def test_share_image_inputs_are_sanitized():
+    assert _links.social_handle("@al|ice<b>") == "aliceb"
+    assert len(_links.social_handle("x" * 50)) == 32
+    with pytest.raises(ValueError):
+        _links.receipt_image_message(CARD_VAULT, "p-3")  # needs the on-chain id
+    with pytest.raises(ValueError):
+        _links.member_image_message(CARD_VAULT, 3, "alice", "Nov 5")
+    assert _links.leaderboard_attrib([(8, "@alice"), ("p-2", "bob"), (5, "")]) == "8:alice"

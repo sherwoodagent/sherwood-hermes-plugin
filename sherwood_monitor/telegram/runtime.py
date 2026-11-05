@@ -303,7 +303,8 @@ class TelegramRuntime:
         self.flow.note_bot_card(chat_id, ref.message_id)
         return ref.message_id
 
-    async def post_receipt(self, chat_id: int, receipt: Receipt) -> int | None:
+    async def post_receipt(self, chat_id: int, receipt: Receipt, *, image_url: str | None = None) -> int | None:
+        """Post the settle receipt; with ``image_url`` (a share image already checked to answer 200) as a photo."""
         self._require()
         from .cards import render_settle_receipt
 
@@ -311,7 +312,7 @@ class TelegramRuntime:
         text, markup = render_settle_receipt(
             receipt, people=await self.people(chat_id), fund=fund, base_url=self.settings.app_base_url
         )
-        ref = await self.live.post(chat_id, text, markup)
+        ref = await self.live.post(chat_id, text, markup, image_url=image_url)
         self.flow.note_bot_card(chat_id, ref.message_id)
         return ref.message_id
 

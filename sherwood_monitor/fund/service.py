@@ -696,7 +696,8 @@ class FundService:
         gate = data.get("proposeGate") if isinstance(data.get("proposeGate"), dict) else {}
         fund_info = data.get("fund") if isinstance(data.get("fund"), dict) else {}
         fee = _opt_int(fund_info.get("agentFeeBps"))
-        if gov or gate or fee is not None:
+        deposit_order = _deposit_order(data.get("members"))
+        if gov or gate or fee is not None or deposit_order:
             def fund_mutate(state: FundState) -> None:
                 if str(gov.get("cooldownPeriod") or "").isdigit():
                     state.fund.cooldown_period = int(gov["cooldownPeriod"])
@@ -707,6 +708,9 @@ class FundService:
                     state.fund.cooldown_until = until
                 if fee is not None:
                     state.fund.agent_fee_bps = fee  # the chain's value; drafts refuse it above the cap
+                for m in state.members:
+                    if m.address and m.address.lower() in deposit_order:
+                        m.deposit_no = deposit_order[m.address.lower()]
 
             self.backend.update(fund, fund_mutate)
         state = self.backend.load(fund)
@@ -885,6 +889,29 @@ CHAIN_STATES = {
     "Executed": "executed",
     "Rejected": "vetoed",
 }
+
+
+def _deposit_order(members: Any) -> dict[str, int]:
+    """address -> Member #N (deposit order on chain) when the tg-card read exposes it.
+
+    Reads `members.depositOrder` (addresses in deposit order) or a per-row
+    `depositIndex` / `memberNumber` / `number` in `members.approved[]`.
+    """
+    if not isinstance(members, dict):
+        return {}
+    out: dict[str, int] = {}
+    order = members.get("depositOrder")
+    if isinstance(order, list):
+        for i, addr in enumerate(order, start=1):
+            if isinstance(addr, str):
+                out.setdefault(addr.lower(), i)
+    for row in members.get("approved") or []:
+        if not isinstance(row, dict) or not isinstance(row.get("address"), str):
+            continue
+        n = next((_opt_int(row.get(k)) for k in ("depositIndex", "memberNumber", "number") if _opt_int(row.get(k))), None)
+        if n:
+            out[row["address"].lower()] = n
+    return out
 
 
 def _coverage_kind(row: dict[str, Any]) -> str | None:

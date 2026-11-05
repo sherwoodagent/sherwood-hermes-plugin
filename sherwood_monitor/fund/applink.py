@@ -157,3 +157,34 @@ def ensure_member_address(rt: Any, fund: str, who: str) -> str:
         return ""
     rt.service.request_membership(fund, tg, address=address)
     return address
+
+
+def image_ready(url: str, *, allowed_hosts: str | Iterable[str] | None = None, get_status: Callable[[str, float], int] | None = None,
+                timeout: float = 6.0) -> bool | None:
+    """Is a share image (/tg/receipt|member|leaderboard/...png) servable yet?
+
+    True on 200, None on 503 ("not readable yet": retry later, never send it, Telegram
+    keeps the first image it fetches), False otherwise (refused URL, 404, a redirect,
+    any error). Only https on an allowlisted app host; redirects are not followed.
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+        if parts.scheme != "https" or (parts.hostname or "").lower() not in parse_hosts(allowed_hosts):
+            return False
+        status = (get_status or _image_status)(url, timeout)
+    except Exception:
+        return False
+    if status == 200:
+        return True
+    if status == 503:
+        return None
+    return False
+
+
+def _image_status(url: str, timeout: float) -> int:
+    req = urllib.request.Request(url, method="GET", headers={"accept": "image/png", "user-agent": "sherwood-monitor"})
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:  # noqa: S310 - https + allowlisted host, checked above
+            return resp.status
+    except urllib.error.HTTPError as err:
+        return err.code

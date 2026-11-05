@@ -38,3 +38,9 @@ def mock_ctx():
 def _no_app_link_network(monkeypatch):
     """The app-link lookup (GET /api/tg/link) never leaves the test process: 'not linked' unless a test stubs it."""
     monkeypatch.setattr(applink, "_http_get_json", lambda url, headers, timeout: (404, {}))
+
+
+@pytest.fixture(autouse=True)
+def _no_share_image_network(monkeypatch):
+    """Share-image readiness checks never leave the test process: 404 (send text only) unless stubbed."""
+    monkeypatch.setattr(applink, "_image_status", lambda url, timeout: 404)
