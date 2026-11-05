@@ -19,6 +19,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tags are needed for the "tag already exists" check below; the
+          # default shallow checkout fetches none, so the check never fired.
+          fetch-tags: true
 
       - name: Read version from pyproject.toml
         id: version
@@ -51,8 +55,13 @@ jobs:
 
       - name: Create GitHub release
         if: steps.check_tag.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v2
+        # Pinned to v2.6.2 by commit: a mutable @v2 could change under us.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           tag_name: ${{ steps.version.outputs.version }}
+          # Tag exactly the commit that triggered this run (the merge commit),
+          # not whatever main points at when the release is published. The
+          # Hermes catalog pins this commit.
+          target_commitish: ${{ github.sha }}
           name: ${{ steps.version.outputs.version }}
           generate_release_notes: true
