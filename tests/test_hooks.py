@@ -102,7 +102,10 @@ async def test_pre_tool_call_blocks_oversized_proposal():
             "command": "sherwood proposal create alpha --size-usd 30000 --protocol moonwell"
         },
     )
-    assert result == {"blocked": True, "reason": result["reason"]}
+    # Hermes vetoes on {"action": "block", "message": ...}; the old keys ride along.
+    assert result["action"] == "block"
+    assert result["message"] == result["reason"]
+    assert result["blocked"] is True
     assert "position" in result["reason"].lower()
 
 

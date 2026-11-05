@@ -1,15 +1,103 @@
+manifest_version: 2
 name: sherwood-monitor
 version: "0.6.0"
-description: Bridges Sherwood fund events (on-chain + XMTP) into Hermes. Reactively informs the agent of proposals, votes, settlements, risk alerts, and other lifecycle events.
+description: >-
+  Bridges Sherwood fund events (on-chain + XMTP) into Hermes, and runs a
+  group-chat fund: your Hermes pitches trades in a Telegram group, members
+  deposit and object, guest Hermes agents join as co-managers. Slash commands:
+  /fund, /join-fund, /fund-approve, /fund-agents, /leaderboard.
 author: Sherwood
+license: MIT
+homepage: https://sherwood.sh
 entry: sherwood_monitor
-requires_env: []
+# 0.21.5 is the first release whose installer accepts manifest v2 (it reads the
+# runtime's SUPPORTED_MANIFEST_VERSION = 2) and knows `requires_hermes`.
+requires_hermes: ">=0.21.5"
+requires_env:
+  - name: TELEGRAM_BOT_TOKEN
+    description: Bot token for the fund's Telegram group (from @BotFather)
+    url: https://core.telegram.org/bots/features#botfather
+    secret: true
+  - name: PRIVY_APP_ID
+    description: Privy app id for members' and the host's embedded wallets
+    url: https://dashboard.privy.io
+    secret: false
+  - name: PRIVY_APP_SECRET
+    description: Privy app secret (server-side wallet actions)
+    url: https://dashboard.privy.io
+    secret: true
+  - name: SHERWOOD_TG_LINK_SECRET
+    description: Shared secret that signs Telegram-to-wallet link tokens
+    url: https://docs.sherwood.sh
+    secret: true
+  - name: TX_BUILDER_URL
+    description: Prepare API base URL (unsigned transactions); defaults to https://api.sherwood.sh/api/v1
+    url: https://docs.sherwood.sh
+    secret: false
+  - name: APP_BASE_URL
+    description: Sherwood app base URL for deposit and proposal links; defaults to https://sherwood.sh
+    url: https://sherwood.sh
+    secret: false
+config_schema:
+  agent_name:
+    type: str
+    default: ""
+    description: This Hermes's agent name inside funds (unique per fund)
+  agent_identity_id:
+    type: str
+    default: ""
+    description: This agent's ERC-8004 identity token id
+  agent_address:
+    type: str
+    default: ""
+    description: This agent's own scoped wallet address (it bonds its own WOOD)
+  owner_telegram_id:
+    type: str
+    default: ""
+    description: Telegram user id of the human who runs this Hermes
+  default_fund:
+    type: str
+    default: ""
+    description: Fund subdomain to use when a command or tool does not name one
+  tx_builder_url:
+    type: str
+    default: https://api.sherwood.sh/api/v1
+    description: Prepare API base URL
+  app_base_url:
+    type: str
+    default: https://sherwood.sh
+    description: Sherwood app base URL for card buttons
+  fund_state_backend:
+    type: str
+    default: local
+    choices: [local, http]
+    description: Where shared fund state lives (local JSON file, or the hosted fund-state API)
+  fund_state_dir:
+    type: str
+    default: ""
+    description: Local fund state directory (default ~/.hermes/plugins/sherwood-monitor/funds)
+  fund_state_url:
+    type: str
+    default: ""
+    description: Hosted fund-state API base URL (http backend)
+capabilities: []
 provides_tools:
   - sherwood_monitor_start
   - sherwood_monitor_stop
   - sherwood_monitor_status
   - sherwood_monitor_exposure
   - sherwood_monitor_cron_tick
+  - fund_status
+  - fund_setup
+  - fund_claim_topic
+  - fund_release_claim
+  - fund_draft_proposal
+  - fund_set_proposal_status
+  - fund_record_vote
+  - fund_record_settle
+  - fund_approve_member
+  - fund_approve_agent
+  - fund_remove_agent
 provides_hooks:
   - on_session_start
   - on_session_end

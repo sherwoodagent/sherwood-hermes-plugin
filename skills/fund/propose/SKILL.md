@@ -1,0 +1,83 @@
+---
+name: fund-propose
+description: Use after you hold a claim on a topic (fund_claim_topic) and want to turn the group's idea into an on-chain proposal. Covers the thesis, legs, max capital and drawdown, the WOOD proposer bond, and the order of calls.
+---
+
+# Propose: turn a claimed idea into a proposal
+
+Governance is optimistic veto. Your proposal passes unless Against votes reach
+20% of share supply inside the voting window (1800 s on the demo vault). So
+write it for the members who might object: plain, sized, and honest about the
+downside.
+
+## Rules you cannot skip
+
+- **Claim first.** `fund_draft_proposal` refuses without your live claim on
+  the same topic. Claims last 10 minutes.
+- **One open proposal per agent; at most 2 open per fund.** Drafts count.
+  If you are blocked, say why in chat and stop.
+- **Stay inside the fund's ceilings.** The draft is blocked before any
+  calldata is built if max capital or max drawdown exceed the host's limits.
+- **Your bond, your WOOD.** Every agent bonds its own WOOD from its own
+  wallet. Never ask the host or another agent to bond for you.
+
+## Write the proposal
+
+- **Thesis**: two or three sentences. What you expect, why now, what would
+  prove you wrong. Name the member whose idea it was (`idea_by` = their
+  telegram id).
+- **Legs**: one line each, in order, e.g. `swap 400 USDG -> TSLA`,
+  `settle: swap TSLA -> USDG`. Use `phase: settle` for the unwind legs.
+  Only Robinhood Chain stock tokens and the fund asset. Prices from Chainlink
+  feeds only.
+- **Max capital**: the most the batch may move out of the vault, in the fund
+  asset ("500" USDG). Each leg's `cap` is its own max outflow; approve legs
+  take 0. Caps must sum to no more than max capital.
+- **Max drawdown (bps)**: the loss you are declaring up front. 1000 = 10%.
+  It sizes the settle-price guard; do not inflate it to be safe.
+- **Duration**: seconds the position stays open (`strategy_duration_seconds`).
+
+When you have calldata for a leg (the Sherwood CLI with `--calldata-only`),
+pass `target`, `data` and `value` on the leg. Without calldata the draft is
+still recorded and the response lists what is missing.
+
+## The bond
+
+- **Bond = 1% of coverage.** Coverage is the max capital. The draft response
+  shows `bond_value_asset_units`; quote it in WOOD (the CLI quotes it from the
+  WOOD TWAP feed) and pass `bond_quote_wood`.
+- **Approve quote + 5%, never unlimited.** The only WOOD allowance you ever
+  grant for a bond is `approve_wood` from the draft response, to the
+  governor's bond escrow. A `max`/unlimited approval is blocked outright.
+- **Bond buffer.** Pass your `wood_balance`. If WOOD < quote x 1.05, the plan
+  puts a USDG -> WOOD swap for the gap as the first leg of your wallet batch,
+  before the approve.
+- **Drift.** If the WOOD price moves more than 5% between quote and propose,
+  re-quote and draft again. Never widen the approval to absorb drift.
+
+## Order of calls
+
+1. `fund_status` (fresh state).
+2. `fund_draft_proposal(topic, thesis, legs, max_capital, max_drawdown_bps,
+   strategy_duration_seconds, bond_quote_wood, wood_balance, idea_by,
+   strategy, metadata_uri)`.
+   - `ok: false, blocked: true` -> post the `error` in chat, stop.
+   - `prepare.ready: false` -> get what `prepare.missing` lists (strategy
+     clone, pinned metadata URI, leg calldata) before you sign. The draft
+     keeps your slot meanwhile. If the thesis or legs change, cancel it and
+     draft again.
+3. Post the card in the group: thesis, legs, max capital, max drawdown, bond,
+   voting window, and "object with an Against vote if you disagree".
+4. Sign from your own wallet, in order: the swap (only if
+   `bond.swap_first`), the exact approve, then propose (`prepare.body` to
+   `POST {tx_builder_url}/prepare/propose`, or the CLI).
+5. `fund_set_proposal_status(proposal_id, status="proposed", onchain_id,
+   tx_hash)`. This starts the voting clock on the card.
+6. If anything fails before step 5, `fund_set_proposal_status(...,
+   status="cancelled")` so the slot frees up, and say so in chat.
+
+## Don't
+
+- Don't propose without a claim, or with someone else's.
+- Don't bond with anything but your own WOOD, or approve more than quote + 5%.
+- Don't hide the downside to avoid objections. Objections are the product.

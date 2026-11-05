@@ -52,8 +52,9 @@ def _format_catchup_injection(subdomain: str, payload: dict) -> str:
 
 def make_session_hooks(
     cfg: Config, buffer: EventBuffer, supervisor: Supervisor
-) -> dict[str, Callable[[], Awaitable[None]]]:
-    async def on_session_start() -> None:
+) -> dict[str, Callable[..., Awaitable[None]]]:
+    # Hermes passes hook payloads as keyword arguments; every callback takes **kwargs.
+    async def on_session_start(**_: Any) -> None:
         for sub in cfg.funds:
             payload = await _catchup_one(cfg.sherwood_bin, sub)
             if payload is not None:
@@ -67,8 +68,8 @@ def make_session_hooks(
     return {"on_session_start": on_session_start}
 
 
-def on_session_end_factory(supervisor: Supervisor) -> Callable[[], Awaitable[None]]:
-    async def on_session_end() -> None:
+def on_session_end_factory(supervisor: Supervisor) -> Callable[..., Awaitable[None]]:
+    async def on_session_end(**_: Any) -> None:
         await supervisor.stop_all()
 
     return on_session_end
@@ -126,11 +127,39 @@ def _parse_propose_command(command: str) -> tuple[str, float, str] | None:
     return subdomain, size_usd, protocol
 
 
-def make_pre_tool_call_hook(state_fetcher: StateFetcher):
-    async def hook(tool_name: str = "", params: dict | None = None, **_: Any):
+# A guard returns a block reason, or None to allow. Fund drafts use one
+# (sherwood_monitor.fund.guard.make_fund_guard).
+ToolGuard = Callable[[str, dict], "str | None"]
+
+
+def block_directive(reason: str) -> dict:
+    """Hermes vetoes a tool call on `{"action": "block", "message": ...}`.
+
+    `blocked` / `reason` are kept for callers that read the plugin's older shape.
+    """
+    return {"action": "block", "message": reason, "blocked": True, "reason": reason}
+
+
+def make_pre_tool_call_hook(state_fetcher: StateFetcher, fund_guard: ToolGuard | None = None):
+    async def hook(
+        tool_name: str = "",
+        args: dict | None = None,
+        params: dict | None = None,
+        **_: Any,
+    ):
+        # Hermes passes the tool arguments as `args`; `params` is the old name.
+        payload = args if isinstance(args, dict) else (params or {})
+        if fund_guard is not None:
+            try:
+                reason = fund_guard(tool_name, payload)
+            except Exception as exc:  # the guard must never crash the turn
+                _log.warning("fund guard failed for %s: %s", tool_name, exc)
+                reason = f"fund guard error: {exc}"
+            if reason:
+                return block_directive(reason)
         if tool_name not in _TERMINAL_TOOLS:
             return None
-        command = (params or {}).get("command", "")
+        command = payload.get("command", "")
         parsed = _parse_propose_command(command)
         if parsed is None:
             return None
@@ -165,7 +194,7 @@ def make_pre_tool_call_hook(state_fetcher: StateFetcher):
             )
         )
         if not verdict.ok:
-            return {"blocked": True, "reason": verdict.reason}
+            return block_directive(verdict.reason)
         return None
 
     return hook
@@ -191,13 +220,15 @@ def _format_settlement_block(record: dict) -> str:
 def make_post_tool_call_hook(memory_writer: MemoryWriter, buffer: EventBuffer):
     async def hook(
         tool_name: str = "",
+        args: dict | None = None,
         params: dict | None = None,
         result: Any = None,
         **_: Any,
     ):
         if tool_name not in _TERMINAL_TOOLS:
             return None
-        command = (params or {}).get("command", "")
+        payload = args if isinstance(args, dict) else (params or {})
+        command = payload.get("command", "")
         m = _SHERWOOD_SETTLE_RE.search(command)
         if not m:
             return None
