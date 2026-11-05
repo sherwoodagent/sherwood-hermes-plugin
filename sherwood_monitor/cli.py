@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -66,21 +70,82 @@ CRON_PROMPT = (
 
 
 def _plugin_root() -> Path:
-    """Locate the plugin install root so we can build absolute script paths.
+    """The plugin's own directory (the one holding `scripts/watchdog.sh`).
 
-    The Hermes harness invokes cron scripts via their absolute path, so we
-    need to resolve `scripts/watchdog.sh` to a path that exists at registration
-    time. Two layouts:
-      1. Editable install (`pip install -e .`) — the `scripts/` dir lives next
-         to the package source.
-      2. Wheel install — the `scripts/` dir lives in the plugin's
-         `~/.hermes/plugins/sherwood-monitor/` mirror.
-    Prefer (1) when running from a checkout, fall back to (2).
+    A Hermes install (git clone into the plugins folder) and an editable
+    checkout both keep `scripts/` next to the `sherwood_monitor` package.
     """
     src_candidate = Path(__file__).resolve().parent.parent
     if (src_candidate / _WATCHDOG_SCRIPT).exists():
         return src_candidate
     return Path.home() / ".hermes" / "plugins" / "sherwood-monitor"
+
+
+HERMES_TIMEOUT_S = 60
+WRAPPER_PREFIX = "sherwood-monitor-"
+
+
+def hermes_home() -> Path:
+    """The active Hermes home: `$HERMES_HOME` (Hermes exports it), else `~/.hermes`."""
+    raw = os.environ.get("HERMES_HOME", "").strip()
+    return Path(os.path.expanduser(raw)) if raw else Path.home() / ".hermes"
+
+
+def wrapper_name(spec: _CronSpec) -> str:
+    """`sherwood-monitor-<mode>.sh`, the script Hermes runs for a no_agent cron."""
+    return f"{WRAPPER_PREFIX}{spec.payload}.sh"
+
+
+def _python_path(plugin_root: Path) -> list[str]:
+    """The plugin root plus this interpreter's site-packages (where its dependencies live).
+
+    Hermes runs a cron's `.sh` under bash with no arguments; a bare `python3`
+    there would import neither this plugin nor PyYAML / eth-keys.
+    """
+    entries = [str(plugin_root)]
+    for entry in sys.path:
+        if entry and "site-packages" in entry and entry not in entries and Path(entry).is_dir():
+            entries.append(entry)
+    return entries
+
+
+def wrapper_text(spec: _CronSpec, plugin_root: Path, python: str, python_path: list[str]) -> str:
+    """One no_agent cron's wrapper: the mode baked in, the plugin's watchdog.sh by absolute path."""
+    return (
+        "#!/usr/bin/env bash\n"
+        f"# Written by `hermes sherwood install-cron` (sherwood-monitor) for the {spec.name} cron.\n"
+        "# Hermes runs cron scripts from this folder with no arguments, so the watchdog mode is\n"
+        "# fixed here. Re-run `hermes sherwood install-cron` to rewrite it (e.g. after moving Hermes).\n"
+        f"export SHERWOOD_MONITOR_PYTHON={shlex.quote(python)}\n"
+        f"export PYTHONPATH={shlex.quote(os.pathsep.join(python_path))}\n"
+        f"exec bash {shlex.quote(str(plugin_root / _WATCHDOG_SCRIPT))} {shlex.quote(spec.payload)}\n"
+    )
+
+
+def write_wrappers(scripts_dir: Path, plugin_root: Path, python: str | None = None) -> dict[str, Path]:
+    """Write (or rewrite) one wrapper per no_agent cron into Hermes' scripts folder."""
+    python = python or sys.executable
+    python_path = _python_path(plugin_root)
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+    for spec in CRONS:
+        if spec.mode != "no_agent":
+            continue
+        target = scripts_dir / wrapper_name(spec)
+        fd, tmp = tempfile.mkstemp(prefix=".sherwood-monitor.", suffix=".tmp", dir=str(scripts_dir))
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(wrapper_text(spec, plugin_root, python, python_path))
+            os.chmod(tmp, 0o700)
+            os.replace(tmp, target)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        written[spec.name] = target
+    return written
 
 
 def _run_hermes(args: list[str]) -> tuple[int, str, str]:
@@ -92,38 +157,65 @@ def _run_hermes(args: list[str]) -> tuple[int, str, str]:
     hermes = shutil.which("hermes")
     if hermes is None:
         return 127, "", ""
-    res = subprocess.run([hermes, *args], capture_output=True, text=True, timeout=15)
+    try:
+        res = subprocess.run([hermes, *args], capture_output=True, text=True, timeout=HERMES_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return 124, "", f"hermes {' '.join(args[:2])} timed out after {HERMES_TIMEOUT_S}s"
     return res.returncode, res.stdout, res.stderr
 
 
-def _registered_cron_names() -> set[str]:
-    """Names of crons currently registered with Hermes. Empty set on error.
+_JOB_LINE_RE = re.compile(r"^\s*([0-9a-f]{6,})\s+\[[^\]]*\]\s*$")
+_NAME_LINE_RE = re.compile(r"^\s*Name:\s*(\S+)\s*$")
 
-    `hermes cron list` output isn't documented as JSON. Match by whole token
-    so ``sherwood-monitor-foo`` doesn't false-match ``sherwood-monitor-bar``.
-    Worst case (false negative): we attempt a redundant ``cron create`` which
-    surfaces its own conflict error — never silently creates a duplicate.
+
+def parse_cron_list(stdout: str) -> dict[str, list[str]]:
+    """`hermes cron list --all` text -> {job name: [job ids]} for this plugin's crons.
+
+    Each job prints `<id> [state]` and then `Name: <name>`. Duplicate names are
+    possible (Hermes does not enforce unique names), hence a list of ids.
     """
-    import re
+    out: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in stdout.splitlines():
+        m = _JOB_LINE_RE.match(line)
+        if m:
+            current = m.group(1)
+            continue
+        m = _NAME_LINE_RE.match(line)
+        if m and current is not None:
+            if m.group(1) in CRON_NAMES:
+                out.setdefault(m.group(1), []).append(current)
+            current = None
+    return out
 
-    rc, stdout, _ = _run_hermes(["cron", "list"])
+
+def _registered_cron_ids() -> dict[str, list[str]] | None:
+    """This plugin's registered crons by name, or None when the list call fails."""
+    rc, stdout, _ = _run_hermes(["cron", "list", "--all"])
     if rc != 0:
-        return set()
-    tokens = set(re.findall(r"[A-Za-z0-9_-]+", stdout))
-    return tokens & set(CRON_NAMES)
+        return None
+    return parse_cron_list(stdout)
 
 
-def _create_cron(spec: _CronSpec, plugin_root: Path) -> tuple[bool, str]:
-    cmd = ["cron", "create", "--name", spec.name, "--schedule", spec.schedule]
+def create_argv(spec: _CronSpec) -> list[str]:
+    """`hermes cron create <schedule> [<prompt>] --name ...`: schedule and prompt are positional."""
+    argv = ["cron", "create", spec.schedule]
+    if spec.mode == "agent":
+        argv.append(spec.payload)
+    argv += ["--name", spec.name]
     if spec.mode == "no_agent":
-        script_path = plugin_root / _WATCHDOG_SCRIPT
-        cmd += ["--no-agent", "--script", str(script_path), spec.payload]
+        argv += ["--no-agent", "--script", wrapper_name(spec)]
+    return argv
+
+
+def edit_argv(spec: _CronSpec, job_id: str) -> list[str]:
+    """`hermes cron edit <id> ...`: bring an existing job back to this plugin's definition."""
+    argv = ["cron", "edit", job_id, "--schedule", spec.schedule]
+    if spec.mode == "no_agent":
+        argv += ["--script", wrapper_name(spec), "--no-agent"]
     else:
-        cmd += ["--prompt", spec.payload]
-    rc, _stdout, stderr = _run_hermes(cmd)
-    if rc == 0:
-        return True, ""
-    return False, (stderr or "").strip() or f"rc={rc}"
+        argv += ["--prompt", spec.payload]
+    return argv
 
 
 # `hermes sherwood <sub>`: (help, takes a fund subdomain)
@@ -132,7 +224,7 @@ SUBCOMMANDS: dict[str, tuple[str, bool]] = {
     "stop": ("stop monitoring a fund", True),
     "status": ("show monitor status", False),
     "tail": ("tail stderr of a monitor", True),
-    "install-cron": ("register all sherwood crons with Hermes (no_agent watchdogs + reasoning; idempotent)", False),
+    "install-cron": ("register (or update) all sherwood crons with Hermes: 4 no_agent watchdogs + 1 reasoning cron; idempotent", False),
 }
 
 
@@ -167,13 +259,15 @@ def build_cli_handlers(sup: Supervisor) -> dict[str, Callable[[Any], int]]:
         return 0
 
     def install_cron_handler(_args: Any) -> int:
-        """Idempotently register every Sherwood cron with Hermes.
+        """Register (or re-register) every Sherwood cron with Hermes. Idempotent.
 
-        Reports per-entry status as JSON so a human or follow-up tool can
-        see what changed without parsing stderr.
+        Writes one wrapper per no_agent watchdog into `$HERMES_HOME/scripts/`
+        (Hermes runs cron scripts only from there, with no arguments), then
+        creates each missing cron with `hermes cron create <schedule> ...` and
+        brings existing ones back to this definition with `hermes cron edit`.
+        Reports per-entry status as JSON.
         """
-        hermes = shutil.which("hermes")
-        if hermes is None:
+        if shutil.which("hermes") is None:
             print(json.dumps({"installed": False, "error": "hermes binary not found on PATH"}))
             return 1
 
@@ -185,23 +279,51 @@ def build_cli_handlers(sup: Supervisor) -> dict[str, Callable[[Any], int]]:
         except Exception:
             reasoning_enabled = True
 
-        existing = _registered_cron_names()
-        plugin_root = _plugin_root()
+        existing = _registered_cron_ids()
+        if existing is None:
+            # Without the list we cannot tell create from update; creating blind
+            # would duplicate jobs (Hermes allows duplicate names).
+            print(json.dumps({"installed": [], "updated": [], "skipped": [], "errors": [
+                {"name": "*", "phase": "list", "error": "`hermes cron list --all` failed; nothing changed"}
+            ]}))
+            return 1
 
-        result: dict[str, Any] = {"installed": [], "skipped": [], "errors": []}
+        scripts_dir = hermes_home() / "scripts"
+        result: dict[str, Any] = {
+            "installed": [], "updated": [], "skipped": [], "errors": [], "scripts_dir": str(scripts_dir),
+        }
+        try:
+            write_wrappers(scripts_dir, _plugin_root())
+        except OSError as exc:
+            result["errors"].append({"name": "*", "phase": "write-scripts", "error": type(exc).__name__})
+            print(json.dumps(result))
+            return 1
 
         for spec in CRONS:
             if spec.mode == "agent" and not reasoning_enabled:
                 result["skipped"].append({"name": spec.name, "reason": "proposal_reasoning_enabled=false"})
                 continue
-            if spec.name in existing:
-                result["skipped"].append({"name": spec.name, "reason": "already_registered"})
+            entry = {"name": spec.name, "schedule": spec.schedule, "mode": spec.mode}
+            if spec.mode == "no_agent":
+                entry["script"] = wrapper_name(spec)
+            job_ids = existing.get(spec.name, [])
+            if not job_ids:
+                rc, _out, err = _run_hermes(create_argv(spec))
+                if rc == 0:
+                    result["installed"].append(entry)
+                else:
+                    result["errors"].append(
+                        {"name": spec.name, "phase": "create", "error": (err or "").strip() or f"rc={rc}"}
+                    )
                 continue
-            ok, err = _create_cron(spec, plugin_root)
-            if ok:
-                result["installed"].append({"name": spec.name, "schedule": spec.schedule, "mode": spec.mode})
-            else:
-                result["errors"].append({"name": spec.name, "phase": "create", "error": err})
+            for job_id in job_ids:
+                rc, _out, err = _run_hermes(edit_argv(spec, job_id))
+                if rc == 0:
+                    result["updated"].append({**entry, "id": job_id})
+                else:
+                    result["errors"].append(
+                        {"name": spec.name, "id": job_id, "phase": "edit", "error": (err or "").strip() or f"rc={rc}"}
+                    )
 
         print(json.dumps(result))
         return 1 if result["errors"] else 0

@@ -21,6 +21,7 @@ def _redirect_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(wd, "PLUGIN_ROOT", tmp_path)
     monkeypatch.setattr(wd, "CONFIG_PATH", tmp_path / "config.yaml")
     monkeypatch.setattr(wd, "WATCHDOG_STATE_PATH", tmp_path / "watchdog_state.json")
+    monkeypatch.setattr(wd, "STREAM_STATUS_PATH", tmp_path / "stream_status.json")
     # The monitor wallet comes from env only; clear it so tests never see a real one.
     monkeypatch.delenv("SHERWOOD_PRIVATE_KEY", raising=False)
     monkeypatch.delenv("SHERWOOD_AGENT_ADDRESS", raising=False)
@@ -302,55 +303,79 @@ def test_gas_silent_when_rpc_url_blank(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_stream_silent_when_hermes_missing(monkeypatch, tmp_path):
+def _write_stream_status(tmp_path, funds, host_pid=None):
+    import os
+
+    (tmp_path / "stream_status.json").write_text(
+        json.dumps({"written_at": 0, "host_pid": os.getpid() if host_pid is None else host_pid, "funds": funds})
+    )
+
+
+def test_stream_silent_without_a_status_file(monkeypatch, tmp_path):
+    """Hermes never ran a supervisor: nothing to judge, silent. No `hermes` shell-out at all."""
     _redirect_paths(monkeypatch, tmp_path)
-    with patch("shutil.which", return_value=None):
+    with patch("subprocess.run") as run:
         out = wd._stream(_cfg())
     assert out == ""
+    run.assert_not_called()
 
 
 def test_stream_flags_dead_supervisor(monkeypatch, tmp_path):
+    import os
+    import time as _time
+
     _redirect_paths(monkeypatch, tmp_path)
-    status_payload = {
-        "funds": [
-            {"subdomain": "alpha", "pid": 0, "last_event_at": None},
-            {"subdomain": "beta", "pid": 1234, "last_event_at": int(__import__("time").time())},
-        ]
-    }
-    with patch("shutil.which", return_value="/usr/local/bin/hermes"), patch(
-        "subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=json.dumps(status_payload), stderr=""),
-    ):
-        out = wd._stream(_cfg(stream_stale_minutes=30))
+    _write_stream_status(tmp_path, [
+        {"subdomain": "alpha", "pid": 0, "last_event_at": None, "restarting": False},
+        {"subdomain": "beta", "pid": os.getpid(), "last_event_at": int(_time.time()), "restarting": False},
+    ])
+    out = wd._stream(_cfg(stream_stale_minutes=30))
     assert "alpha: NO SUPERVISOR (pid=0)" in out
-    assert "beta" not in out  # fresh event, healthy
+    assert "beta" not in out  # live pid, fresh event
+
+
+def test_stream_restarting_child_is_not_dead(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    _write_stream_status(tmp_path, [{"subdomain": "alpha", "pid": 999999, "last_event_at": None, "restarting": True}])
+    assert wd._stream(_cfg()) == ""
+
+
+def test_stream_flags_all_funds_when_hermes_is_gone(monkeypatch, tmp_path):
+    import os
+
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(wd, "_pid_alive", lambda pid: pid == os.getpid())
+    _write_stream_status(
+        tmp_path,
+        [{"subdomain": "alpha", "pid": os.getpid(), "last_event_at": None, "restarting": False}],
+        host_pid=424242,
+    )
+    out = wd._stream(_cfg())
+    assert "alpha: NO SUPERVISOR (Hermes is not running)" in out
 
 
 def test_stream_flags_stale_event(monkeypatch, tmp_path):
-    _redirect_paths(monkeypatch, tmp_path)
+    import os
     import time as _time
 
+    _redirect_paths(monkeypatch, tmp_path)
     stale_ts = int(_time.time()) - 3600  # 60 min ago
-    status_payload = {
-        "funds": [{"subdomain": "gamma", "pid": 4242, "last_event_at": stale_ts}]
-    }
-    with patch("shutil.which", return_value="/usr/local/bin/hermes"), patch(
-        "subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=json.dumps(status_payload), stderr=""),
-    ):
-        out = wd._stream(_cfg(stream_stale_minutes=30))
+    _write_stream_status(tmp_path, [{"subdomain": "gamma", "pid": os.getpid(), "last_event_at": stale_ts}])
+    out = wd._stream(_cfg(stream_stale_minutes=30))
     assert "gamma" in out and "stale" in out
 
 
-def test_stream_silent_when_status_returns_empty(monkeypatch, tmp_path):
-    """No configured funds → empty funds list → silent."""
+def test_stream_silent_when_status_has_no_funds(monkeypatch, tmp_path):
+    """Hermes stopped the supervisors cleanly (session end) -> empty funds list -> silent."""
     _redirect_paths(monkeypatch, tmp_path)
-    with patch("shutil.which", return_value="/usr/local/bin/hermes"), patch(
-        "subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=json.dumps({"funds": []}), stderr=""),
-    ):
-        out = wd._stream(_cfg())
-    assert out == ""
+    _write_stream_status(tmp_path, [], host_pid=424242)
+    assert wd._stream(_cfg()) == ""
+
+
+def test_stream_silent_on_a_corrupt_status_file(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    (tmp_path / "stream_status.json").write_text("{not json")
+    assert wd._stream(_cfg()) == ""
 
 
 # ---------------------------------------------------------------------------

@@ -44,3 +44,11 @@ def _no_app_link_network(monkeypatch):
 def _no_share_image_network(monkeypatch):
     """Share-image readiness checks never leave the test process: 404 (send text only) unless stubbed."""
     monkeypatch.setattr(applink, "_image_status", lambda url, timeout: 404)
+
+
+@pytest.fixture(autouse=True)
+def _stream_status_in_tmp(monkeypatch, tmp_path):
+    """The Supervisor's stream-status file never lands in the real ~/.hermes."""
+    from sherwood_monitor import supervisor
+
+    monkeypatch.setattr(supervisor, "default_status_path", lambda: tmp_path / "stream_status.json")
