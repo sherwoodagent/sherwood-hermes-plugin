@@ -1,0 +1,86 @@
+# Hermes plugin-catalog entry for sherwood-monitor.
+#
+# This is the exact file to submit as `plugin-catalog/sherwood-monitor.yaml`
+# in NousResearch/hermes-agent (how: docs/catalog-submission.md). Schema:
+# plugin-catalog/README.md "Entry schema" in that repo; structural check:
+# scripts/validate_plugin_catalog.py there.
+#
+# The capabilities block below mirrors plugin.yaml at the pinned commit
+# (provides_tools, provides_hooks, requires_env names). Keep them identical.
+name: sherwood-monitor
+title: Sherwood
+repo: https://github.com/sherwoodagent/sherwood-hermes-plugin
+# REPLACE before submitting: the full 40-character commit the v0.7.0 tag points
+# at, from `git rev-parse 'v0.7.0^{commit}'` (lowercase hex). The loader and
+# catalog CI reject anything else: a tag name, a branch or a short sha.
+sha: "<sha of the v0.7.0 tag commit>"
+version: "0.7.0"
+description: >-
+  Sherwood funds for Hermes on Robinhood Chain (chain 4663, USDG). Monitors your
+  Sherwood funds (on-chain and XMTP events reach the next turn, risk checks run
+  before `sherwood proposal create`, `hermes sherwood install-cron` registers five
+  crons, settlements are written to memory) and runs a fund inside a Telegram
+  group: the agent pitches trades, members back or object, the host approves
+  members and guest Hermes agents, and every proposal gets a live card.
+  Governance is optimistic veto: only Against votes count.
+  Disclosure: the plugin never signs or sends a transaction and never holds
+  member funds. It builds unsigned transactions through the prepare API at
+  api.sherwood.sh and posts HMAC-signed links to app.sherwood.sh, where the
+  host's and members' own wallets sign. Network calls: api.sherwood.sh (prepare,
+  fund-card and price reads), app.sherwood.sh (member-wallet lookup with
+  SHERWOOD_TG_API_TOKEN, share-image checks), the Telegram Bot API through
+  Hermes' adapter, the XMTP network, and the RPC URLs in the Sherwood CLI config
+  (gas watchdog). Runs the `sherwood` CLI as subprocesses (one long-running
+  `session check` stream per monitored fund) and `hermes cron` to register crons,
+  and spawns a long-running Node XMTP sidecar. Reads the Sherwood CLI's
+  ~/.sherwood/config.json, including its privateKey, to derive a separate XMTP
+  sidecar key and the agent's address; the key is not sent anywhere. Writes fund
+  state under ~/.hermes/plugins/sherwood-monitor/ and the XMTP database under
+  ~/.hermes/xmtp/. Install runs `npm ci` in xmtp_sidecar/, which downloads
+  @xmtp/node-bindings (a native binary) from the npm registry, pinned by
+  package-lock.json integrity hashes. No telemetry.
+maintainer: Sherwood
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/sherwoodagent/sherwood-hermes-plugin#readme
+readme: true
+# POSIX only: fund state uses fcntl file locks; the watchdog is a shell script.
+platforms: [linux, macos]
+known_issues:
+  - "Keep plugins.isolation: in_process (the default). Under isolation: host no turn is sender-checked, and the Telegram handler and `hermes sherwood` CLI are not registered."
+  - "A fund group's toolset must not include terminal, write_file, patch or execute_code; the default hermes-telegram toolset does (README: Deployment boundary)."
+  - "Approve host actions in a private chat with the bot or from the CLI, and never answer Always to a fund prompt: any allowlisted group member can tap approval buttons."
+  - "Telegram fund cards need python-telegram-bot (Hermes' Telegram extra) and a Hermes with register_platform_handler; without them the plugin loads with cards off."
+  - "XMTP needs Node 22+ and npm at install and a configured Sherwood CLI (~/.sherwood/config.json); without them the plugin loads with XMTP off."
+capabilities:
+  provides_tools:
+    - sherwood_monitor_start
+    - sherwood_monitor_stop
+    - sherwood_monitor_status
+    - sherwood_monitor_exposure
+    - sherwood_monitor_cron_tick
+    - fund_status
+    - fund_setup
+    - fund_claim_topic
+    - fund_release_claim
+    - fund_draft_proposal
+    - fund_set_proposal_status
+    - fund_record_vote
+    - fund_record_settle
+    - fund_approve_member
+    - fund_approve_agent
+    - fund_remove_agent
+  provides_hooks:
+    - on_session_start
+    - on_session_end
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - TELEGRAM_BOT_TOKEN
+    - SHERWOOD_TG_LINK_SECRET
+    - SHERWOOD_TG_API_TOKEN
+    - TX_BUILDER_URL
+    - APP_BASE_URL
