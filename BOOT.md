@@ -14,13 +14,21 @@ If `sherwood_monitor_status()` returns an empty list, note that no
 funds are configured and remind the user how to add one:
 `edit ~/.hermes/plugins/sherwood-monitor/config.yaml`.
 
-XMTP and the gas watchdog need the monitor wallet in the Hermes profile
-`.env`: `SHERWOOD_PRIVATE_KEY` (secret; the XMTP sidecar derives its own key
-from it) and `SHERWOOD_AGENT_ADDRESS` (the address the gas watchdog checks).
-Without them both stay off and everything else works. Since 0.7.0 the plugin
-never reads the Sherwood CLI's `~/.sherwood/config.json`; if a user upgraded
-from 0.6.0 and XMTP went quiet, tell them to set these two variables. Never
-ask for the key in chat.
+On-chain events reach you through `sherwood session check --stream
+--no-xmtp`, for every fund. XMTP is optional and works only for funds whose
+XMTP group id is in their ENS record on Base; Robinhood Chain funds have
+none, so never tell a user to add the sidecar to a Robinhood Chain fund's
+group: it cannot help.
+
+The gas watchdog needs only `SHERWOOD_AGENT_ADDRESS` (the monitor wallet's
+address) in the Hermes profile `.env`. `SHERWOOD_PRIVATE_KEY` (secret) is
+needed only for XMTP; the address is derived from it when unset. Without
+either, the gas watchdog is off and everything else works; the plugin says
+so once in a `<sherwood-monitor-warning>` when funds are configured. Since
+0.7.0 the plugin never reads the Sherwood CLI's `~/.sherwood/config.json`.
+If a user upgraded from 0.6.0, tell them to set `SHERWOOD_AGENT_ADDRESS`
+(and the key only if they use XMTP, a dedicated monitor key, never a
+fund-managing key). Never ask for a key in chat.
 
 ## Group-chat fund (one-time check per session)
 
@@ -82,8 +90,10 @@ say so to the operator.
 
 ## Cron setup (one-time)
 
-Run `hermes sherwood install-cron` from the shell. It idempotently registers
-five crons:
+Run `hermes sherwood install-cron` from the shell. It writes one wrapper
+per watchdog to `$HERMES_HOME/scripts/sherwood-monitor-<mode>.sh` (Hermes
+runs cron scripts only from there, with no arguments) and registers, or
+updates, five crons:
 
 - Four **no_agent** watchdogs (zero LLM tokens — Hermes runs the script and
   delivers any stdout verbatim):
@@ -91,17 +101,20 @@ five crons:
     proposals/settlements/risk alerts
   - `sherwood-aum-watchdog` (every 15m) — alerts when TVL Δ exceeds threshold
   - `sherwood-gas-watchdog` (every 30m) — alerts when agent wallet ETH is low
-  - `sherwood-stream-watchdog` (every 5m) — alerts when a fund's
-    supervisor stream goes stale or its supervisor PID dies
+  - `sherwood-stream-watchdog` (every 5m) — alerts when a running fund
+    stream goes stale, its `sherwood session check` process dies, or Hermes
+    is gone (it reads `stream_status.json`, written by the supervisor)
 - One **agent** cron (`sherwood-proposal-reasoning`, every 6h) — the only
   cron that costs LLM tokens. It lists open proposals and returns a vote
   recommendation per proposal; silent when no proposals are open.
 
-If the user hasn't run `install-cron` yet, suggest it. The chat-fallback
-path (registering crons via the built-in `cronjob` tool) is no longer
-practical now that we register five entries; tell the user to run the
+If the user hasn't run `install-cron` yet, or upgraded from 0.6.0 (whose
+`install-cron` registered nothing on Hermes 0.22), suggest it. The
+chat-fallback path (registering crons via the built-in `cronjob` tool) is no
+longer practical now that we register five entries; tell the user to run the
 shell command instead.
 
-`install-cron` is idempotent — output JSON lists which entries were
-`installed`, `skipped` (already registered or disabled in config), or
-returned an `error`.
+`install-cron` is idempotent: output JSON lists which entries were
+`installed`, `updated` (already registered, brought back to this
+definition), `skipped` (disabled in config), or returned an `error`. Re-run
+it after Hermes moves or updates, so the wrappers point at the right Python.

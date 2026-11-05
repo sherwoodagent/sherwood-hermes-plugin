@@ -20,28 +20,36 @@ sha: "<sha of the v0.7.0 tag commit>"
 version: "0.7.0"
 description: >-
   Sherwood funds for Hermes on Robinhood Chain (chain 4663, USDG). Monitors your
-  Sherwood funds (on-chain and XMTP events reach the next turn, risk checks run
-  before `sherwood proposal create`, `hermes sherwood install-cron` registers five
-  crons, settlements are written to memory) and runs a fund inside a Telegram
-  group: the agent pitches trades, members back or object, the host approves
-  members and guest Hermes agents, and every proposal gets a live card.
-  Governance is optimistic veto: only Against votes count.
+  Sherwood funds (on-chain events reach the next turn, risk checks run before
+  `sherwood proposal create`, `hermes sherwood install-cron` registers four
+  watchdog crons and one vote-suggestion cron, settlements are written to
+  memory) and runs a fund inside a Telegram group: the agent pitches trades,
+  members back or object, the host approves members and guest Hermes agents,
+  and every proposal gets a live card. Governance is optimistic veto: only
+  Against votes count. An optional XMTP sidecar streams group chat only for
+  funds whose XMTP group id is in their ENS record on Base; Robinhood Chain
+  funds have none.
   Disclosure: the plugin never signs or sends a transaction and never holds
   member funds. It builds unsigned transactions through the prepare API at
   api.sherwood.sh and posts HMAC-signed links to app.sherwood.sh, where the
   host's and members' own wallets sign. Network calls: api.sherwood.sh (prepare,
   fund-card and price reads), app.sherwood.sh (member-wallet lookup with
   SHERWOOD_TG_API_TOKEN, share-image checks), the Telegram Bot API through
-  Hermes' adapter, the XMTP network, and one Robinhood Chain RPC (`gas_rpc_url`,
-  default the public rpc.mainnet.chain.robinhood.com) for the gas watchdog's
-  balance check. Runs the `sherwood` CLI as subprocesses (one long-running
-  `session check` stream per monitored fund) and `hermes cron` to register crons,
-  and spawns a long-running Node XMTP sidecar. Credentials come only through
-  Hermes' secret scope: the optional SHERWOOD_PRIVATE_KEY (the monitor wallet;
-  the XMTP sidecar derives its own separate key from it, and the key never
-  leaves the machine) and SHERWOOD_AGENT_ADDRESS. The plugin reads no file
-  outside its own data, including the Sherwood CLI's config. Writes fund
-  state under ~/.hermes/plugins/sherwood-monitor/ and the XMTP database under
+  Hermes' adapter, and one Robinhood Chain RPC (`gas_rpc_url`, default the
+  public rpc.mainnet.chain.robinhood.com) for the gas watchdog. With
+  SHERWOOD_PRIVATE_KEY set, the XMTP sidecar also calls the Base RPC
+  mainnet.base.org (to read each fund's group id from the Durin L2Registry)
+  and the XMTP network. Runs the `sherwood` CLI as subprocesses (one
+  long-running `session check --stream --no-xmtp` per monitored fund, which
+  reads its own ~/.sherwood/config.json), `hermes cron list/create/edit` from
+  install-cron (which writes four wrapper scripts to $HERMES_HOME/scripts/),
+  and, with SHERWOOD_PRIVATE_KEY, a long-running Node XMTP sidecar; children
+  get the environment without the plugin's secrets. Credentials come only
+  through Hermes' secret scope: the Telegram/app secrets, the optional
+  SHERWOOD_PRIVATE_KEY (use a dedicated monitor key; the sidecar derives its
+  own key from it) and SHERWOOD_AGENT_ADDRESS. The plugin reads no file
+  outside its own data. Writes fund state and stream/watchdog state under
+  ~/.hermes/plugins/sherwood-monitor/ and the XMTP database under
   ~/.hermes/xmtp/. Install runs `npm ci` in xmtp_sidecar/, which downloads
   @xmtp/node-bindings (a native binary) from the npm registry, pinned by
   package-lock.json integrity hashes. No telemetry.
@@ -58,7 +66,8 @@ known_issues:
   - "A fund group's toolset must not include terminal, write_file, patch or execute_code; the default hermes-telegram toolset does (README: Deployment boundary)."
   - "Approve host actions in a private chat with the bot or from the CLI, and never answer Always to a fund prompt: any allowlisted group member can tap approval buttons."
   - "Telegram fund cards need python-telegram-bot (Hermes' Telegram extra) and a Hermes with register_platform_handler; without them the plugin loads with cards off."
-  - "XMTP needs Node 22+ and npm at install and SHERWOOD_PRIVATE_KEY; without them the plugin loads with XMTP off. Upgrading from 0.6.0: set SHERWOOD_PRIVATE_KEY and SHERWOOD_AGENT_ADDRESS, since the plugin no longer reads the Sherwood CLI's config."
+  - "XMTP works only for funds whose XMTP group id is in their ENS record on Base; current Sherwood CLI releases write none and Robinhood Chain funds have none, so they get on-chain events only. XMTP also needs Node 22+ and npm at install and SHERWOOD_PRIVATE_KEY."
+  - "Upgrading from 0.6.0: the plugin no longer reads the Sherwood CLI's config and updates do not prompt for new env vars. Set SHERWOOD_AGENT_ADDRESS (gas watchdog) and, only for XMTP, SHERWOOD_PRIVATE_KEY; then re-run `hermes sherwood install-cron`."
 capabilities:
   provides_tools:
     - sherwood_monitor_start

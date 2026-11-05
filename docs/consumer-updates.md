@@ -8,7 +8,21 @@ from each repo's `main` on 2026-11-05: `sherwoodagent/mintlify-docs`
 
 What changed for consumers in 0.7.0:
 
-- Install pin `@v0.6.0` becomes `@v0.7.0`.
+- **Install command.** Hermes has no `@tag` install syntax (`owner/repo@v0.6.0`
+  fails: Hermes turns it into a repository URL), and `--ref` takes only a full
+  40-character commit sha. Every consumer pin becomes
+  `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <SHA>`,
+  where `<SHA>` is the commit the `v0.7.0` tag points at
+  (`gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.7.0 --jq .sha`,
+  see `docs/catalog-submission.md` step 2). Put the real 40-hex value in the
+  consumer PRs; only this repo's own tree keeps a placeholder. Once the plugin
+  is in the Hermes catalog, `hermes plugins install sherwood-monitor` works too.
+- **XMTP is Base-only.** The sidecar resolves a fund's XMTP group only from
+  the ENS record on Base, which current CLI releases do not write, so
+  Robinhood Chain funds get on-chain events only. Consumer text that promises
+  XMTP streaming for Robinhood Chain funds is wrong.
+- **install-cron works now** (0.6.0's registered nothing on Hermes 0.22); the
+  cron set and cadences are unchanged.
 - The cron set is unchanged (same five entries, same cadences), so the cron
   tables need no edit.
 - `MIN_CLI_VERSION` stays `0.71.0`, so no CLI floor moves.
@@ -48,7 +62,7 @@ Line 53, before / after:
 
 ```
 hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.6.0
-hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <SHA>
 ```
 
 Line 57 (inside `<Note>`), before:
@@ -74,13 +88,19 @@ Line 16, before:
 After:
 
 ```
-- **Sherwood plugin** installed via `hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0`. It composes on top of whichever CLI is installed, so install the CLI first
+- **Sherwood plugin** installed via `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <SHA>` (`<SHA>`: the v0.7.0 release commit). It composes on top of whichever CLI is installed, so install the CLI first
 ```
 
 After line 17 (`- **At least one fund configured** ...`), add:
 
 ```
-- **Monitor wallet** for the gas watchdog: `SHERWOOD_AGENT_ADDRESS=0x...` in the Hermes profile `.env` (or `SHERWOOD_PRIVATE_KEY`, which also enables XMTP). The plugin does not read the Sherwood CLI's config
+- **Monitor wallet** for the gas watchdog: `SHERWOOD_AGENT_ADDRESS=0x...` in the Hermes profile `.env`. The plugin does not read the Sherwood CLI's config
+```
+
+In "Install (one-time)", after the code block, add:
+
+```
+It writes one wrapper per watchdog to `$HERMES_HOME/scripts/` (Hermes runs cron scripts only from there) and creates or updates the five crons. Re-run it after upgrading from 0.6.0, whose install-cron registered nothing on Hermes 0.22.
 ```
 
 Line 34 (the `sherwood-gas-watchdog` row), before:
@@ -113,74 +133,36 @@ release workflow tags it. `scripts/check-skill.sh` must pass.
 
 ### `SKILL.md`
 
-Line 27, before:
+This repo's bundled copy (`skills/sherwood-agent/SKILL.md`) already carries
+the 0.7.0 text: it is patched at the pin because the catalog reviews that
+tree. Port the same hunks upstream, with the real sha in place of
+`<40-hex sha of the v0.7.0 release commit>`:
 
-```
-**Running on Hermes Agent?** After installing the CLI, also install the companion plugin — `hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.6.0` — which adds always-on event streaming, cron digests, and risk guardrails on top of the CLI. Full details in [Running on Hermes Agent](#running-on-hermes-agent) below. Skip if you're on Claude Code, Codex, or another runtime.
-```
-
-After:
-
-```
-**Running on Hermes Agent?** After installing the CLI, also install the companion plugin — `hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0` — which adds always-on event streaming, cron digests and risk guardrails on top of the CLI, and can run a fund inside a Telegram group. Full details in [Running on Hermes Agent](#running-on-hermes-agent) below. Skip if you're on Claude Code, Codex, or another runtime.
+```bash
+# in this repo, after the tag:
+git diff v0.6.0 v0.7.0 -- skills/sherwood-agent/SKILL.md
 ```
 
-Line 1731, replace the last sentence:
+The hunks, by upstream line (skill `main` at `081d67f`):
 
-```
-The current plugin release (v0.6.0) predates the v1 protocol: its monitoring and digests work, but treat its risk guardrails as advisory and rely on the CLI's own preflights.
-```
-
-with:
-
-```
-The current plugin release (v0.7.0) runs on Robinhood Chain (4663) and adds a group-chat fund: a Sherwood fund run inside a Telegram group, where members deposit and object from their own wallets and the plugin never signs. Its risk guardrails on `sherwood proposal create` are advisory (they fail open when vault state is unavailable), so rely on the CLI's own preflights.
-```
-
-Line 1746 ("How XMTP works"), replace `a separate XMTP identity from your
-Sherwood agent key` with `a separate XMTP identity derived from
-SHERWOOD_PRIVATE_KEY (set in the Hermes profile .env; the plugin does not read
-the CLI's config)`.
-
-Lines 1757 and 1767: `sherwood-hermes-plugin@v0.6.0` becomes
-`sherwood-hermes-plugin@v0.7.0` (the plain install and the
-`SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1` install).
-
-Line 1759, before:
-
-```
-Requirements: Python ≥ 3.11, **Node ≥ 22 and npm** (for the bundled sidecar build), and a configured Sherwood CLI (`~/.sherwood/config.json` with a `privateKey`). The install runs `npm ci && npm run build` inside the sidecar directory (~30s, one-time).
-```
-
-After:
-
-```
-Requirements: Python ≥ 3.11, **Node ≥ 22 and npm** (for the bundled sidecar build), and a configured Sherwood CLI (the monitor runs it). For XMTP and the gas watchdog, set the monitor wallet in the Hermes profile `.env`: `SHERWOOD_PRIVATE_KEY` (secret; the sidecar derives its own key from it) and `SHERWOOD_AGENT_ADDRESS`. The plugin never reads the CLI's `~/.sherwood/config.json`. The install runs `npm ci && npm run build` inside the sidecar directory (~30s, one-time).
-```
-
-Line 1761, before:
-
-```
-The plugin runs a preflight on load. If it doesn't find `sherwood --version`, a configured `~/.sherwood/config.json`, or a built sidecar (`xmtp_sidecar/dist/index.js`), it injects a one-time warning with remediation steps. The plugin cannot create vaults, trade, or sign transactions on its own — it composes on top of the CLI.
-```
-
-After:
-
-```
-The plugin runs a preflight on load. If it doesn't find `sherwood --version` or a built sidecar (`xmtp_sidecar/dist/index.js`), it injects a one-time warning with remediation steps; without `SHERWOOD_PRIVATE_KEY` it skips the sidecar and logs one line. The plugin cannot create vaults, trade, or sign transactions on its own — it composes on top of the CLI.
-```
-
-Line 1773 ("One-time onboarding per vault"), before:
-
-```
-On first Hermes boot after install, the plugin derives the sidecar wallet and checks membership in each configured vault's XMTP group.
-```
-
-After:
-
-```
-On first Hermes boot after install (with `SHERWOOD_PRIVATE_KEY` set), the plugin derives the sidecar wallet and checks membership in each configured vault's XMTP group.
-```
+- **Line 27** ("Running on Hermes Agent?"): the install command becomes
+  `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <SHA>` with the catalog alternative, and the sentence adds the Telegram
+  group fund.
+- **Line 1731** (section intro): replace "The current plugin release (v0.6.0)
+  predates the v1 protocol: ..." with the 0.7.0 sentence: Robinhood Chain
+  (4663), guardrails advisory, and XMTP streaming/posting only for vaults
+  whose XMTP group id is in their ENS record on Base.
+- **Line 1757** (Install block) and **line 1767** (rebuild block): the
+  `--ref` command, plus the note that Hermes has no `@tag` syntax.
+- **Line 1759** (Requirements): drop "`~/.sherwood/config.json` with a
+  `privateKey`"; the plugin never reads it. XMTP and the gas watchdog use
+  `SHERWOOD_PRIVATE_KEY` (optional) or `SHERWOOD_AGENT_ADDRESS` alone for
+  the gas watchdog, in the Hermes profile `.env`.
+- **Line 1761** (preflight): no config-file check; the sidecar warning only
+  with `SHERWOOD_PRIVATE_KEY` set.
+- **Line 1773** (onboarding): only with `SHERWOOD_PRIVATE_KEY`, and only for
+  vaults with a Base ENS record; adding the sidecar to a Robinhood Chain
+  vault does not help.
 
 Line 1787, the config block: the plugin reads `funds:`, not `syndicates:`
 (`sherwood_monitor/config.py`). Before / after:
@@ -230,11 +212,15 @@ git commit -S -m "chore: bump hermes-plugin to v0.7.0, mintlify-docs and skill s
 
 ## 4. Back in this repo
 
-After the skill release: refresh the bundled skill snapshot, which still pins
-`@v0.6.0` in `skills/sherwood-agent/SKILL.md`, in its own PR:
+`skills/sherwood-agent/SKILL.md` was patched locally for 0.7.0 (review
+#29, N1/N6): the catalog reviews the pinned tree, and the upstream skill
+still described 0.6.0. The next `./scripts/refresh_skill_pack.sh ../skill`
+overwrites the bundled copy with upstream, so land the upstream skill edit
+(section 2) first, then refresh in its own PR:
 
 ```bash
 ./scripts/refresh_skill_pack.sh ../skill
 ```
 
-Do not hand-edit `skills/sherwood-agent/`: it is a copy of the skill repo.
+Apart from this one patch, do not hand-edit `skills/sherwood-agent/`: it is a
+copy of the skill repo.

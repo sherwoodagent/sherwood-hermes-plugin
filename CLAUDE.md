@@ -47,6 +47,19 @@ When this set changes (add / remove / rename / cadence change), update:
 - `README.md` cron table
 - Consumer doc: `mintlify-docs/cli/cron-jobs.mdx` (it now mirrors this table)
 
+How registration works on Hermes 0.22 (do not regress it; `tests/test_cli.py`
+runs the real `hermes` binary in a scratch `HERMES_HOME` when one is on PATH):
+`hermes cron create <schedule> [<prompt>]` takes both positionally; Hermes runs
+cron scripts only from `$HERMES_HOME/scripts/` and passes them no arguments, so
+`install-cron` writes one `sherwood-monitor-<mode>.sh` wrapper per watchdog
+there and edits existing jobs by id instead of creating duplicates. The stream
+watchdog reads `stream_status.json`, written by the in-process Supervisor; a
+fresh `hermes sherwood status` process cannot see the running streams.
+
+Install command: Hermes has no `owner/repo@tag` syntax. Docs say
+`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha>`
+(or the catalog name once listed).
+
 ## Don't reintroduce testnet examples
 
 Sherwood is mainnet-only on Robinhood Chain (4663); the group-chat fund uses USDG there. This plugin deploys no contracts. Don't add `--testnet` flags or testnet chains to README / BOOT / docs examples.

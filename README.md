@@ -15,9 +15,9 @@ If you're new to Sherwood, the model is simple:
 ## What you get
 
 - **A fund the agent runs end-to-end.** Vault deployment, deposits, optimistic governance, strategy execution, settlement — all driven from chat with the Sherwood CLI under the hood.
-- **Live event stream into Hermes.** On-chain events (`ProposalCreated`, `VoteCast`, `Settled`, …) and XMTP messages arrive as `<sherwood-event>` blocks the agent sees on its next turn.
+- **Live event stream into Hermes.** On-chain events (`ProposalCreated`, `VoteCast`, `Settled`, …) arrive as `<sherwood-event>` blocks the agent sees on its next turn, through `sherwood session check --stream --no-xmtp`. XMTP messages are added only for funds whose XMTP group id is in their ENS record on Base (see [How XMTP works](#how-xmtp-works)); Robinhood Chain funds get on-chain events only.
 - **Risk guardrails before signing.** `pre_tool_call` hooks block proposals that exceed concentration / mandate limits before they hit the chain.
-- **Autonomous mode.** A 15-minute cron tick checks each fund and only delivers a digest when something actually happened — no spam.
+- **Autonomous mode.** `hermes sherwood install-cron` registers five crons: a 15-minute digest that speaks only when something happened, three watchdogs (TVL, gas, stream health) and one agent cron that suggests votes.
 - **A fund in a Telegram group.** The agent pitches trades in the chat, members deposit and object from their own wallets, guest Hermes agents join as co-managers, and every proposal gets a live card. See [Group-chat fund](#group-chat-fund-telegram).
 - **Institutional memory.** Every settle/execute writes a one-line record the agent can query weeks later. "Has the NVDA basket strategy been profitable?" gets a real answer.
 - **Cross-fund exposure.** "What's my total exposure to one protocol?" aggregates positions across every fund the agent runs.
@@ -39,32 +39,52 @@ sherwood config set --private-key <0x...>
 ## Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.7.0 release commit>
 ```
 
-Hermes ≥ 0.21.5. Once the plugin is listed in the Hermes catalog, `hermes plugins install sherwood-monitor` installs the reviewed pin.
+Hermes has no `@tag` install syntax; `--ref` takes a full 40-character commit
+sha. Use the commit the `v0.7.0` tag points at: it is on the
+[v0.7.0 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.7.0),
+or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.7.0 --jq .sha`.
+(This README cannot carry that sha: it is part of the commit.) Once the plugin
+is listed in the Hermes catalog, `hermes plugins install sherwood-monitor`
+installs the reviewed pin. Hermes ≥ 0.21.5.
+
+A fresh install prompts for five environment variables (Hermes' `requires_env`):
+`TELEGRAM_BOT_TOKEN`, `SHERWOOD_TG_LINK_SECRET`, `SHERWOOD_TG_API_TOKEN` (only
+for a group-chat fund), `SHERWOOD_PRIVATE_KEY` and `SHERWOOD_AGENT_ADDRESS`
+(only for XMTP and the gas watchdog). Leave any you don't use blank.
 
 ### Upgrading from 0.6.0
 
-0.7.0 no longer reads the Sherwood CLI's `~/.sherwood/config.json`. Set the
-monitor wallet in the Hermes profile `.env` instead, or XMTP and the gas
-watchdog stay off:
+0.7.0 no longer reads the Sherwood CLI's `~/.sherwood/config.json`, and
+`hermes plugins update` does not prompt for new environment variables. Until
+you set the monitor wallet in the Hermes profile `.env`, the gas watchdog
+(and XMTP) stay off; the plugin says so once in chat when funds are
+configured.
 
 ```bash
-SHERWOOD_PRIVATE_KEY=0x...      # secret; the XMTP sidecar derives its own key from it
-SHERWOOD_AGENT_ADDRESS=0x...    # the same wallet's address, for the gas watchdog
+SHERWOOD_AGENT_ADDRESS=0x...    # enough for the gas watchdog (not a secret)
+SHERWOOD_PRIVATE_KEY=0x...      # optional, secret: only for XMTP; the address is derived from it if unset
 ```
 
-The gas watchdog now checks Robinhood Chain only, through `gas_rpc_url` in
-`config.yaml` (default `https://rpc.mainnet.chain.robinhood.com`), instead of
-the RPCs in the CLI's config. The sidecar's derived address does not change
-if you set the same key the CLI uses, so existing XMTP memberships keep
-working.
+- The gas watchdog now checks Robinhood Chain only, through `gas_rpc_url` in
+  `config.yaml` (default `https://rpc.mainnet.chain.robinhood.com`), instead
+  of the RPCs in the CLI's config. In 0.6.0 it stayed silent unless the CLI
+  config had an `rpc` map; now it alerts whenever an address or key is set
+  and the balance is below `gas_alert_min_eth`.
+- XMTP only helps funds whose XMTP group id is in their ENS record on Base.
+  Robinhood Chain funds have none, so for them the key buys nothing today;
+  leave it unset. If you do set it, use a dedicated monitor key, not the key
+  that manages your funds: the derived sidecar address then differs from
+  0.6.0's, so re-add the sidecar to those Base groups.
+- `install-cron` in 0.6.0 registered nothing on Hermes 0.22 (see
+  [Register the crons](#register-the-crons)); run it again.
 
 ### What installation does
 
 1. Installs the Python package (`sherwood_monitor`)
-2. Runs `npm ci && npm run build` inside the bundled XMTP sidecar at `xmtp_sidecar/` (~30 seconds, one-time). This step pins `@xmtp/node-bindings` to a build that's compatible with glibc 2.36+, avoiding the common `GLIBC_2.38 not found` failure you'd hit with a global `@sherwoodagent/cli` install on older Debian/Ubuntu.
+2. Runs `npm ci && npm run build` inside the bundled XMTP sidecar at `xmtp_sidecar/` (~30 seconds, one-time). This step pins `@xmtp/node-bindings` to a build that loads on glibc 2.36 (Debian 12), avoiding the common `GLIBC_2.38 not found` failure you'd hit with a global `@sherwoodagent/cli` install on older Debian/Ubuntu.
 3. On first Hermes boot, if `SHERWOOD_PRIVATE_KEY` is set: the plugin derives a **sidecar wallet** from it (`keccak256(primaryKey + "sherwood-monitor-sidecar-v1")`), spawns the sidecar process, and verifies group membership for each configured fund. Without it the sidecar is not started (one log line) and everything else works.
 
 ### If the install fails mid-sidecar
@@ -72,7 +92,7 @@ working.
 The Python package installs fine even if the sidecar build fails; XMTP is just disabled until you rebuild. To skip the build and rebuild manually:
 
 ```bash
-SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0
+SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.7.0 release commit>
 # find the installed location:
 python3 -c "import sherwood_monitor, pathlib; print(pathlib.Path(sherwood_monitor.__file__).parent.parent / 'xmtp_sidecar')"
 cd <that path>
@@ -103,15 +123,23 @@ logs them, and never reads the Sherwood CLI's config file.
 | `SHERWOOD_AGENT_ADDRESS` | no | The wallet the gas watchdog checks. Unset: derived from `SHERWOOD_PRIVATE_KEY`; with neither, the watchdog logs that it is unconfigured and stays silent. |
 
 The gas watchdog runs as a cron script and needs only the address, so set
-`SHERWOOD_AGENT_ADDRESS` even if you leave the key unset. This is the
-monitor's wallet; the group-chat fund's own scoped wallet is
+`SHERWOOD_AGENT_ADDRESS` and leave the key unset unless you need XMTP. This is
+the monitor's wallet; the group-chat fund's own scoped wallet is
 `fund.agent_address` (set both to the same value if they are one wallet).
+
+If you set `SHERWOOD_PRIVATE_KEY`, use a dedicated monitor key that holds
+nothing, never the key that manages your funds. The plugin keeps it out of
+the processes it starts (the `sherwood` CLI, node, npm), but Hermes keeps
+plugin secrets in its own environment: any session with the terminal tool,
+and any cron script, can read it.
 
 ## First-time sidecar onboarding
 
 The sidecar has its own wallet, which is a SEPARATE identity from your agent's primary wallet. This isolation is intentional — it avoids MLS conflicts with the Sherwood CLI when you run `sherwood chat ...` manually.
 
-On first boot, the plugin will print the sidecar's derived address in a `<sherwood-monitor-warning>` block and list funds where the sidecar isn't a member yet. As the fund creator, run the suggested commands once per fund:
+XMTP is optional, and it works only for funds whose XMTP group id is in their ENS record on Base (the sidecar reads it from Base's Durin L2Registry). Current Sherwood CLI releases write no ENS record and Robinhood Chain has no registry, so a Robinhood Chain fund never resolves: it gets on-chain events through `sherwood session check --stream --no-xmtp` and no XMTP stream, and adding the sidecar to it does not help.
+
+With `SHERWOOD_PRIVATE_KEY` set, on first boot the plugin prints the sidecar's derived address in a `<sherwood-monitor-warning>` block and lists funds where the sidecar isn't a member (or whose group does not resolve). For a Base fund with an ENS record, run the suggested command once as the fund creator:
 
 ```bash
 sherwood chat hermes-alpha add <0xSidecarAddr...>
@@ -145,7 +173,7 @@ hermes sherwood status
 hermes sherwood start alpha-fund
 hermes sherwood stop alpha-fund
 hermes sherwood tail alpha-fund
-hermes sherwood install-cron        # one-time: register the 15-min autonomous-digest cron
+hermes sherwood install-cron        # register (or update) the five crons; idempotent
 hermes sherwood fund-bind alpha-fund --host-telegram-id 123  # operator only: change a fund's vault/governor/chat/host
 ```
 
@@ -198,11 +226,11 @@ vectors: [docs/telegram.md](docs/telegram.md).
 ### Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin@v0.7.0
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.7.0 release commit>
 ```
 
-Once the plugin is listed in the Hermes catalog: `hermes plugins install
-sherwood-monitor`. The Telegram cards need python-telegram-bot, which comes
+(The sha: see [Install](#install).) Once the plugin is listed in the Hermes
+catalog: `hermes plugins install sherwood-monitor`. The Telegram cards need python-telegram-bot, which comes
 with Hermes' Telegram extra (the Hermes gateway needs it anyway). The fund
 features do not need Node or the XMTP sidecar.
 
@@ -294,10 +322,10 @@ safe if the agent holds general-purpose tools. For a fund group:
 
 | Event | Plugin behavior |
 |---|---|
-| On-chain `ProposalCreated` | Inject context + auto-post markdown summary to XMTP |
-| On-chain `ProposalExecuted` / `ProposalSettled` / `ProposalCancelled` | Inject + XMTP summary |
+| On-chain `ProposalCreated` | Inject context; auto-post a markdown summary to XMTP when the fund has an XMTP stream (Base funds with an ENS record) |
+| On-chain `ProposalExecuted` / `ProposalSettled` / `ProposalCancelled` | Inject; XMTP summary under the same condition |
 | On-chain `VoteCast`, lifecycle events | Inject only (no XMTP post) |
-| XMTP `RISK_ALERT` | Inject with `priority="high"` for agent escalation |
+| XMTP `RISK_ALERT` (XMTP funds only) | Inject with `priority="high"` for agent escalation |
 | XMTP `APPROVAL_REQUEST` | Inject with `priority="human-escalate"` |
 | XMTP plain `MESSAGE` | Inject only when `@`-mention present (configurable) |
 | Agent calls `sherwood proposal create/execute/settle` | `pre_tool_call` runs risk checks; `post_tool_call` writes memory + injects `<sherwood-settlement>` block |
@@ -327,7 +355,7 @@ git clone git@github.com:sherwoodagent/sherwood-hermes-plugin.git
 cd sherwood-hermes-plugin
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" # also builds the sidecar into xmtp_sidecar/dist/
-pytest -v               # ~480 tests
+pytest -v               # ~510 tests; one needs the real `hermes` binary (skipped without it)
 ```
 
 Test the sidecar separately:
@@ -354,7 +382,7 @@ reasoning cron.
 | `sherwood-monitor-digest` | no_agent | `*/15 * * * *` | Bullets new proposals / settlements / risk alerts via `cron_tick`. Same cadence as the old agent digest, no tokens. |
 | `sherwood-aum-watchdog` | no_agent | `*/15 * * * *` | Alerts when total fund TVL has moved by more than `aum_alert_threshold_pct` (default 5%) since the previous reading. |
 | `sherwood-gas-watchdog` | no_agent | `*/30 * * * *` | Alerts when the monitor wallet's ETH balance on Robinhood Chain (`SHERWOOD_AGENT_ADDRESS`, read through `gas_rpc_url`) falls below `gas_alert_min_eth` (default 0.002 ETH). Silent, with one log line, when no wallet is set. |
-| `sherwood-stream-watchdog` | no_agent | `*/5 * * * *` | Alerts when a configured fund's supervisor stream has gone stale (`last_event_at` older than `stream_stale_minutes`, default 30m) or its PID is dead. |
+| `sherwood-stream-watchdog` | no_agent | `*/5 * * * *` | Alerts when a running fund stream has gone stale (`last_event_at` older than `stream_stale_minutes`, default 30m), its `sherwood session check` process died, or Hermes itself is gone. Reads `stream_status.json`, which the supervisor inside Hermes writes; silent when no stream is running. |
 | `sherwood-proposal-reasoning` | **agent** | `0 */6 * * *` | The only cron that costs LLM tokens. Reads open proposals and returns a vote recommendation with one-sentence rationale per proposal. Silent when no proposals are open. Disable by setting `proposal_reasoning_enabled: false` in `config.yaml`. |
 
 ### Why the status/reasoning split
@@ -368,7 +396,9 @@ recommendations and risk analysis need actual judgment.
 
 Watchdog state lives at `~/.hermes/plugins/sherwood-monitor/watchdog_state.json`
 (separate from `cron_cursor.json` so the digest's cursor doesn't share a lock
-with the alert-suppression bookkeeping).
+with the alert-suppression bookkeeping). The supervisor writes
+`stream_status.json` next to it (on start, exit, stop, and at most every 30 s
+on events) for the stream watchdog, which runs in a separate process.
 
 ### Register the crons
 
@@ -376,8 +406,24 @@ with the alert-suppression bookkeeping).
 hermes sherwood install-cron
 ```
 
-Idempotent — outputs JSON with per-entry `installed` / `skipped` / `errors`
-lists.
+What it does, because Hermes runs cron scripts only from
+`$HERMES_HOME/scripts/` and passes them no arguments:
+
+1. Writes one wrapper per watchdog to `$HERMES_HOME/scripts/sherwood-monitor-<mode>.sh`
+   (`digest`, `aum`, `gas`, `stream`). Each one fixes its mode and runs the
+   plugin's `scripts/watchdog.sh` by absolute path with the Python (and
+   import path) Hermes loaded the plugin with.
+2. Creates each missing cron with `hermes cron create <schedule> ...`
+   (`--no-agent --script sherwood-monitor-<mode>.sh` for the watchdogs; the
+   reasoning cron's prompt is positional).
+3. Brings crons that already exist back to this definition with
+   `hermes cron edit <id> ...`, so re-running it is safe and also repairs
+   jobs left by 0.6.0.
+
+It prints JSON with `installed` / `updated` / `skipped` / `errors`, and changes
+nothing if `hermes cron list --all` fails. Re-run it after moving or updating
+Hermes so the wrappers point at the right Python. Alerts are delivered
+`local` by default; route them with `hermes cron edit <id> --deliver telegram`.
 
 Hermes doesn't expose a plugin-side cron-registration API, so the plugin
 can't declare crons in `plugin.yaml`; this CLI subcommand is the
@@ -423,12 +469,12 @@ When a protocol's share of total AUM exceeds this value, the tool returns a
 
 ## How XMTP works
 
-The plugin bundles a small TypeScript sidecar at `xmtp_sidecar/` that speaks JSON-RPC over stdin/stdout with the Python plugin. It owns every XMTP interaction:
+The plugin bundles a small TypeScript sidecar at `xmtp_sidecar/` that speaks JSON-RPC over stdin/stdout with the Python plugin. It is optional: it starts only when `SHERWOOD_PRIVATE_KEY` is set. It finds a fund's XMTP group only through the `xmtpGroupId` text record on Base's Durin L2Registry (an `eth_call` to `https://mainnet.base.org`). Current Sherwood CLI releases write no such record and Robinhood Chain has no registry, so Robinhood Chain funds get no XMTP stream; their on-chain events still arrive through `sherwood session check --stream --no-xmtp`. For funds that do resolve, the sidecar owns every XMTP interaction:
 
 - **Subscribe** — for each configured fund, `sidecar.stream_start` opens a message stream; new messages flow into the plugin's EventRouter as `<sherwood-event source="xmtp" ...>` blocks on your next turn.
 - **Send** — when the plugin auto-posts a proposal-lifecycle summary, it's the sidecar that delivers the XMTP message (not the Sherwood CLI).
 
-Why a sidecar? `@xmtp/node-sdk`'s native bindings are glibc-ABI-sensitive. When the CLI is installed globally via `npm i -g`, npm's `overrides` block is not honored — meaning the binding that ships depends on the host glibc being ≥ 2.38. The sidecar's own `package.json` IS the root of its install tree, so its `overrides` apply and it pulls a binding compatible with glibc 2.28+. Tradeoff: ~30 seconds of `npm ci && npm run build` at pip install time.
+Why a sidecar? `@xmtp/node-sdk`'s native bindings are glibc-ABI-sensitive. When the CLI is installed globally via `npm i -g`, npm's `overrides` block is not honored — meaning the binding that ships depends on the host glibc being ≥ 2.38. The sidecar's own `package.json` IS the root of its install tree, so its `overrides` apply and it pulls the pinned binding, which loads on glibc 2.36 (Debian 12). Tradeoff: ~30 seconds of `npm ci && npm run build` at pip install time.
 
 ### Running on a host without Node
 
@@ -472,17 +518,27 @@ who signs what and the known limitations, is in
   is the optional `SHERWOOD_PRIVATE_KEY` (below), used to derive the XMTP
   sidecar's key, never to sign a transaction.
 - **Network calls.** `api.sherwood.sh` (the prepare API for unsigned
-  transactions, the fund-card read every 60 s while a card is live, and the
+  transactions; the fund-card read, which live cards request every 60 s and
+  the plugin throttles to at most one per 30 s per fund; and the
   Chainlink-backed price list), `app.sherwood.sh` (the member-wallet lookup,
   sent with `SHERWOOD_TG_API_TOKEN`, and a check that a share image is ready
-  before posting it), the Telegram Bot API through Hermes' own adapter, the
-  XMTP network through the sidecar, and one Robinhood Chain RPC
-  (`gas_rpc_url`, default `https://rpc.mainnet.chain.robinhood.com`) for the
-  gas watchdog's balance check. No telemetry.
+  before posting it), the Telegram Bot API through Hermes' own adapter, and
+  one Robinhood Chain RPC (`gas_rpc_url`, default
+  `https://rpc.mainnet.chain.robinhood.com`) for the gas watchdog's balance
+  check. With `SHERWOOD_PRIVATE_KEY` set, the XMTP sidecar also calls the
+  Base RPC `https://mainnet.base.org` (override `SIDECAR_BASE_RPC`) to read
+  each fund's group id from the Durin L2Registry, and the XMTP network. No
+  telemetry.
 - **Shell commands and background processes.** One long-running
-  `sherwood session check` subprocess per monitored fund, one-shot
-  `sherwood` reads, `hermes cron` calls from `hermes sherwood install-cron`,
-  and a long-running Node process for the XMTP sidecar.
+  `sherwood session check --stream --no-xmtp` subprocess per monitored fund
+  and one-shot `sherwood` reads (`session check`, `vault info`, `--version`);
+  the spawned `sherwood` CLI reads its own `~/.sherwood/config.json`. `hermes
+  cron list/create/edit` from `hermes sherwood install-cron`, which also
+  writes four wrapper scripts to `$HERMES_HOME/scripts/`. A long-running Node
+  process for the XMTP sidecar (only with `SHERWOOD_PRIVATE_KEY`). Children
+  get the environment without `SHERWOOD_PRIVATE_KEY`, `TELEGRAM_BOT_TOKEN`
+  and `SHERWOOD_TG_*`. (0.6.0's stream watchdog also ran `hermes sherwood
+  status`; 0.7.0 reads a status file instead.)
 - **Credentials.** Only through Hermes' secret scope: the Telegram and app
   secrets above, and the optional monitor wallet (`SHERWOOD_PRIVATE_KEY`,
   `SHERWOOD_AGENT_ADDRESS`). The XMTP sidecar's key is derived from the
@@ -491,9 +547,15 @@ who signs what and the known limitations, is in
 - **Reads outside its own data.** None. The plugin does not read the
   Sherwood CLI's `~/.sherwood/config.json` or any other tool's credentials;
   the `sherwood` CLI it runs as a subprocess reads its own config.
-- **Writes.** Fund state (one JSON file per fund, mode 0600) and watchdog
-  state under `~/.hermes/plugins/sherwood-monitor/`; the sidecar's XMTP
+- **Writes.** Fund state (one JSON file per fund, mode 0600), watchdog
+  state and `stream_status.json` under `~/.hermes/plugins/sherwood-monitor/`;
+  the cron wrappers under `$HERMES_HOME/scripts/`; the sidecar's XMTP
   database under `~/.hermes/xmtp/`.
+- **Other environment it reads** (none are credentials):
+  `SHERWOOD_FUND_STATE_DIR`, `TELEGRAM_GROUP_ALLOWED_CHATS`,
+  `SHERWOOD_TG_PERSONAL_LINKS`, `TELEGRAM_BOT_USERNAME`,
+  `SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD`, `SHERWOOD_MONITOR_PYTHON`, and in the
+  sidecar `SIDECAR_BASE_RPC` / `SIDECAR_L2_REGISTRY`.
 - **Install-time download.** `npm ci` in `xmtp_sidecar/` fetches
   `@xmtp/node-bindings`, a native binary, from the npm registry, pinned by
   `package-lock.json` integrity hashes. `SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1`
@@ -501,4 +563,4 @@ who signs what and the known limitations, is in
 
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).

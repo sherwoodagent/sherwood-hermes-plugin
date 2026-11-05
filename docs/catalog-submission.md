@@ -14,7 +14,9 @@ one who submits it (catalog rule 5).
 
 Merging the release PR into `main` runs `.github/workflows/release.yml`. When
 `pyproject.toml` carries a version with no matching tag, it creates the
-`v0.7.0` tag on the merge commit and a GitHub release. Nobody tags by hand.
+`v0.7.0` tag on exactly the commit that triggered the run (the merge commit:
+`target_commitish: ${{ github.sha }}`) and a GitHub release. Nobody tags by
+hand.
 
 ```bash
 gh release view v0.7.0 -R sherwoodagent/sherwood-hermes-plugin
@@ -32,6 +34,28 @@ echo "$SHA"    # 40 lowercase hex chars
 From a local clone, `git fetch --tags origin && git rev-parse 'v0.7.0^{commit}'`
 gives the same value (`^{commit}` matters if the tag is ever annotated: a bare
 `rev-parse` would return the tag object).
+
+### Publish the install command with the sha
+
+Hermes has no `@tag` install syntax: `hermes plugins install owner/repo@v0.7.0`
+fails (Hermes turns it into a repository URL), and `--ref` accepts only a full
+40-character commit sha. The README and the bundled skill
+at the pinned commit therefore say
+`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.7.0 release commit>`;
+that placeholder stays in the tree by design, because a commit cannot contain
+its own sha. Fill it in where it can live:
+
+```bash
+gh release edit v0.7.0 -R sherwoodagent/sherwood-hermes-plugin --notes "$(cat <<EOF
+Install: hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref $SHA
+(or, once listed in the Hermes catalog: hermes plugins install sherwood-monitor)
+EOF
+)"
+```
+
+and in the consumer-repo PRs (`docs/consumer-updates.md`), which pin `$SHA`
+in place of the placeholder. Editing the release notes is part of the
+release, held for the maintainer's go-ahead like the catalog PR.
 
 ## 3. Check the plugin at that commit
 
@@ -99,6 +123,16 @@ Hermes surfaces it uses, and everything rule 13 asks to disclose. Use:
 Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
 
 ## Expect in review
+
+- **XMTP is Base-only.** The sidecar resolves a fund's XMTP group only from
+  the `xmtpGroupId` text record on Base's Durin L2Registry, which current
+  Sherwood CLI releases do not write; Robinhood Chain funds get on-chain
+  events only. The entry, README and disclosure say so, and the sidecar is
+  optional (it starts only with `SHERWOOD_PRIVATE_KEY`).
+- **Cron wrappers.** `hermes sherwood install-cron` writes four small
+  wrapper scripts to `$HERMES_HOME/scripts/` (Hermes runs cron scripts only
+  from there) and registers them with `hermes cron create`; it is disclosed.
+  Its test runs the real `hermes` binary in a scratch `HERMES_HOME`.
 
 - **Rule 11 (credentials come through Hermes): resolved in 0.7.0.** Up to
   0.6.0 the plugin read the Sherwood CLI's `~/.sherwood/config.json`

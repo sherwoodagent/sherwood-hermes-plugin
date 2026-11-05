@@ -8,9 +8,12 @@ signs what, what it reads, and what does not work yet.
 
 `sherwood-monitor` is a Hermes plugin. It has two parts:
 
-- **Monitor.** It streams on-chain and XMTP events from your Sherwood funds
-  into the agent's next turn, checks proposals against risk limits before the
-  agent submits them, registers five crons, and writes settlements to memory.
+- **Monitor.** It streams on-chain events from your Sherwood funds into the
+  agent's next turn, checks proposals against risk limits before the agent
+  submits them, registers five crons, and writes settlements to memory. An
+  optional XMTP sidecar adds group-chat messages, but only for funds whose
+  XMTP group id is in their ENS record on Base; Robinhood Chain funds have
+  none.
 - **Group-chat fund.** It runs a Sherwood fund inside a Telegram group. The
   agent pitches trades, members back or object to them, the host approves
   members and guest Hermes agents, and each proposal gets a card in the chat
@@ -29,10 +32,11 @@ plugin adds no contracts:
 - Proposals are PortfolioStrategy clones made through the strategy factory.
   Each proposal names its legs (stock tokens and weights), a maximum capital
   and a maximum drawdown, which must sit inside the fund's ceilings.
-- Each proposer posts a WOOD bond of 1% of the proposal's coverage. The bond
-  approval is the quote plus 5%, never unlimited. A vetoed proposal's bond
-  comes back at once; a settled one stays in escrow for the 14-day challenge
-  window.
+- Each proposer posts a WOOD bond of 1% of the proposal's coverage. The
+  plugin refuses unlimited approvals. Approving the quote plus 5% and
+  re-quoting on a drift over 5% are what the fund skills tell the agent to
+  do; the plugin does not check either. A vetoed proposal's bond comes back
+  at once; a settled one stays in escrow for the 14-day challenge window.
 - After voting, the governor runs a 30-minute guardian review. Execution needs
   a staked guardian's Approve with WOOD coverage (about 35% of max capital).
 - After a veto or a settle the governor enforces a 1-hour cooldown before the
@@ -49,8 +53,13 @@ Off chain:
 - Signed links: the plugin signs personal links to `app.sherwood.sh` with an
   HMAC key (`SHERWOOD_TG_LINK_SECRET`). The signature proves the bot issued
   the link to that Telegram user. It does not authorize money.
-- Monitoring: a `sherwood session check` subprocess per monitored fund, an
-  XMTP sidecar (a local Node process), and the crons.
+- Monitoring: a `sherwood session check --stream --no-xmtp` subprocess per
+  monitored fund (the CLI reads its own `~/.sherwood/config.json`), an
+  optional XMTP sidecar (a local Node process, only with
+  `SHERWOOD_PRIVATE_KEY`), and the crons. `hermes sherwood install-cron`
+  runs `hermes cron list/create/edit` and writes four wrapper scripts to
+  `$HERMES_HOME/scripts/`. The stream watchdog reads a status file the
+  supervisor writes; it no longer runs `hermes sherwood status`.
 
 ## Who signs what
 
@@ -83,15 +92,16 @@ unsigned calldata; it holds no keys and no funds.
 
 - **Prices: Chainlink only.** The fund skills tell the agent to price from
   Chainlink feeds and nothing else, and to say "no Chainlink feed, can't size
-  this" rather than guess. The card's price line comes from the prepare API's
-  `/sources/prices`, which is Chainlink-backed.
+  this" rather than guess. The card's bond line asks the prepare API's
+  Chainlink-backed `/sources/prices` for WOOD/USD; it has no WOOD entry
+  today, so the bond shows in WOOD only.
 - **Instruments: the Robinhood Chain stock-token list.** The skills restrict
   pitches and proposal legs to tokens on that list and the fund asset.
 - **api.sherwood.sh:** the prepare routes (create-fund, approve-depositor(s),
   register-agent, deposit, propose, propose-portfolio, vote, execute, settle,
   redeem, set-agent-fee and others), the fund-card read
-  `GET funds/<vault>/tg-card` (at most once per 30 s per fund while a card is
-  live), and `/sources/prices`.
+  `GET funds/<vault>/tg-card` (live cards refresh every 60 s; reads are
+  throttled to at most one per 30 s per fund), and `/sources/prices`.
 - **app.sherwood.sh:** `GET /api/tg/link` to find the wallet a member linked
   (bearer `SHERWOOD_TG_API_TOKEN`, https on allowlisted hosts only, no
   redirects), and a readiness check on share images before posting them.
@@ -109,7 +119,16 @@ unsigned calldata; it holds no keys and no funds.
   read the Sherwood CLI's `~/.sherwood/config.json` or any other tool's
   credentials.
 - **RPC:** one Robinhood Chain RPC for the gas watchdog's balance check
-  (`gas_rpc_url`, default `https://rpc.mainnet.chain.robinhood.com`).
+  (`gas_rpc_url`, default `https://rpc.mainnet.chain.robinhood.com`). With
+  `SHERWOOD_PRIVATE_KEY` set, the XMTP sidecar also calls the Base RPC
+  `https://mainnet.base.org` (override `SIDECAR_BASE_RPC`) to read each
+  fund's XMTP group id from the Durin L2Registry, and talks to the XMTP
+  network.
+- **Child processes:** the `sherwood` CLI, node and npm get the environment
+  without `SHERWOOD_PRIVATE_KEY`, `TELEGRAM_BOT_TOKEN` and `SHERWOOD_TG_*`.
+  Hermes itself keeps plugin secrets in its environment, so a session with
+  the terminal tool, or a cron script, can read them: use a dedicated
+  monitor key if you set one.
 
 The plugin sends no telemetry.
 
@@ -173,10 +192,17 @@ Only then can the member deposit.
 - **Feeds go stale over weekends and market holidays.** Stock-token Chainlink
   feeds stop updating when the market is closed. The skills tell the agent to
   say so and settle on schedule rather than guess a price.
-- **XMTP and the gas watchdog need the monitor wallet** in the Hermes
-  profile `.env` (`SHERWOOD_PRIVATE_KEY`, `SHERWOOD_AGENT_ADDRESS`). Without
-  them both are off and everything else works. Upgrading from 0.6.0 means
-  setting them: 0.7.0 no longer reads the Sherwood CLI's config.
+- **No XMTP for Robinhood Chain funds.** The sidecar finds a fund's XMTP
+  group only through the `xmtpGroupId` text record on Base's L2Registry.
+  Current Sherwood CLI releases write no ENS record and Robinhood Chain has
+  no registry, so those funds get on-chain events only. The group chat in
+  this entry is Telegram, which does not depend on XMTP.
+- **The gas watchdog needs the monitor wallet** in the Hermes profile `.env`
+  (`SHERWOOD_AGENT_ADDRESS`, or `SHERWOOD_PRIVATE_KEY`, which XMTP also
+  needs). Without either it is off and everything else works. Upgrading
+  from 0.6.0 means setting it (0.7.0 no longer reads the Sherwood CLI's
+  config) and re-running `hermes sherwood install-cron`; the plugin says so
+  once in chat.
 - **It depends on hosted routes.** The prepare API, the fund-card read, the
   member-wallet lookup and the `/tg` pages are served by Sherwood. When a
   route is missing, the plugin names it and the card shows less.

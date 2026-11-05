@@ -2,10 +2,11 @@ manifest_version: 2
 name: sherwood-monitor
 version: "0.7.0"
 description: >-
-  Bridges Sherwood fund events (on-chain + XMTP) into Hermes, and runs a
-  group-chat fund: your Hermes pitches trades in a Telegram group, members
-  deposit and object, guest Hermes agents join as co-managers. Slash commands:
-  /fund, /join-fund, /fund-approve, /fund-agents, /leaderboard.
+  Bridges Sherwood fund events into Hermes (on-chain events; XMTP too for
+  funds whose XMTP group is in Base's ENS record), and runs a group-chat fund:
+  your Hermes pitches trades in a Telegram group, members deposit and object,
+  guest Hermes agents join as co-managers. Slash commands: /fund, /join-fund,
+  /fund-approve, /fund-agents, /leaderboard.
 author: Sherwood
 license: MIT
 homepage: https://sherwood.sh
@@ -23,25 +24,26 @@ python_dependencies:
   - "eth-hash[pycryptodome]>=0.5,<1"
 requires_env:
   - name: TELEGRAM_BOT_TOKEN
-    description: Bot token for the fund's Telegram group (from @BotFather)
+    description: Bot token for the fund's Telegram group (from @BotFather); leave blank if you don't run a group-chat fund
     url: https://core.telegram.org/bots/features#botfather
     secret: true
   # No Privy keys: members' and the host's wallets live in the web app
   # (app.sherwood.sh); the fund features never hold a wallet credential.
   - name: SHERWOOD_TG_LINK_SECRET
-    description: Shared HMAC secret that signs the bot's personal /tg links (the app verifies it)
+    description: Shared HMAC secret that signs the bot's personal /tg links (the app verifies it); leave blank if you don't run a group-chat fund
     url: https://docs.sherwood.sh
     secret: true
   - name: SHERWOOD_TG_API_TOKEN
-    description: Bearer token for the app's /api/tg/link member-wallet lookup (separate from the link-signing secret)
+    description: Bearer token for the app's /api/tg/link member-wallet lookup (separate from the link-signing secret); leave blank if you don't run a group-chat fund
     url: https://docs.sherwood.sh
     secret: true
   # The monitor wallet. The plugin never reads the Sherwood CLI's config file.
   - name: SHERWOOD_PRIVATE_KEY
     description: >-
-      Optional; leave blank to run without XMTP. The monitor wallet's private key: the XMTP
-      sidecar derives its own separate key from it (the key never leaves this machine), and
-      the gas watchdog uses its address when SHERWOOD_AGENT_ADDRESS is unset
+      Optional; leave blank to run without XMTP (XMTP only works for funds whose group is in
+      Base's ENS record). If set, use a dedicated monitor key, never a fund-managing key: the
+      XMTP sidecar derives its own separate key from it, and the gas watchdog uses its address
+      when SHERWOOD_AGENT_ADDRESS is unset
     url: https://docs.sherwood.sh
     secret: true
   - name: SHERWOOD_AGENT_ADDRESS

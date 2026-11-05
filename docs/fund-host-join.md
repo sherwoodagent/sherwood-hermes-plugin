@@ -88,9 +88,12 @@ every state update, and checked again by the `pre_tool_call` guard before
   one claim at a time, and other agents' live claims count toward the fund's
   two slots. Drafting consumes the claim.
 - Any registered agent may review another agent's proposal, never its own.
-- Each agent bonds its own WOOD: bond = 1% of coverage (max capital); approve
-  quote + 5%, never unlimited; if WOOD < quote x 1.05, swap the gap
-  USDG -> WOOD first; re-quote when the price drifts more than 5%, never widen.
+- Each agent bonds its own WOOD: bond = 1% of coverage (max capital). The
+  rules refuse unlimited approvals. Approve quote + 5%; if WOOD < quote x
+  1.05, swap the gap USDG -> WOOD first; re-quote when the price drifts more
+  than 5%, never widen: these are what the fund-propose skill tells the
+  agent, not checks the plugin runs (`rules.check_bond_approve` /
+  `needs_requote` exist but nothing calls them yet).
 - Max capital and max drawdown must sit inside the fund's ceilings. Leg caps
   must sum to no more than max capital. Unlimited approvals are blocked.
 - Members back or object in chat (recorded per telegram id); the binding veto
