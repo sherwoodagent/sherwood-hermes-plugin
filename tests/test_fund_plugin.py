@@ -238,6 +238,22 @@ def test_join_fund_command_for_a_guest(host, tmp_path, monkeypatch):
     assert guest.call_tool("fund_claim_topic", {"topic": "NVDA"})["ok"]
 
 
+def test_fund_approve_uses_the_app_link_then_falls_back_to_a_typed_address(host, tmp_path, monkeypatch):
+    from sherwood_monitor.fund import applink
+    from sherwood_monitor.fund.service import FundService
+    from sherwood_monitor.fund.store import LocalJsonBackend
+
+    # Member 79 tapped Join (request recorded) but has no wallet on record.
+    FundService(LocalJsonBackend(tmp_path / ".hermes/plugins/sherwood-monitor/funds")).request_membership("alpha-fund", "79")
+    tg = SimpleNamespace(user_id="900", chat_id="-100500")
+    no_link = host.run_command("fund-approve", "79", source=tg)
+    assert no_link.startswith("Not done: 79 has not linked a wallet") and "/fund-approve 79 <address>" in no_link
+    monkeypatch.setenv("SHERWOOD_TG_LINK_SECRET", "s3cret")
+    monkeypatch.setattr(applink, "_http_get_json", lambda url, headers, timeout: (200, {"data": {"address": TARGET}}))
+    ok = host.run_command("fund-approve", "79", source=tg)
+    assert ok.startswith("Member #1 approved (79)") and f'"depositor": "{TARGET}"' in ok
+
+
 def test_join_fund_is_owner_only_when_the_chat_says_who_typed_it(tmp_path, monkeypatch):
     """On Telegram /join-fund appears as /join_fund in the group menu: a member typing it gets the Join hint."""
     guest_cfg = {"agent_name": "beta", "agent_identity_id": "202", "agent_address": GUEST_ADDR, "owner_telegram_id": "555"}

@@ -94,6 +94,7 @@ class MemberView:
     username: str | None = None
     first_name: str | None = None
     last_name: str | None = None
+    address: str | None = None  # the wallet linked in the app (/tg/join), when known
 
     @property
     def person(self) -> Person:

@@ -183,7 +183,7 @@ FundService ──events──▶ FundTelegramBridge ──submit()──▶ Tel
 
   | Callable | Service call | Result in chat |
   |---|---|---|
-  | `approve_member_fn` | `approve_member` (host tg id checked) | toast + a `/tg/sign` link for `approve-depositor` |
+  | `approve_member_fn` | `applink.ensure_member_address` (the wallet linked in /tg/join, from the app's `GET /api/tg/link`, sherwood-app #152), then `approve_member` (host tg id checked) | toast + a `/tg/sign` link for `approve-depositor`; nothing linked -> `/fund-approve <tg> <address>` |
   | `approve_agent_fn` | `approve_agent` | toast + a `/tg/sign` link for `register-agent` |
   | `remove_agent_fn` | `remove_agent` | claims dropped, drafts cancelled |
   | `toggle_backer_fn` | `record_vote(side="back" / "clear")` | social only; card edits in place |

@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
 from . import rules
+from .applink import ensure_member_address
 from .cards import render_fund_card, render_receipt
 from .models import TOKEN_ADDRESSES_4663, WOOD_DECIMALS, Agent, Fund, FundState, Leg
 from .rules import RuleViolation
@@ -157,7 +158,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "fund_approve_member": _schema(
         "fund_approve_member",
-        "Host only. Approve a depositor (deposits are restricted). Returns the approve-depositor body to sign.",
+        "Host only. Approve a depositor (deposits are restricted). Returns the approve-depositor body to sign. "
+        "Without `address`, the wallet the member linked in the app (/tg/join) is used when there is one.",
         {
             "member": {"type": "string", "description": "Telegram id or wallet address"},
             "address": {"type": "string", "description": "Wallet, when approving by telegram id"},
@@ -429,8 +431,11 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         return {"receipt": asdict(receipt), "post": render_receipt(svc.load(fund), receipt)}
 
     def fund_approve_member(args: dict[str, Any]) -> dict[str, Any]:
+        fund = rt.fund_for(args.get("fund"))
+        if not args.get("address"):
+            ensure_member_address(rt, fund, str(args.get("member") or ""))  # app link lookup
         member, body = svc.approve_member(
-            rt.fund_for(args.get("fund")),
+            fund,
             rt.agent_name(),
             str(args.get("member") or ""),
             address=str(args.get("address") or ""),

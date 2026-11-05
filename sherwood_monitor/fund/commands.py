@@ -13,6 +13,7 @@ import json
 import re
 from typing import Any, Callable
 
+from .applink import ensure_member_address
 from .cards import render_agents, render_fund_card, short_addr
 from .models import Agent
 from .rules import RuleViolation, is_address
@@ -107,7 +108,17 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
                 f"POST {svc.tx_builder_url}/prepare/register-agent {json.dumps(body)}\n"
                 f"Then: /fund-approve {agent.name} <tx_hash>"
             )
-        member, body = svc.approve_member(fund_name, actor, who, address=address, tx_hash=tx_hash, caller_telegram_id=user)
+        if not address:
+            ensure_member_address(rt, fund_name, who)  # the wallet the member linked in /tg/join, if any
+        try:
+            member, body = svc.approve_member(fund_name, actor, who, address=address, tx_hash=tx_hash, caller_telegram_id=user)
+        except RuleViolation as exc:
+            if exc.code != "missing_address":
+                raise
+            return (
+                f"Not done: {who} has not linked a wallet in the app yet (🎟 Join, /tg/join). "
+                f"Pass it yourself: /fund-approve {who} <address>"
+            )
         return (
             f"Member #{member.member_no} approved ({member.telegram_id or short_addr(member.address)}). "
             f"Sign approveDepositor from the host wallet:\nPOST {svc.tx_builder_url}/prepare/approve-depositor {json.dumps(body)}"

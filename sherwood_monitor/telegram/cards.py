@@ -378,6 +378,8 @@ def render_member_card(
         second,
         f"<b>{esc(fund.name)}</b>",
     ]
+    if m.address:
+        lines.append(f"🔗 wallet linked {esc(m.address[:6])}…{esc(m.address[-4:])}")
     return "\n".join(lines), _kb([[_view_button(fund.vault, base_url)]])
 
 

@@ -52,6 +52,7 @@ from ..telegram.types import (
     maybe_await,
 )
 from . import service as fund_service
+from .applink import ensure_member_address
 from .models import WOOD_DECIMALS, FundState, Member, ProposalRecord
 from .rules import RuleViolation
 from .store import FundStoreError
@@ -755,8 +756,10 @@ class FundTelegramBridge:
             return self._sign_url(st, "register-agent", body, by_tg_id)
         return None
 
-    def approve_member(self, fund: Any, tg_id: int, by_tg_id: int) -> str:
+    async def approve_member(self, fund: Any, tg_id: int, by_tg_id: int) -> str:
         name = self._name(fund)
+        # The wallet the member linked in /tg/join (app GET /api/tg/link), off the bot loop.
+        await asyncio.to_thread(ensure_member_address, self.rt, name, str(tg_id))
         st = self.service.load(name)
         try:
             member, _body = self.service.approve_member(
@@ -764,7 +767,10 @@ class FundTelegramBridge:
             )
         except RuleViolation as exc:
             if exc.code == "missing_address":
-                raise FundActionError("They haven't linked a wallet yet: they finish 🎟 Join in the browser first.") from exc
+                raise FundActionError(
+                    "They haven't linked a wallet yet: they finish 🎟 Join in the browser first "
+                    f"(or run /fund-approve {tg_id} <address>)."
+                ) from exc
             raise FundActionError(exc.reason) from exc
         return f"✅ Member #{member.member_no} approved. Sign approveDepositor in your browser."
 
@@ -955,7 +961,7 @@ def _member_view(m: Member) -> MemberView | None:
     if tg is None:
         return None
     return MemberView(tg_id=tg, number=int(m.member_no or 0), share_bps=0, joined_at=_int_or_none(m.joined_at),
-                      username=m.username or None)
+                      username=m.username or None, address=m.address or None)
 
 
 def _quote(text: str, limit: int = 400) -> str:

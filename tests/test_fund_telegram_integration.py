@@ -25,6 +25,7 @@ import yaml
 
 pytest.importorskip("telegram")
 
+from sherwood_monitor.fund import applink  # noqa: E402
 from sherwood_monitor.fund import telegram as fund_tg  # noqa: E402
 from sherwood_monitor.fund import txbuilder  # noqa: E402
 from sherwood_monitor.hooks import make_pre_llm_call_hook  # noqa: E402
@@ -68,13 +69,28 @@ class ChainStub:
         }}
 
 
-def boot(tmp_path: Path, monkeypatch, chain: ChainStub) -> FakeCtx:
+class AppLinkStub:
+    """sherwood-app #152: GET /api/tg/link?fund=&tg= (Bearer SHERWOOD_TG_LINK_SECRET) -> linked address."""
+
+    def __init__(self) -> None:
+        self.links: dict[str, str] = {}
+        self.calls: list[tuple[str, dict]] = []
+
+    def __call__(self, url: str, headers: dict, timeout: float):
+        self.calls.append((url, headers))
+        assert headers["authorization"] == f"Bearer {SECRET}"
+        tg = parse_qs(urlsplit(url).query)["tg"][0]
+        return (200, {"success": True, "data": {"address": self.links[tg]}}) if tg in self.links else (404, {})
+
+
+def boot(tmp_path: Path, monkeypatch, chain: ChainStub, app_link: AppLinkStub | None = None) -> FakeCtx:
     for key in ("SHERWOOD_FUND_STATE_DIR", "TX_BUILDER_URL", "APP_BASE_URL", "TELEGRAM_BOT_USERNAME"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("SHERWOOD_TG_LINK_SECRET", SECRET)
-    # No network: the tg-card read and the WOOD price read are stubbed at the transport.
+    # No network: the tg-card read, the WOOD price read and the app link are stubbed at the transport.
     monkeypatch.setattr(txbuilder, "_urllib_get_json", chain)
     monkeypatch.setattr(fund_tg, "_get_json", lambda url, timeout: {"data": {"prices": [{"symbol": "WOOD", "price_usd": 0.25}]}})
+    monkeypatch.setattr(applink, "_http_get_json", app_link or AppLinkStub())
     cfg_dir = tmp_path / ".hermes" / "plugins" / "sherwood-monitor"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     fund_cfg = {**HOST_CFG, "tx_builder_url": "https://api.example/api/v1"}
@@ -158,7 +174,8 @@ async def test_register_wires_one_pre_llm_hook_and_a_lazy_telegram_factory(tmp_p
 
 async def test_full_loop_in_memory(tmp_path, monkeypatch):
     chain = ChainStub()
-    ctx = boot(tmp_path, monkeypatch, chain)
+    app_link = AppLinkStub()
+    ctx = boot(tmp_path, monkeypatch, chain, app_link)
     out = ctx.call_tool("fund_setup", {
         "fund": "alpha-fund", "vault": VAULT, "governor": GOVERNOR, "telegram_chat_id": str(CHAT),
         "host_telegram_id": str(HOST_TG), "host_address": HOST_ADDR, "max_capital": "1000",
@@ -176,20 +193,25 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
     assert "/tg/join?fund=" in buttons(ephemeral)[0]["url"] and "ephemeral_message_parameters" in ephemeral.kwargs["api_kwargs"]
     assert svc.load("alpha-fund").member(str(ALICE)) is not None
 
-    # Host approves before the wallet is linked: refused with the reason.
+    # Host approves before the wallet is linked: the app lookup finds nothing, refused with the fallback.
     q = await tap(rt, bot, f"shfund:approve_member:{ALICE}", HOST_TG)
     assert "linked a wallet" in q.answer.await_args.kwargs["text"]
-    # /tg/join links the wallet (the app lane's job); then the host's approve goes through
-    # and hands the host a signed /tg/sign link for approveDepositor.
-    svc.request_membership("alpha-fund", str(ALICE), address=MEMBER_ADDR, username="alice")
+    assert f"/fund-approve {ALICE} <address>" in q.answer.await_args.kwargs["text"]
+    # Alice finishes /tg/join; the app now answers GET /api/tg/link for her. The host's
+    # ✅ Approve picks the address up (no /fund-approve typing) and hands the host a
+    # signed /tg/sign link for approveDepositor.
+    app_link.links[str(ALICE)] = MEMBER_ADDR
     n_before = bot.send_message.await_count
     q = await tap(rt, bot, f"shfund:approve_member:{ALICE}", HOST_TG, username="host")
     await settle_tasks()
-    assert svc.load("alpha-fund").member(str(ALICE)).approved
+    alice = svc.load("alpha-fund").member(str(ALICE))
+    assert alice.approved and alice.address == MEMBER_ADDR
+    assert app_link.calls[-1][0] == f"https://app.example/api/tg/link?fund={VAULT.lower()}&tg={ALICE}"
     signed = [c for c in bot.send_message.await_args_list[n_before:] if buttons(c) and "/tg/sign" in buttons(c)[0].get("url", "")]
     action, body = verify_sign_url(buttons(signed[0])[0]["url"])
     assert action == "approve-depositor" and body == {"chainId": 4663, "vault": VAULT, "depositor": MEMBER_ADDR}
-    assert any("Member #1" in t for t in sent_texts(bot))  # the member card
+    member_card = next(t for t in sent_texts(bot) if "Member #1" in t)
+    assert f"🔗 wallet linked {MEMBER_ADDR[:6]}…{MEMBER_ADDR[-4:]}" in member_card
     # A stranger cannot approve.
     q = await tap(rt, bot, f"shfund:approve_member:{BOB}", BOB)
     assert "Only the fund host" in q.answer.await_args.kwargs["text"]

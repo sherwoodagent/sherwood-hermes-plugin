@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .applink import AppLinkClient
 from .service import FundService, FundServiceError
 from .settings import FundSettings
 from .store import FundStateBackend, default_state_dir, open_backend
@@ -14,6 +15,8 @@ from .store import FundStateBackend, default_state_dir, open_backend
 class FundRuntime:
     service: FundService
     settings: FundSettings
+    # Telegram id -> linked wallet from the app (GET /api/tg/link); None disables the lookup.
+    applink: AppLinkClient | None = None
 
     def agent_name(self) -> str:
         name = self.settings.agent_name.strip()
@@ -41,7 +44,11 @@ def build_runtime(
         state_dir=settings.fund_state_dir or default_state_dir(),
         state_url=settings.fund_state_url,
     )
-    return FundRuntime(FundService(backend, clock=clock, tx_builder_url=settings.tx_builder_url), settings)
+    return FundRuntime(
+        FundService(backend, clock=clock, tx_builder_url=settings.tx_builder_url),
+        settings,
+        AppLinkClient(settings.app_base_url),
+    )
 
 
 def session_ids(source: Any) -> tuple[str | None, str | None]:
