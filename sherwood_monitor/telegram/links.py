@@ -163,7 +163,7 @@ START_KINDS = {
     "propose": "p",
 }
 _START_KINDS_REV = {v: k for k, v in START_KINDS.items()}
-_START_RE = re.compile(r"^sf([a-z])_([0-9a-f]{40})(?:_([0-9A-Za-z-]{1,40}))?$")
+_START_RE = re.compile(r"^sf([a-z])_([0-9a-f]{40})(?:_([0-9A-Za-z_-]{1,40}))?$")
 START_PAYLOAD_MAX = 64
 
 
@@ -175,7 +175,7 @@ def encode_start_payload(kind: str, vault: str, item_id: object | None = None) -
     payload = f"sf{code}_{canonical_address(vault)[2:]}"
     if item_id is not None:
         item = str(item_id)
-        if not re.match(r"^[0-9A-Za-z-]{1,40}$", item):
+        if not re.match(r"^[0-9A-Za-z_-]{1,40}$", item):
             raise ValueError(f"item id not start-payload safe: {item_id!r}")
         payload += f"_{item}"
     if len(payload) > START_PAYLOAD_MAX:

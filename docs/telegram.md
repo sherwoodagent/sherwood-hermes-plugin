@@ -262,6 +262,8 @@ produces a link for that person:
    `https://t.me/sherwoodagentbot?start=<payload>`. The user lands in the bot's
    DM, presses Start, and gets the link there. Payloads: `sf<k>_<vault hex>[_<id>]`
    with `k` = `d` deposit, `w` withdraw, `j` join, `v` vote, `p` host co-sign.
+   An id that would push the payload past 64 characters skips this step; the
+   user then gets an alert asking them to start the bot and tap again.
 
 So a member taps twice (the card button, then the URL button), three times on
 the first-ever DM path. `answerCallbackQuery` cannot open the app directly: the

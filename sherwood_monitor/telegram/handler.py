@@ -121,6 +121,14 @@ def incoming_from_message(message: Message, *, bot_id: int | None, bot_username:
     )
 
 
+def _start_payload(kind: str, vault: str, item_id: object | None = None) -> str | None:
+    """``/start`` payload for the DM fallback, or None when it would not fit 64 chars."""
+    try:
+        return encode_start_payload(kind, vault, item_id)
+    except ValueError:
+        return None
+
+
 async def _answer(query: Any, text: str | None = None, *, show_alert: bool = False) -> None:
     try:
         await query.answer(text=text[:190] if text else None, show_alert=show_alert)
@@ -245,11 +253,9 @@ class FundHandlers:
             governor=view.governor or fund.governor,
             proposal_id=view.id,
         )
-        try:
-            payload = encode_start_payload("vote", fund.vault, view.id)
-        except ValueError:
-            payload = encode_start_payload("join", fund.vault)  # id too long for /start; lands on the fund
-        await self.deliver_personal_link(query, context, kind="vote", fund=fund, url=url, start_payload=payload)
+        await self.deliver_personal_link(
+            query, context, kind="vote", fund=fund, url=url, start_payload=_start_payload("vote", fund.vault, view.id)
+        )
 
     async def _cb_fund_link(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
         if arg.lower() != fund.vault.lower():
@@ -267,7 +273,7 @@ class FundHandlers:
             fund=fund.vault,
         )
         await self.deliver_personal_link(
-            query, context, kind=action, fund=fund, url=url, start_payload=encode_start_payload(action, fund.vault)
+            query, context, kind=action, fund=fund, url=url, start_payload=_start_payload(action, fund.vault)
         )
 
     async def _cb_shipit(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
@@ -287,11 +293,9 @@ class FundHandlers:
         if not url:
             await _answer(query, "The signing page isn't ready for this draft yet.", show_alert=True)
             return
-        try:
-            payload = encode_start_payload("propose", fund.vault, arg)
-        except ValueError:
-            payload = encode_start_payload("join", fund.vault)
-        await self.deliver_personal_link(query, context, kind="propose", fund=fund, url=url, start_payload=payload)
+        await self.deliver_personal_link(
+            query, context, kind="propose", fund=fund, url=url, start_payload=_start_payload("propose", fund.vault, arg)
+        )
 
     async def _cb_host_action(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
         by = int(query.from_user.id)
@@ -326,7 +330,7 @@ class FundHandlers:
             _log.debug("could not stamp host action: %s", exc)
 
     async def deliver_personal_link(
-        self, query: Any, context: Any, *, kind: str, fund: FundView, url: str, start_payload: str
+        self, query: Any, context: Any, *, kind: str, fund: FundView, url: str, start_payload: str | None
     ) -> str:
         """Hand one user their signed URL button without showing it to the group.
 
@@ -374,7 +378,7 @@ class FundHandlers:
             return "dm"
         except (Forbidden, BadRequest) as exc:
             _log.debug("DM to %s failed: %s", user_id, exc)
-        if username:
+        if username and start_payload:
             try:
                 await query.answer(url=f"https://t.me/{username}?start={start_payload}")
                 return "start_link"

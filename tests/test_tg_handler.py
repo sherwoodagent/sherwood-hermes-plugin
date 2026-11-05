@@ -233,6 +233,22 @@ async def test_vote_falls_back_to_dm_then_start_link():
     assert q.answer.await_args.kwargs == {"url": f"https://t.me/sherwoodagentbot?start=sfv_{VAULT[2:]}_42"}
 
 
+async def test_long_proposal_id_never_falls_back_to_a_wrong_start_link():
+    long_id = "1" * 25  # fits the vote URL, not a 64-char /start payload
+    gw = FakeGateway(proposals=[make_proposal(id=long_id)])
+    rt, gw, bot = make_runtime(gw)
+
+    async def all_fail(**kw):
+        if "api_kwargs" in kw:
+            raise BadRequest("nope")
+        raise Forbidden("Forbidden: bot can't initiate conversation with a user")
+
+    bot.send_message = AsyncMock(side_effect=all_fail)
+    q = await tap(rt, bot, f"shfund:vote:{long_id}", BOB)
+    assert all("url" not in c.kwargs for c in q.answer.await_args_list)
+    assert "press Start" in answered_text(q) and q.answer.await_args.kwargs["show_alert"]
+
+
 async def test_dm_mode_skips_ephemeral():
     rt, gw, bot = make_runtime(personal_link_mode="dm")
     await tap(rt, bot, f"shfund:deposit:{VAULT}", BOB)
