@@ -44,7 +44,7 @@ def boot(tmp_path: Path, monkeypatch, fund_cfg: dict | None = None) -> FakeCtx:
 
 HOST_CFG = {
     "agent_name": "alpha", "agent_identity_id": "101", "agent_address": HOST_ADDR,
-    "default_fund": "alpha-fund", "app_base_url": "https://app.example",
+    "default_fund": "alpha-fund", "app_base_url": "https://app.example", "app_link_hosts": "app.example",
 }
 
 
@@ -111,8 +111,10 @@ def test_manifest_v2_matches_registrations(tmp_path, monkeypatch):
     assert set(manifest["provides_hooks"]) == set(ctx.hooks)
     assert manifest.get("capabilities", []) == []
     env = {e["name"]: e for e in manifest["requires_env"]}
-    assert set(env) == {"TELEGRAM_BOT_TOKEN", "PRIVY_APP_ID", "PRIVY_APP_SECRET", "SHERWOOD_TG_LINK_SECRET", "TX_BUILDER_URL", "APP_BASE_URL"}
-    assert {n for n, e in env.items() if e["secret"]} == {"TELEGRAM_BOT_TOKEN", "PRIVY_APP_SECRET", "SHERWOOD_TG_LINK_SECRET"}
+    assert set(env) == {"TELEGRAM_BOT_TOKEN", "PRIVY_APP_ID", "PRIVY_APP_SECRET", "SHERWOOD_TG_LINK_SECRET",
+                        "SHERWOOD_TG_API_TOKEN", "TX_BUILDER_URL", "APP_BASE_URL"}
+    assert {n for n, e in env.items() if e["secret"]} == {"TELEGRAM_BOT_TOKEN", "PRIVY_APP_SECRET", "SHERWOOD_TG_LINK_SECRET",
+                                                          "SHERWOOD_TG_API_TOKEN"}
     assert all(e.get("description") and e.get("url") for e in env.values())
     settings_keys = {f.name for f in fields(FundSettings)}
     assert set(manifest["config_schema"]) <= settings_keys
@@ -248,7 +250,7 @@ def test_fund_approve_uses_the_app_link_then_falls_back_to_a_typed_address(host,
     tg = SimpleNamespace(user_id="900", chat_id="-100500")
     no_link = host.run_command("fund-approve", "79", source=tg)
     assert no_link.startswith("Not done: 79 has not linked a wallet") and "/fund-approve 79 <address>" in no_link
-    monkeypatch.setenv("SHERWOOD_TG_LINK_SECRET", "s3cret")
+    monkeypatch.setenv("SHERWOOD_TG_API_TOKEN", "tok3n")
     monkeypatch.setattr(applink, "_http_get_json", lambda url, headers, timeout: (200, {"data": {"address": TARGET}}))
     ok = host.run_command("fund-approve", "79", source=tg)
     assert ok.startswith("Member #1 approved (79)") and f'"depositor": "{TARGET}"' in ok

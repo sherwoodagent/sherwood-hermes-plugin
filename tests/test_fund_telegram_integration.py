@@ -42,10 +42,11 @@ HOST_TG = 900
 ALICE, BOB, CAROL, DAVE, EVE = 10, 11, 12, 13, 66
 GROUP = {HOST_TG, ALICE, BOB, CAROL, DAVE}  # who Hermes' Telegram allowlist admits (EVE is a stranger)
 SECRET = "integration-link-secret"
+API_TOKEN = "integration-app-api-token"
 BOT_ID = 999
 HOST_CFG = {
     "agent_name": "alpha", "agent_identity_id": "101", "agent_address": HOST_ADDR,
-    "owner_telegram_id": str(HOST_TG), "default_fund": "alpha-fund", "app_base_url": "https://app.example",
+    "owner_telegram_id": str(HOST_TG), "default_fund": "alpha-fund", "app_base_url": "https://app.example", "app_link_hosts": "app.example",
 }
 
 
@@ -71,7 +72,7 @@ class ChainStub:
 
 
 class AppLinkStub:
-    """sherwood-app #152: GET /api/tg/link?fund=&tg= (Bearer SHERWOOD_TG_LINK_SECRET) -> linked address."""
+    """sherwood-app #152: GET /api/tg/link?fund=&tg= (Bearer SHERWOOD_TG_API_TOKEN) -> linked address."""
 
     def __init__(self) -> None:
         self.links: dict[str, str] = {}
@@ -79,7 +80,7 @@ class AppLinkStub:
 
     def __call__(self, url: str, headers: dict, timeout: float):
         self.calls.append((url, headers))
-        assert headers["authorization"] == f"Bearer {SECRET}"
+        assert headers["authorization"] == f"Bearer {API_TOKEN}"  # never the link-signing secret
         tg = parse_qs(urlsplit(url).query)["tg"][0]
         return (200, {"success": True, "data": {"address": self.links[tg]}}) if tg in self.links else (404, {})
 
@@ -88,6 +89,7 @@ def boot(tmp_path: Path, monkeypatch, chain: ChainStub, app_link: AppLinkStub | 
     for key in ("SHERWOOD_FUND_STATE_DIR", "TX_BUILDER_URL", "APP_BASE_URL", "TELEGRAM_BOT_USERNAME"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("SHERWOOD_TG_LINK_SECRET", SECRET)
+    monkeypatch.setenv("SHERWOOD_TG_API_TOKEN", API_TOKEN)
     # No network: the tg-card read, the WOOD price read and the app link are stubbed at the transport.
     monkeypatch.setattr(txbuilder, "_urllib_get_json", chain)
     monkeypatch.setattr(fund_tg, "_get_json", lambda url, timeout: {"data": {"prices": [{"symbol": "WOOD", "price_usd": 0.25}]}})

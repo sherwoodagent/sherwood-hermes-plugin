@@ -11,9 +11,11 @@ from sherwood_monitor.telegram.links import (
     canonical_address,
     decode_start_payload,
     encode_start_payload,
+    build_sign_link,
     fund_link_message,
     fund_page_url,
     sign_link,
+    sign_link_message,
     verify_link_signature,
     vote_link_message,
 )
@@ -24,16 +26,22 @@ GOV = "0x2222222222222222222222222222222222222222"
 TG = 123456789
 TS = 1700000000
 
-V1_MSG = "0x1111111111111111111111111111111111111111|123456789|1700000000"
-V1_SIG = "db93ae34690df02d34a6394373e409cdc8683b891431c10b59a42a837b1a680e"
-V2_MSG = "0x2222222222222222222222222222222222222222:42|123456789|1700000000"
-V2_SIG = "7f612dafad917a80a2d0c75a571fb9c8e7d24a770336d17848ac41b020da854a"
-V3_MSG = "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd|987654321|1762300800"
-V3_SIG = "ae3700a91ef375f41a5fbfa4635c2ff3dec4f617b31e0f01ae599baa5cba67f7"
+# Every signed message starts with the link kind (review #28 F5): a signature is valid for one route only.
+V1_MSG = "deposit|0x1111111111111111111111111111111111111111|123456789|1700000000"
+V1_SIG = "c971d2b7bc056d25899ac29ac05c9ddec157cbde6188398fb91b0c51bc8027d8"
+V2_MSG = "vote|0x2222222222222222222222222222222222222222:42|123456789|1700000000"
+V2_SIG = "fa036063f49872395b47d5474563e61999f6ef5a202a263a08c460770dc07aa9"
+V3_MSG = "deposit|0xabcdefabcdefabcdefabcdefabcdefabcdefabcd|987654321|1762300800"
+V3_SIG = "2da75792cd834a2b9bc9316e931008238928193e51268a8c43cbaedbd28e2c94"
+JOIN_SIG = "515a3da455c6457e9e91d7f51c1e3222eb9d65bc93cfbdde88f1630acd62a209"
+WITHDRAW_SIG = "903f69982ea0aef72e435801a4cdd9b1b9cd9a81a38a39b5841bc716ccc7bb9d"
+V4_BODY = "eyJjaGFpbklkIjo0NjYzfQ"  # base64url('{"chainId":4663}')
+V4_MSG = "sign|0x1111111111111111111111111111111111111111|approve-depositor|eyJjaGFpbklkIjo0NjYzfQ|123456789|1700000000"
+V4_SIG = "452ba6c32a0dd01eee85cb04f3b59f587e3c12be41d6e85264cc46e3f6056f0a"
 
 
 def test_vector_fund_message_and_sig():
-    assert fund_link_message(VAULT, TG, TS) == V1_MSG
+    assert fund_link_message("deposit", VAULT, TG, TS) == V1_MSG
     assert sign_link(SECRET, V1_MSG) == V1_SIG
     # independent check against the stdlib
     assert hmac.new(SECRET.encode(), V1_MSG.encode(), hashlib.sha256).hexdigest() == V1_SIG
@@ -45,7 +53,7 @@ def test_vector_vote_message_and_sig():
 
 
 def test_vector_mixed_case_address_is_lowercased():
-    msg = fund_link_message("0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd", 987654321, 1762300800)
+    msg = fund_link_message("deposit", "0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd", 987654321, 1762300800)
     assert msg == V3_MSG
     assert sign_link(SECRET, msg) == V3_SIG
 
@@ -58,12 +66,34 @@ def test_build_deposit_link_exact():
     )
 
 
-@pytest.mark.parametrize("kind", ["join", "deposit", "withdraw"])
-def test_fund_kinds_share_one_signature(kind):
+@pytest.mark.parametrize("kind,sig", [("join", JOIN_SIG), ("deposit", V1_SIG), ("withdraw", WITHDRAW_SIG)])
+def test_each_fund_kind_has_its_own_signature(kind, sig):
     url = build_link(kind, tg_user_id=TG, secret=SECRET, fund=VAULT.upper().replace("0X", "0x"), ts=TS,
                      base_url="https://example.test/")
     assert url.startswith(f"https://example.test/tg/{kind}?fund={VAULT}&")
-    assert url.endswith(f"&sig={V1_SIG}")
+    assert url.endswith(f"&sig={sig}")
+
+
+def test_a_join_link_cannot_be_replayed_as_a_withdraw_link():
+    """Review #28 F5: the kind is part of the signed message."""
+    join_sig = build_link("join", tg_user_id=TG, secret=SECRET, fund=VAULT, ts=TS).split("sig=")[1]
+    assert join_sig == JOIN_SIG
+    assert not verify_link_signature(SECRET, fund_link_message("withdraw", VAULT, TG, TS), join_sig, ts=TS, now=TS)
+    assert verify_link_signature(SECRET, fund_link_message("join", VAULT, TG, TS), join_sig, ts=TS, now=TS)
+    assert len({JOIN_SIG, V1_SIG, WITHDRAW_SIG}) == 3
+    with pytest.raises(ValueError):
+        fund_link_message("vote", VAULT, TG, TS)
+
+
+def test_vector_sign_link():
+    assert sign_link_message(VAULT, "approve-depositor", V4_BODY, TG, TS) == V4_MSG
+    assert sign_link(SECRET, V4_MSG) == V4_SIG
+    url = build_sign_link(vault=VAULT, action="approve-depositor", body={"chainId": 4663}, tg_user_id=TG,
+                          secret=SECRET, ts=TS)
+    assert url == (
+        f"https://app.sherwood.sh/tg/sign?fund={VAULT}&action=approve-depositor&body={V4_BODY}"
+        f"&tg=123456789&ts=1700000000&sig={V4_SIG}"
+    )
 
 
 def test_build_vote_link_exact():

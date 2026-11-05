@@ -1,12 +1,20 @@
 """Signed deep links from Telegram into the Sherwood web app (``/tg/*`` routes).
 
-Contract (shared with the app lane; see ``docs/telegram.md`` for test vectors):
+Contract (shared with the app lane; see ``docs/telegram.md`` for test vectors).
+Every signed message starts with the link kind, so a link's signature is valid
+for that route only (a join link can never be replayed as a withdraw link):
 
     ${APP_BASE_URL}/tg/<join|deposit|withdraw>?fund=<vault>&tg=<telegram_user_id>&ts=<unix_s>&sig=<hex>
-        sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "<vault>|<tg>|<ts>"))
+        sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "<kind>|<vault>|<tg>|<ts>"))
 
     ${APP_BASE_URL}/tg/vote?proposal=<governor>:<proposal_id>&tg=<telegram_user_id>&ts=<unix_s>&sig=<hex>
-        sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "<governor>:<proposal_id>|<tg>|<ts>"))
+        sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "vote|<governor>:<proposal_id>|<tg>|<ts>"))
+
+    ${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<id>&ts=<unix_s>&sig=<hex>
+        sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "sign|<vault>|<action>|<body>|<tg>|<ts>"))
+
+Links are issued fresh on every tap; the app rejects ``ts`` older than 15
+minutes (``RECOMMENDED_LINK_TTL_S``).
 
     ${APP_BASE_URL}/tg/fund/<vault>          (public, unsigned)
 
@@ -76,15 +84,17 @@ def sign_link(secret: str | bytes, message: str) -> str:
     return hmac.new(_secret_bytes(secret), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def fund_link_message(vault: str, tg_user_id: object, ts: int) -> str:
-    """The string signed for join / deposit / withdraw links: ``"<vault>|<tg>|<ts>"``."""
-    return f"{canonical_address(vault)}|{_canonical_tg(tg_user_id)}|{int(ts)}"
+def fund_link_message(kind: str, vault: str, tg_user_id: object, ts: int) -> str:
+    """The string signed for join / deposit / withdraw links: ``"<kind>|<vault>|<tg>|<ts>"``."""
+    if kind not in FUND_LINK_KINDS:
+        raise ValueError(f"not a fund link kind: {kind!r}")
+    return f"{kind}|{canonical_address(vault)}|{_canonical_tg(tg_user_id)}|{int(ts)}"
 
 
 def vote_link_message(governor: str, proposal_id: object, tg_user_id: object, ts: int) -> str:
-    """The string signed for vote links: ``"<governor>:<proposal_id>|<tg>|<ts>"``."""
+    """The string signed for vote links: ``"vote|<governor>:<proposal_id>|<tg>|<ts>"``."""
     return (
-        f"{canonical_address(governor)}:{canonical_proposal_id(proposal_id)}"
+        f"{VOTE_LINK_KIND}|{canonical_address(governor)}:{canonical_proposal_id(proposal_id)}"
         f"|{_canonical_tg(tg_user_id)}|{int(ts)}"
     )
 
@@ -115,7 +125,7 @@ def build_link(
         if fund is None:
             raise ValueError(f"{kind} link needs fund")
         vault = canonical_address(fund)
-        sig = sign_link(secret, fund_link_message(vault, tg, ts_i))
+        sig = sign_link(secret, fund_link_message(kind, vault, tg, ts_i))
         return f"{_base(base_url)}/tg/{kind}?fund={vault}&tg={tg}&ts={ts_i}&sig={sig}"
     if kind == VOTE_LINK_KIND:
         if governor is None or proposal_id is None:
@@ -155,11 +165,14 @@ def decode_sign_body(encoded: str) -> dict:
     return json.loads(base64.urlsafe_b64decode(encoded + pad).decode("utf-8"))
 
 
+SIGN_LINK_KIND = "sign"
+
+
 def sign_link_message(vault: str, action: str, body_b64: str, tg_user_id: object, ts: int) -> str:
-    """The string signed for host signing links: ``"<vault>|<action>|<body>|<tg>|<ts>"``."""
+    """The string signed for host signing links: ``"sign|<vault>|<action>|<body>|<tg>|<ts>"``."""
     if action not in SIGN_ACTIONS:
         raise ValueError(f"unknown signing action: {action!r}")
-    return f"{canonical_address(vault)}|{action}|{body_b64}|{_canonical_tg(tg_user_id)}|{int(ts)}"
+    return f"{SIGN_LINK_KIND}|{canonical_address(vault)}|{action}|{body_b64}|{_canonical_tg(tg_user_id)}|{int(ts)}"
 
 
 def build_sign_link(
@@ -175,7 +188,7 @@ def build_sign_link(
     """``${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<id>&ts=<s>&sig=<hex>``.
 
     The page decodes ``body`` (the exact ``POST /api/v1/prepare/<action>`` body),
-    verifies ``sig`` over ``"<vault>|<action>|<body>|<tg>|<ts>"``, checks the
+    verifies ``sig`` over ``"sign|<vault>|<action>|<body>|<tg>|<ts>"``, checks the
     Telegram login is ``tg``, prepares through the tx-builder and has the
     host's wallet sign. Returns None when the URL would exceed SIGN_URL_MAX.
     """

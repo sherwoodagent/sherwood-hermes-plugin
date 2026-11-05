@@ -42,6 +42,8 @@ class FundSettings:
     # co-signs the agent's draft from a signing link. `agent`: open protocol, the
     # agent's own wallet proposes.
     proposal_signer: str = "host"
+    # Hosts the app-link lookup may call (https only); operator config, never chat or env.
+    app_link_hosts: str = "app.sherwood.sh"
 
     @property
     def host_cosigns(self) -> bool:

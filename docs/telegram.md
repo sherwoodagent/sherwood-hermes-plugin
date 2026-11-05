@@ -134,7 +134,8 @@ Environment (the profile `.env`; secrets are read through Hermes'
 | `TELEGRAM_REQUIRE_MENTION=true` | same as the YAML key (default false) |
 | `TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true` | same as the YAML key; needs privacy off or admin |
 | `TELEGRAM_ALLOWED_USERS` | the host's Telegram user id only (DM access for the host) |
-| `SHERWOOD_TG_LINK_SECRET` | HMAC key for personal and host signing links; shared with the web app (secret) |
+| `SHERWOOD_TG_LINK_SECRET` | HMAC key for personal and host signing links; shared with the web app (secret). Never sent anywhere |
+| `SHERWOOD_TG_API_TOKEN` | bearer for the app's `GET /api/tg/link` member-wallet lookup; a separate secret shared with the app (secret) |
 | `APP_BASE_URL` | web app base, default `https://app.sherwood.sh` |
 | `SHERWOOD_TG_PERSONAL_LINKS` | `ephemeral` (default) or `dm`, see below |
 | `TELEGRAM_BOT_USERNAME` | optional; otherwise taken from `getMe` |
@@ -240,7 +241,7 @@ the route.**
 
 ```
 ${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<host_telegram_id>&ts=<unix_seconds>&sig=<hex>
-    sig  = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "<vault>|<action>|<body>|<tg>|<ts>"))
+    sig  = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "sign|<vault>|<action>|<body>|<tg>|<ts>"))
     body = base64url (no padding) of the compact, key-sorted JSON request body
 ```
 
@@ -248,6 +249,8 @@ ${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<host_telegram
   `approve-depositors`, `register-agent`, `propose-portfolio`, `propose`,
   `set-agent-fee` (`links.SIGN_ACTIONS`). `body` is exactly the body for
   `POST /api/v1/prepare/<action>` (it already carries `chainId: 4663`).
+- The page shows every address in the body in full (depositor, agent wallet,
+  proposer), as the bot's message does, so the host checks them before signing.
 - The page: verify `sig` over the values as received and `ts` freshness (15
   min), require the Privy Telegram login to be `tg` and the connected wallet to
   be the vault owner, `POST /api/v1/prepare/<action>` with the decoded body,
@@ -265,19 +268,49 @@ ${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<host_telegram
 - `links.build_sign_link` / `sign_link_message` / `decode_sign_body` are the
   reference; `tests/test_fund_telegram_integration.py` verifies a link end to end.
 
+## Member wallet lookup (sherwood-app #152)
+
+When the host taps ✅ Approve member, the bot asks the app which wallet that
+member linked in `/tg/join`:
+
+```
+GET ${APP_BASE_URL}/api/tg/link?fund=<vault>&tg=<telegram_id>
+Authorization: Bearer <SHERWOOD_TG_API_TOKEN>
+-> 200 {"address": "0x…"} (or {"data": {"address": …}}); anything else = not linked
+```
+
+- The bearer is `SHERWOOD_TG_API_TOKEN`, never the link-signing secret.
+- Only `https://` on an allowlisted host (`fund.app_link_hosts`, default
+  `app.sherwood.sh`, operator config only); redirects are not followed; any
+  error means "not linked".
+- The host check runs first; only then the lookup and its state write.
+- The approve toast, the member card and the host's signing message show the
+  full address. With nothing linked the host passes it:
+  `/fund-approve <tg> <address>`.
+- The app must require the Privy Telegram login to equal `tg` before it links
+  a wallet.
+
 ## Deep links (contract with the web app)
 
 ```
 ${APP_BASE_URL}/tg/<join|deposit|withdraw>?fund=<vault>&tg=<telegram_user_id>&ts=<unix_seconds>&sig=<hex>
-    sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "<vault>|<tg>|<ts>"))
+    sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "<kind>|<vault>|<tg>|<ts>"))     kind = join | deposit | withdraw
 
 ${APP_BASE_URL}/tg/vote?proposal=<governor>:<proposal_id>&tg=<telegram_user_id>&ts=<unix_seconds>&sig=<hex>
-    sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "<governor>:<proposal_id>|<tg>|<ts>"))
+    sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "vote|<governor>:<proposal_id>|<tg>|<ts>"))
+
+${APP_BASE_URL}/tg/sign?...             see "Host signing page": "sign|<vault>|<action>|<body>|<tg>|<ts>"
 
 ${APP_BASE_URL}/tg/fund/<vault>        public, unsigned
 ```
 
 Rules both sides follow (`sherwood_monitor/telegram/links.py`):
+
+- **Every signed message starts with the link kind** (`join`, `deposit`,
+  `withdraw`, `vote`, `sign`), and the verifier builds the message from the
+  route it serves. A join link's signature is not valid on `/tg/withdraw`.
+- Links are issued fresh on every tap; join (and every other) link expires
+  after 15 minutes on the app side.
 
 - Addresses are lowercase `0x` + 40 hex, in the signed string and in the URL.
 - `tg` is the decimal Telegram user id; `ts` is integer unix seconds.
@@ -294,21 +327,25 @@ only for tests):
 
 | Signed string | `sig` |
 |---|---|
-| `0x1111111111111111111111111111111111111111\|123456789\|1700000000` | `db93ae34690df02d34a6394373e409cdc8683b891431c10b59a42a837b1a680e` |
-| `0x2222222222222222222222222222222222222222:42\|123456789\|1700000000` | `7f612dafad917a80a2d0c75a571fb9c8e7d24a770336d17848ac41b020da854a` |
-| `0xabcdefabcdefabcdefabcdefabcdefabcdefabcd\|987654321\|1762300800` (built from the mixed-case `0xAbCdEf…AbCd`) | `ae3700a91ef375f41a5fbfa4635c2ff3dec4f617b31e0f01ae599baa5cba67f7` |
+| `deposit\|0x1111111111111111111111111111111111111111\|123456789\|1700000000` | `c971d2b7bc056d25899ac29ac05c9ddec157cbde6188398fb91b0c51bc8027d8` |
+| `join\|0x1111111111111111111111111111111111111111\|123456789\|1700000000` | `515a3da455c6457e9e91d7f51c1e3222eb9d65bc93cfbdde88f1630acd62a209` |
+| `withdraw\|0x1111111111111111111111111111111111111111\|123456789\|1700000000` | `903f69982ea0aef72e435801a4cdd9b1b9cd9a81a38a39b5841bc716ccc7bb9d` |
+| `vote\|0x2222222222222222222222222222222222222222:42\|123456789\|1700000000` | `fa036063f49872395b47d5474563e61999f6ef5a202a263a08c460770dc07aa9` |
+| `deposit\|0xabcdefabcdefabcdefabcdefabcdefabcdefabcd\|987654321\|1762300800` (built from the mixed-case `0xAbCdEf…AbCd`) | `2da75792cd834a2b9bc9316e931008238928193e51268a8c43cbaedbd28e2c94` |
+| `sign\|0x1111111111111111111111111111111111111111\|approve-depositor\|eyJjaGFpbklkIjo0NjYzfQ\|123456789\|1700000000` (body = base64url of `{"chainId":4663}`) | `452ba6c32a0dd01eee85cb04f3b59f587e3c12be41d6e85264cc46e3f6056f0a` |
 
-Full URLs for the first two:
+Full URLs:
 
 ```
-https://app.sherwood.sh/tg/deposit?fund=0x1111111111111111111111111111111111111111&tg=123456789&ts=1700000000&sig=db93ae34690df02d34a6394373e409cdc8683b891431c10b59a42a837b1a680e
-https://app.sherwood.sh/tg/vote?proposal=0x2222222222222222222222222222222222222222:42&tg=123456789&ts=1700000000&sig=7f612dafad917a80a2d0c75a571fb9c8e7d24a770336d17848ac41b020da854a
+https://app.sherwood.sh/tg/deposit?fund=0x1111111111111111111111111111111111111111&tg=123456789&ts=1700000000&sig=c971d2b7bc056d25899ac29ac05c9ddec157cbde6188398fb91b0c51bc8027d8
+https://app.sherwood.sh/tg/vote?proposal=0x2222222222222222222222222222222222222222:42&tg=123456789&ts=1700000000&sig=fa036063f49872395b47d5474563e61999f6ef5a202a263a08c460770dc07aa9
+https://app.sherwood.sh/tg/sign?fund=0x1111111111111111111111111111111111111111&action=approve-depositor&body=eyJjaGFpbklkIjo0NjYzfQ&tg=123456789&ts=1700000000&sig=452ba6c32a0dd01eee85cb04f3b59f587e3c12be41d6e85264cc46e3f6056f0a
 ```
 
 Check one from a shell:
 
 ```bash
-printf '0x1111111111111111111111111111111111111111|123456789|1700000000' \
+printf 'deposit|0x1111111111111111111111111111111111111111|123456789|1700000000' \
   | openssl dgst -sha256 -hmac 'sherwood-test-vector-secret'
 ```
 

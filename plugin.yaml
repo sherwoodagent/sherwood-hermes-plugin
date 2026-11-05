@@ -38,6 +38,10 @@ requires_env:
     description: Shared HMAC secret that signs the bot's personal /tg links (the app verifies it)
     url: https://docs.sherwood.sh
     secret: true
+  - name: SHERWOOD_TG_API_TOKEN
+    description: Bearer token for the app's /api/tg/link member-wallet lookup (separate from the link-signing secret)
+    url: https://docs.sherwood.sh
+    secret: true
   - name: TX_BUILDER_URL
     description: Prepare API base URL (unsigned transactions); defaults to https://api.sherwood.sh/api/v1
     url: https://docs.sherwood.sh
@@ -75,6 +79,10 @@ config_schema:
     type: str
     default: https://app.sherwood.sh
     description: Sherwood app base URL for the /tg links on card buttons
+  app_link_hosts:
+    type: str
+    default: app.sherwood.sh
+    description: Comma-separated hosts the member-wallet lookup may call (https only)
   proposal_signer:
     type: str
     default: host

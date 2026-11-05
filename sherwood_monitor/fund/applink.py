@@ -4,14 +4,21 @@ After a member finishes ``/tg/join`` (Privy Telegram login + wallet), the app
 knows which address that Telegram user linked for the fund:
 
     GET ${APP_BASE_URL}/api/tg/link?fund=<vault>&tg=<telegram_id>
-    Authorization: Bearer <SHERWOOD_TG_LINK_SECRET>
+    Authorization: Bearer <SHERWOOD_TG_API_TOKEN>
 
-The bot and the app share that secret (read through ``secrets.get_secret``,
-never logged). The host's ✅ Approve then builds the approveDepositor body
-without anyone typing an address; ``/fund-approve <tg> <address>`` stays the
-fallback when the lookup returns nothing.
+``SHERWOOD_TG_API_TOKEN`` is its own secret, shared with the app for this API
+only (read through ``secrets.get_secret``, never logged). It is NOT the link
+HMAC key: ``SHERWOOD_TG_LINK_SECRET`` signs personal and host links and never
+leaves this process.
 
-Never raises: no secret, a 404, a timeout or an odd body all mean "not linked".
+The request goes only to ``https://`` on an allowlisted host
+(``fund.app_link_hosts``, default ``app.sherwood.sh``; operator config only),
+and redirects are refused, so the token never reaches another origin.
+
+The host's ✅ Approve then builds the approveDepositor body without anyone
+typing an address; ``/fund-approve <tg> <address>`` stays the fallback when the
+lookup returns nothing. Never raises: no token, a refused URL, any HTTP or
+transport error, or an odd body all mean "not linked".
 """
 from __future__ import annotations
 
@@ -21,23 +28,34 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from . import secrets
 
 _log = logging.getLogger(__name__)
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+DEFAULT_APP_LINK_HOSTS = ("app.sherwood.sh",)
 
 # (url, headers, timeout) -> (http_status, parsed_json_body)
 GetJson = Callable[[str, dict[str, str], float], tuple[int, Any]]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is an answer, not an instruction: never follow it (the bearer would go along)."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401, ANN001
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def _http_get_json(url: str, headers: dict[str, str], timeout: float) -> tuple[int, Any]:
     req = urllib.request.Request(url, method="GET", headers={"accept": "application/json", "user-agent": "sherwood-monitor", **headers})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - https base URL from config
+        with _OPENER.open(req, timeout=timeout) as resp:  # noqa: S310 - https + allowlisted host, checked by the caller
             return resp.status, json.loads(resp.read().decode() or "{}")
-    except urllib.error.HTTPError as err:
+    except urllib.error.HTTPError as err:  # includes refused 3xx
         return err.code, {}
 
 
@@ -54,37 +72,66 @@ def _address_in(payload: Any) -> str | None:
     return None
 
 
+def parse_hosts(raw: str | Iterable[str] | None) -> tuple[str, ...]:
+    items = raw.split(",") if isinstance(raw, str) else list(raw or ())
+    hosts = tuple(h.strip().lower() for h in items if h and h.strip())
+    return hosts or DEFAULT_APP_LINK_HOSTS
+
+
 class AppLinkClient:
     def __init__(
         self,
         base_url: str,
         *,
-        secret: Callable[[], str | None] | None = None,
+        allowed_hosts: str | Iterable[str] | None = None,
+        token: Callable[[], str | None] | None = None,
         get_json: GetJson | None = None,
         timeout: float = 4.0,
     ) -> None:
         self.base_url = (base_url or "").rstrip("/")
-        self._secret = secret or (lambda: secrets.get_secret(secrets.SHERWOOD_TG_LINK_SECRET))
+        self.allowed_hosts = parse_hosts(allowed_hosts)
+        self._token = token or (lambda: secrets.get_secret(secrets.SHERWOOD_TG_API_TOKEN))
         self._get_json = get_json
         self.timeout = timeout
 
+    def base_ok(self) -> bool:
+        """https:// on an allowlisted host, no credentials or port tricks in the URL."""
+        try:
+            parts = urllib.parse.urlsplit(self.base_url)
+        except ValueError:
+            return False
+        host = (parts.hostname or "").lower()
+        return (
+            parts.scheme == "https"
+            and host in self.allowed_hosts
+            and not parts.username
+            and not parts.password
+            and parts.port in (None, 443)
+        )
+
     def linked_address(self, vault: str, telegram_id: str | int) -> str | None:
         """The wallet this Telegram user linked for the fund, or None."""
+        try:
+            return self._lookup(vault, telegram_id)
+        except Exception as exc:  # never raises: http.client.HTTPException, ssl errors, anything
+            _log.info("app link lookup failed: %s", type(exc).__name__)
+            return None
+
+    def _lookup(self, vault: str, telegram_id: str | int) -> str | None:
         tg = str(telegram_id or "").strip()
         if not self.base_url or not _ADDRESS_RE.match(vault or "") or not tg.lstrip("-").isdigit():
             return None
-        secret = self._secret()
-        if not secret:
-            _log.debug("SHERWOOD_TG_LINK_SECRET is not set; app link lookup skipped")
+        if not self.base_ok():
+            _log.warning("app link lookup refused: APP_BASE_URL must be https:// on %s", ", ".join(self.allowed_hosts))
+            return None
+        token = self._token()
+        if not token:
+            _log.debug("SHERWOOD_TG_API_TOKEN is not set; app link lookup skipped")
             return None
         query = urllib.parse.urlencode({"fund": vault.lower(), "tg": tg})
         url = f"{self.base_url}/api/tg/link?{query}"
         fetch = self._get_json or _http_get_json  # module lookup at call time (tests patch it)
-        try:
-            status, payload = fetch(url, {"authorization": f"Bearer {secret}"}, self.timeout)
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-            _log.info("app link lookup for tg %s failed: %s", tg, exc)
-            return None
+        status, payload = fetch(url, {"authorization": f"Bearer {token}"}, self.timeout)
         if status != 200:
             return None
         return _address_in(payload)
@@ -93,8 +140,9 @@ class AppLinkClient:
 def ensure_member_address(rt: Any, fund: str, who: str) -> str:
     """Fill in a member's wallet from the app link when fund state has none.
 
-    Returns the address now on record ("" when neither fund state nor the app
-    has one; the host then passes it: `/fund-approve <tg> <address>`).
+    Call it only after the host check. Returns the address now on record (""
+    when neither fund state nor the app has one; the host then passes it:
+    `/fund-approve <tg> <address>`).
     """
     state = rt.service.load(fund)
     member = state.member(str(who))
