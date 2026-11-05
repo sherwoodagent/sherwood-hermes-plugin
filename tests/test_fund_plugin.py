@@ -237,3 +237,14 @@ def test_join_fund_needs_identity_settings(tmp_path, monkeypatch):
     ctx = boot(tmp_path, monkeypatch, {"agent_name": "beta"})
     out = ctx.run_command("join-fund", "alpha-fund")
     assert "fund.agent_identity_id" in out and "fund.agent_address" in out
+
+
+def test_setup_update_scales_cap_by_the_funds_own_asset(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, HOST_CFG)
+    assert ctx.call_tool("fund_setup", {"fund": "alpha-fund", "asset": "WETH", "max_capital": "1"})["created"]
+    upd = ctx.call_tool("fund_setup", {"fund": "alpha-fund", "max_capital": "2.5"})
+    assert upd["ok"] and upd["created"] is False
+    assert upd["state"]["max_capital"] == str(25 * 10**17)
+    assert upd["prepare"]["body"]["asset"] == "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+    moved = ctx.call_tool("fund_setup", {"fund": "alpha-fund", "asset": "USDG"})
+    assert moved["ok"] is False and "fixed" in moved["error"]

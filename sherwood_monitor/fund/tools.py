@@ -266,25 +266,35 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
     def fund_setup(args: dict[str, Any]) -> dict[str, Any]:
         name = rt.fund_for(args.get("fund"))
         agent = rt.agent_name()
-        fields_ = {k: args[k] for k in ("vault", "governor", "telegram_chat_id", "host_telegram_id") if args.get(k) not in (None, "")}
-        asset = str(args.get("asset") or "USDG").upper()
-        if asset not in TOKEN_ADDRESSES_4663 or asset == "WOOD":
+        fields_ = {
+            k: str(args[k])
+            for k in ("vault", "governor", "telegram_chat_id", "host_telegram_id")
+            if args.get(k) not in (None, "")
+        }
+        asset_arg = str(args.get("asset") or "").upper()
+        if asset_arg and asset_arg not in ("USDG", "WETH"):
             raise UnitsError("asset must be USDG or WETH")
-        limits: dict[str, Any] = {}
-        decimals = 6 if asset == "USDG" else 18
-        if args.get("max_capital") not in (None, ""):
-            limits["max_capital"] = str(to_base_units(str(args["max_capital"]), decimals))
-        for key in ("max_drawdown_bps", "voting_period"):
-            if args.get(key) not in (None, ""):
-                limits[key] = int(args[key])
+        ints = {k: int(args[k]) for k in ("max_drawdown_bps", "voting_period") if args.get(k) not in (None, "")}
+        cap_raw = args.get("max_capital")
         host_address = str(args.get("host_address") or rt.settings.agent_address or "")
         for key in ("vault", "governor"):
-            if key in fields_ and not rules.is_address(str(fields_[key])):
+            if key in fields_ and not rules.is_address(fields_[key]):
                 raise UnitsError(f"{key} must be a 0x address")
+
+        def limits_for(f: Fund) -> dict[str, Any]:
+            # Scale the cap by the fund's own asset (USDG 6dp, WETH 18dp), never an argument default.
+            out: dict[str, Any] = dict(ints)
+            if cap_raw not in (None, ""):
+                out["max_capital"] = str(to_base_units(str(cap_raw), f.asset_decimals))
+            return out
+
         created = False
         try:
+            new = Fund(name=name, asset=asset_arg or "USDG", host=host_address, **fields_)
+            for k, v in limits_for(new).items():
+                setattr(new, k, v)
             state = svc.create_fund(
-                Fund(name=name, asset=asset, host=host_address, **{k: str(v) for k, v in fields_.items()}, **limits),
+                new,
                 Agent(
                     name=agent,
                     identity_id=rt.settings.agent_identity_id,
@@ -296,8 +306,10 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         except FundExists:
             def mutate(st: FundState) -> FundState:
                 rules.require(rules.check_host_action(st, agent))
-                for k, v in {**fields_, **limits}.items():
-                    setattr(st.fund, k, str(v) if k in fields_ else v)
+                if asset_arg and asset_arg != st.fund.asset:
+                    raise UnitsError(f"the fund asset is fixed once the fund exists ({st.fund.asset})")
+                for k, v in {**fields_, **limits_for(st.fund)}.items():
+                    setattr(st.fund, k, v)
                 if host_address and not st.fund.host:
                     st.fund.host = host_address
                 return st
