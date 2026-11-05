@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import load_config
 from .supervisor import Supervisor
@@ -125,11 +125,18 @@ def _create_cron(spec: _CronSpec, plugin_root: Path) -> tuple[bool, str]:
     return False, (stderr or "").strip() or f"rc={rc}"
 
 
-def register_cli(ctx: Any, sup: Supervisor) -> None:
-    """Register `hermes sherwood start|stop|status|tail|install-cron` commands."""
+# `hermes sherwood <sub>`: (help, takes a fund subdomain)
+SUBCOMMANDS: dict[str, tuple[str, bool]] = {
+    "start": ("start monitoring a fund", True),
+    "stop": ("stop monitoring a fund", True),
+    "status": ("show monitor status", False),
+    "tail": ("tail stderr of a monitor", True),
+    "install-cron": ("register all sherwood crons with Hermes (no_agent watchdogs + reasoning; idempotent)", False),
+}
 
-    def _setup_common(parser: Any) -> None:
-        parser.add_argument("subdomain", help="fund subdomain")
+
+def build_cli_handlers(sup: Supervisor) -> dict[str, Callable[[Any], int]]:
+    """The `hermes sherwood <sub>` handlers, keyed by subcommand name."""
 
     def start_handler(args: Any) -> int:
         async def _start() -> None:
@@ -198,21 +205,44 @@ def register_cli(ctx: Any, sup: Supervisor) -> None:
         print(json.dumps(result))
         return 1 if result["errors"] else 0
 
+    return {
+        "start": start_handler,
+        "stop": stop_handler,
+        "status": status_handler,
+        "tail": tail_handler,
+        "install-cron": install_cron_handler,
+    }
+
+
+def register_cli(ctx: Any, sup: Supervisor) -> None:
+    """Register ONE top-level `hermes sherwood` command with subcommands.
+
+    Hermes turns every `register_cli_command` into a top-level `hermes <name>`
+    parser, so registering `status` / `tail` / `install-cron` on their own
+    collides with Hermes' built-in `hermes status` (argparse raises, Hermes
+    swallows it, and the later commands never attach). One `sherwood` parser
+    with subparsers is the documented `hermes sherwood <sub>` CLI.
+    """
+    handlers = build_cli_handlers(sup)
+
+    def setup(parser: Any) -> None:
+        subs = parser.add_subparsers(dest="sherwood_command", metavar="<command>")
+        for name, (help_text, takes_fund) in SUBCOMMANDS.items():
+            sub = subs.add_parser(name, help=help_text, description=help_text)
+            if takes_fund:
+                sub.add_argument("subdomain", help="fund subdomain")
+
+    def dispatch(args: Any) -> int:
+        handler = handlers.get(getattr(args, "sherwood_command", None) or "")
+        if handler is None:
+            print("usage: hermes sherwood {" + ",".join(SUBCOMMANDS) + "} ...", flush=True)
+            return 2
+        return handler(args)
+
     ctx.register_cli_command(
-        name="start", help="start monitoring a fund", setup_fn=_setup_common, handler_fn=start_handler
-    )
-    ctx.register_cli_command(
-        name="stop", help="stop monitoring a fund", setup_fn=_setup_common, handler_fn=stop_handler
-    )
-    ctx.register_cli_command(
-        name="status", help="show monitor status", setup_fn=lambda p: None, handler_fn=status_handler
-    )
-    ctx.register_cli_command(
-        name="tail", help="tail stderr of a monitor", setup_fn=_setup_common, handler_fn=tail_handler
-    )
-    ctx.register_cli_command(
-        name="install-cron",
-        help="register all sherwood crons with Hermes (no_agent watchdogs + reasoning; idempotent)",
-        setup_fn=lambda p: None,
-        handler_fn=install_cron_handler,
+        name="sherwood",
+        help="Sherwood fund monitor: start | stop | status | tail | install-cron",
+        setup_fn=setup,
+        handler_fn=dispatch,
+        description="Monitor Sherwood funds and register the Sherwood crons.",
     )

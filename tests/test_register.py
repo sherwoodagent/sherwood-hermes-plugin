@@ -41,11 +41,12 @@ def test_register_calls_all_ctx_methods(tmp_path: Path, mock_ctx):
         register(mock_ctx)
 
     # 5 monitor tools + 11 fund tools, 5 hooks (session_start, session_end,
-    # pre_tool_call, post_tool_call, pre_llm_call), 5 CLI commands (start, stop,
-    # status, tail, install-cron), 5 slash commands, 1 + 3 fund skills
+    # pre_tool_call, post_tool_call, pre_llm_call), ONE `hermes sherwood` CLI
+    # command (start/stop/status/tail/install-cron are its subcommands),
+    # 5 slash commands, 1 + 3 fund skills
     assert mock_ctx.register_tool.call_count == 16
     assert mock_ctx.register_hook.call_count == 5
-    assert mock_ctx.register_cli_command.call_count == 5
+    assert mock_ctx.register_cli_command.call_count == 1
     assert mock_ctx.register_command.call_count == 5
     assert mock_ctx.register_skill.call_count == 4
 

@@ -15,14 +15,15 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from . import secrets
+from ..yamlio import YAMLError, safe_load
 from .txbuilder import DEFAULT_TX_BUILDER_URL
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_APP_BASE_URL = "https://sherwood.sh"
+# The /tg/* routes live on the app host (sherwood_monitor.telegram.links uses the same default).
+DEFAULT_APP_BASE_URL = "https://app.sherwood.sh"
+PROPOSAL_SIGNERS = ("host", "agent")
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,14 @@ class FundSettings:
     fund_state_backend: str = "local"  # local | http
     fund_state_dir: str = ""  # local backend root; "" = ~/.hermes/plugins/sherwood-monitor/funds
     fund_state_url: str = ""  # http backend base URL (stub for now)
+    # Who signs propose. `host`: pre-GA beta (factory.ownerOnlyProposals), the host
+    # co-signs the agent's draft from a signing link. `agent`: open protocol, the
+    # agent's own wallet proposes.
+    proposal_signer: str = "host"
+
+    @property
+    def host_cosigns(self) -> bool:
+        return self.proposal_signer != "agent"
 
 
 _ENV_FALLBACK = {
@@ -49,8 +58,8 @@ def _yaml_section(cfg_path: Path | None) -> dict[str, Any]:
     if cfg_path is None or not cfg_path.exists():
         return {}
     try:
-        raw = yaml.safe_load(cfg_path.read_text()) or {}
-    except (yaml.YAMLError, OSError) as exc:
+        raw = safe_load(cfg_path.read_text()) or {}
+    except (YAMLError, OSError) as exc:
         _log.warning("fund settings: cannot read %s: %s", cfg_path, exc)
         return {}
     section = raw.get("fund") if isinstance(raw, dict) else None
@@ -80,4 +89,9 @@ def load_fund_settings(cfg_path: Path | None = None, ctx: Any = None) -> FundSet
         if value in (None, ""):
             continue
         values[f.name] = str(value).strip()
+    if values.get("proposal_signer", "host").lower() not in PROPOSAL_SIGNERS:
+        _log.warning("fund settings: proposal_signer must be host or agent; using host")
+        values["proposal_signer"] = "host"
+    elif "proposal_signer" in values:
+        values["proposal_signer"] = values["proposal_signer"].lower()
     return FundSettings(**values)

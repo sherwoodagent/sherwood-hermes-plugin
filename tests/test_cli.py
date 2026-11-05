@@ -1,8 +1,10 @@
 """Tests for `hermes sherwood …` CLI subcommands, especially install-cron."""
 from __future__ import annotations
 
+import argparse
 import json
 from argparse import Namespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,20 +12,20 @@ import pytest
 from sherwood_monitor.cli import (
     CRON_NAMES,
     CRONS,
+    SUBCOMMANDS,
     register_cli,
 )
 
 
-def _captured_handler(mock_ctx: MagicMock, name: str):
-    """Extract the handler_fn registered for a given subcommand name."""
-    for call in mock_ctx.register_cli_command.call_args_list:
-        if call.kwargs.get("name") == name:
-            return call.kwargs["handler_fn"]
-    raise AssertionError(f"no handler registered for {name!r}")
-
-
-def _captured_names(mock_ctx: MagicMock) -> list[str]:
-    return [call.kwargs.get("name") for call in mock_ctx.register_cli_command.call_args_list]
+def _parser_for(mock_ctx: MagicMock) -> tuple[argparse.ArgumentParser, Any]:
+    """Build the `hermes sherwood` parser the way Hermes does (setup_fn + set_defaults)."""
+    (call,) = mock_ctx.register_cli_command.call_args_list
+    top = argparse.ArgumentParser(prog="hermes")
+    subs = top.add_subparsers(dest="command")
+    plugin_parser = subs.add_parser(call.kwargs["name"])
+    call.kwargs["setup_fn"](plugin_parser)
+    plugin_parser.set_defaults(func=call.kwargs["handler_fn"])
+    return top, call.kwargs["handler_fn"]
 
 
 @pytest.fixture
@@ -32,14 +34,32 @@ def install_cron_handler():
     ctx = MagicMock()
     sup = MagicMock()
     register_cli(ctx, sup)
-    return _captured_handler(ctx, "install-cron")
+    top, dispatch = _parser_for(ctx)
+    return lambda ns=None: dispatch(top.parse_args(["sherwood", "install-cron"]))
 
 
-def test_register_cli_registers_all_five_commands():
+def test_register_cli_registers_one_sherwood_command_with_five_subcommands():
+    """One top-level `hermes sherwood` (a bare `status` would collide with Hermes' own)."""
     ctx = MagicMock()
     register_cli(ctx, MagicMock())
-    names = _captured_names(ctx)
-    assert names == ["start", "stop", "status", "tail", "install-cron"]
+    assert [c.kwargs["name"] for c in ctx.register_cli_command.call_args_list] == ["sherwood"]
+    assert list(SUBCOMMANDS) == ["start", "stop", "status", "tail", "install-cron"]
+    top, _ = _parser_for(ctx)
+    args = top.parse_args(["sherwood", "tail", "alpha-fund"])
+    assert args.sherwood_command == "tail" and args.subdomain == "alpha-fund"
+
+
+def test_sherwood_dispatch_routes_subcommands(capsys):
+    ctx = MagicMock()
+    sup = MagicMock()
+    sup.status.return_value = {"alpha": "running"}
+    register_cli(ctx, sup)
+    top, _ = _parser_for(ctx)
+    args = top.parse_args(["sherwood", "status"])
+    assert args.func(args) == 0
+    assert json.loads(capsys.readouterr().out) == {"alpha": "running"}
+    bare = top.parse_args(["sherwood"])
+    assert bare.func(bare) == 2
 
 
 def test_crons_inventory_has_expected_names():

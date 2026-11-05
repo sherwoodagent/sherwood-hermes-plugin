@@ -9,10 +9,18 @@ description: >-
 author: Sherwood
 license: MIT
 homepage: https://sherwood.sh
-entry: sherwood_monitor
+# Hermes loads the root __init__.py (it re-exports sherwood_monitor.register);
+# there is no `entry:` manifest field.
 # 0.21.5 is the first release whose installer accepts manifest v2 (it reads the
 # runtime's SUPPORTED_MANIFEST_VERSION = 2) and knows `requires_hermes`.
 requires_hermes: ">=0.21.5"
+# Mirrors pyproject [project].dependencies. python-telegram-bot is NOT listed:
+# it comes with Hermes' own Telegram extra, and every PTB import is guarded.
+python_dependencies:
+  - "PyYAML>=6.0,<7"
+  - "eth-keys>=0.5,<1"
+  - "eth-utils>=4.0,<7"
+  - "eth-hash[pycryptodome]>=0.5,<1"
 requires_env:
   - name: TELEGRAM_BOT_TOKEN
     description: Bot token for the fund's Telegram group (from @BotFather)
@@ -27,7 +35,7 @@ requires_env:
     url: https://dashboard.privy.io
     secret: true
   - name: SHERWOOD_TG_LINK_SECRET
-    description: Shared secret that signs Telegram-to-wallet link tokens
+    description: Shared HMAC secret that signs the bot's personal /tg links (the app verifies it)
     url: https://docs.sherwood.sh
     secret: true
   - name: TX_BUILDER_URL
@@ -35,8 +43,8 @@ requires_env:
     url: https://docs.sherwood.sh
     secret: false
   - name: APP_BASE_URL
-    description: Sherwood app base URL for deposit and proposal links; defaults to https://sherwood.sh
-    url: https://sherwood.sh
+    description: Sherwood app base URL for the /tg links on card buttons; defaults to https://app.sherwood.sh
+    url: https://app.sherwood.sh
     secret: false
 config_schema:
   agent_name:
@@ -65,8 +73,15 @@ config_schema:
     description: Prepare API base URL
   app_base_url:
     type: str
-    default: https://sherwood.sh
-    description: Sherwood app base URL for card buttons
+    default: https://app.sherwood.sh
+    description: Sherwood app base URL for the /tg links on card buttons
+  proposal_signer:
+    type: str
+    default: host
+    choices: [host, agent]
+    description: >-
+      Who signs propose: `host` (pre-GA beta, ownerOnlyProposals, the host co-signs
+      the agent's draft) or `agent` (open protocol, the agent proposes itself)
   fund_state_backend:
     type: str
     default: local
@@ -80,7 +95,6 @@ config_schema:
     type: str
     default: ""
     description: Hosted fund-state API base URL (http backend)
-capabilities: []
 provides_tools:
   - sherwood_monitor_start
   - sherwood_monitor_stop
