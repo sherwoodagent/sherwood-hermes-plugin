@@ -418,6 +418,9 @@ class FundService:
         idea_by: str = "",
         strategy: str = "",
         metadata_uri: str = "",
+        quote_usd_per_wood: str = "",
+        bond_buffer_status: str = "",
+        bond_buffer_note: str = "",
     ) -> DraftResult:
         """Check every rule, record the draft, consume the claim, return the prepare payload."""
         now = self.clock()
@@ -445,6 +448,9 @@ class FundService:
                 strategy_duration=strategy_duration,
                 idea_by=str(idea_by or (claim.idea_by if claim else "") or ""),
                 pitch_message_id=claim.source_message_id if claim else None,
+                quote_usd_per_wood=str(quote_usd_per_wood or ""),
+                bond_buffer_status=str(bond_buffer_status or "")[:32],
+                bond_buffer_note=str(bond_buffer_note or "")[:200],
                 created_at=now,
                 updated_at=now,
             )
@@ -513,6 +519,14 @@ class FundService:
                 description=None if metadata_uri else record.thesis,
                 max_drawdown_bps=record.max_drawdown_bps,
                 chain_id=fund.chain_id,
+                # The plugin's intent, explicit so a server default change cannot widen it:
+                # the swap may pay at most 3% over the WOOD feed, its deadline is 10 min, and
+                # paying more is the HOST's opt-in on the signing page, never preset here.
+                bond_swap_max_premium_bps=300,
+                bond_swap_deadline_seconds=600,
+                # Drift check against the ledger price the agent quoted, echoed verbatim.
+                quote_usd_per_wood=record.quote_usd_per_wood or None,
+                max_drift_bps=500 if record.quote_usd_per_wood else None,
             )
         except TxBuilderError as exc:
             missing.append(exc.message)

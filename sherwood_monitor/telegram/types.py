@@ -72,6 +72,8 @@ class ProposalView:
     onchain_id: int | None = None  # the governor's proposal id; vote links need it
     review_ends_at: int | None = None  # guardian review window end (status "review")
     guardian_coverage: str = ""  # tg-card review.coverage.kind: none | partial | full | unpriced
+    bond_buffer_status: str = ""  # propose-portfolio bondBuffer.status (sherwood #740)
+    bond_buffer_note: str = ""  # bufferNote, or the 409 premium message
 
     @property
     def display_id(self) -> str:

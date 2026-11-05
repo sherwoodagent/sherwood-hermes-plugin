@@ -116,6 +116,13 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "idea_by": {"type": "string", "description": "Telegram id of the member whose idea this is"},
             "strategy": {"type": "string", "description": "PortfolioStrategy clone address, when deployed"},
             "metadata_uri": {"type": "string", "description": "ipfs:// URI of the pinned proposal metadata"},
+            "quote_usd_per_wood": {
+                "type": "string",
+                "description": "From your prepare/propose-portfolio response: `quoteUsdPerWood` (the ledger's WOOD price) "
+                "exactly as returned. Never `feedUsdPerWood`.",
+            },
+            "bond_buffer_status": {"type": "string", "description": "That response's `bondBuffer.status` (swap, covered, insufficient-usdg, premium-over-cap, ...)"},
+            "bond_buffer_note": {"type": "string", "description": "That response's `bufferNote`, or the 409 premium message"},
         },
         ["topic", "thesis", "legs", "max_capital", "max_drawdown_bps"],
     ),
@@ -410,6 +417,9 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             idea_by=d.idea_by,
             strategy=d.strategy,
             metadata_uri=d.metadata_uri,
+            quote_usd_per_wood=str(args.get("quote_usd_per_wood") or ""),
+            bond_buffer_status=str(args.get("bond_buffer_status") or ""),
+            bond_buffer_note=str(args.get("bond_buffer_note") or ""),
         )
         return {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
 

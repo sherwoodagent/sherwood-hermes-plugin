@@ -237,3 +237,47 @@ def test_fund_card_read():
     with pytest.raises(TxBuilderError) as exc:
         missing.fund_card(VAULT)
     assert "tg-card" in str(exc.value) and "not deployed" in str(exc.value)
+
+
+# -- sherwood #740: bond-buffer swap, ledger price vs feed, 409 premium / requote -------------------------
+def _pp(**kw):
+    base = dict(vault=VAULT, proposer=HOST_ADDR, legs=[{"symbol": "NVDA", "weightBps": 10000}],
+                max_capital_decimal="10", strategy_duration="6h", metadata_uri="ipfs://bafkqaaa")
+    base.update(kw)
+    return txbuilder.build_propose_portfolio_body(**base)
+
+
+def test_propose_portfolio_bond_buffer_params():
+    body = _pp(bond_swap_max_premium_bps=300, bond_swap_deadline_seconds=600, quote_usd_per_wood="0.00085438",
+               max_drift_bps=500, fill_bond_buffer=True, allow_bond_swap_premium=False)
+    assert body["bondSwapMaxPremiumBps"] == 300 and body["bondSwapDeadlineSeconds"] == 600
+    assert body["quoteUsdPerWood"] == "0.00085438" and body["maxDriftBps"] == 500  # echoed verbatim
+    assert body["fillBondBuffer"] is True and body["allowBondSwapPremium"] is False
+    for bad in ({"bond_swap_max_premium_bps": 5001}, {"bond_swap_deadline_seconds": 59}, {"max_drift_bps": 0},
+                {"quote_usd_per_wood": "8.5e-4"}, {"quote_usd_per_wood": "$0.0008"}):
+        with pytest.raises(TxBuilderError):
+            _pp(**bad)
+
+
+def test_response_exposes_the_ledger_price_not_the_feed():
+    env = ok_envelope("prepare.proposePortfolio")
+    env["data"].update({"quoteUsdPerWood": "0.00085438", "feedUsdPerWood": "0.00170876",
+                        "bondBuffer": {"status": "swap", "swapRequired": True, "ledgerPrice": {"haircutBps": 5000}},
+                        "bufferNote": "+0.59% over the WOOD/USD feed"})
+    action = client(Recorder(env)).propose_portfolio(_pp())
+    assert action.quote_usd_per_wood == "0.00085438"  # what to echo back for the drift check
+    assert action.bond_buffer["status"] == "swap" and "first leg" in action.bond_note
+
+
+def test_409_premium_and_requote_carry_their_data():
+    premium = {"success": False, "error": "Bond-buffer swap priced +0.59% over the WOOD/USD feed, past bondSwapMaxPremiumBps 0",
+               "data": {"premiumOverCap": True, "premiumBps": 59, "maxPremiumBps": 0, "optIn": "allowBondSwapPremium: true",
+                        "bondBuffer": {"status": "premium-over-cap", "swapRequired": True}}}
+    with pytest.raises(TxBuilderError) as exc:
+        client(Recorder(premium, status=409)).propose_portfolio(_pp())
+    assert exc.value.status == 409 and exc.value.data["premiumBps"] == 59
+    assert "+0.59% over the WOOD/USD feed" in exc.value.bond_note and "allowBondSwapPremium" in exc.value.bond_note
+    requote = {"success": False, "error": "moved 1001 bps", "data": {"requote": True, "driftBps": 1001, "maxDriftBps": 500}}
+    with pytest.raises(TxBuilderError) as exc:
+        client(Recorder(requote, status=409)).propose_portfolio(_pp(quote_usd_per_wood="0.00093982"))
+    assert "re-quote" in exc.value.bond_note and "1001" in exc.value.bond_note

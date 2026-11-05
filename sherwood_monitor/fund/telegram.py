@@ -126,6 +126,8 @@ def proposal_to_view(record: Any) -> ProposalView:
         onchain_id=_int_or_none(_get(record, "onchain_id")),
         review_ends_at=_int_or_none(_get(record, "review_ends_at")),
         guardian_coverage=str(_get(record, "guardian_coverage", default="") or ""),
+        bond_buffer_status=str(_get(record, "bond_buffer_status", default="") or ""),
+        bond_buffer_note=str(_get(record, "bond_buffer_note", default="") or ""),
     )
 
 
@@ -468,6 +470,8 @@ def proposal_dict(state: FundState, record: ProposalRecord) -> dict[str, Any]:
         "against_bps": record.against_bps,
         "threshold_bps": fund.veto_threshold_bps,
         "guardian_coverage": record.guardian_coverage,
+        "bond_buffer_status": record.bond_buffer_status,
+        "bond_buffer_note": record.bond_buffer_note,
         "capital_symbol": fund.asset,
     }
 

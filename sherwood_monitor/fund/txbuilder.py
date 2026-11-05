@@ -76,11 +76,18 @@ PostJson = Callable[[str, dict[str, Any], float], tuple[int, dict[str, Any]]]
 
 
 class TxBuilderError(Exception):
-    def __init__(self, route: str, message: str, status: int | None = None) -> None:
+    def __init__(self, route: str, message: str, status: int | None = None, data: dict[str, Any] | None = None) -> None:
         super().__init__(f"prepare/{route}: {message}" + (f" (HTTP {status})" if status else ""))
         self.route = route
         self.status = status
         self.message = message
+        # The error envelope's `data` (propose-portfolio 409s put the numbers here: a bond-buffer
+        # premium over the cap, or a drift requote).
+        self.data = data or {}
+
+    @property
+    def bond_note(self) -> str:
+        return describe_bond_buffer(self.data, status=self.status) if self.data else ""
 
 
 @dataclass(frozen=True)
@@ -114,6 +121,27 @@ class PreparedAction:
     def prelude(self) -> list[dict[str, Any]]:
         """Txs the caller prepends (the USDG->WOOD bond-buffer swap). Send prelude + txs."""
         return list(self.extra.get("prelude") or [])
+
+    @property
+    def bond_buffer(self) -> dict[str, Any]:
+        """`{status, swapRequired, ledgerPrice}` (sherwood #740)."""
+        value = self.extra.get("bondBuffer")
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def quote_usd_per_wood(self) -> str:
+        """The bond's WOOD price as the LEDGER charges it (the drift basis), verbatim.
+
+        Echo exactly this back as `quoteUsdPerWood` for the drift check. Never the
+        market `feedUsdPerWood`: the ledger price is haircut x min(feed, cap), about
+        half the feed, so echoing the feed reads as a ~100% drift.
+        """
+        value = self.extra.get("quoteUsdPerWood")
+        return str(value) if value not in (None, "") else ""
+
+    @property
+    def bond_note(self) -> str:
+        return describe_bond_buffer(self.extra)
 
     def wallet_send_calls(self, from_address: str) -> list[dict[str, Any]]:
         """EIP-5792 `wallet_sendCalls` params, one batch per chain.
@@ -157,13 +185,49 @@ def _not_deployed(route: str) -> str:
     return "route not found (HTTP 404)"
 
 
+BOND_BUFFER_NOTES = {
+    "swap": "bond buffer: the WOOD swap is the first leg of the bundle",
+    "insufficient-usdg": "the proposer's USDG cannot pay the WOOD swap: fund it before propose",
+    "premium-over-cap": "the WOOD swap is priced over the feed cap",
+    "unavailable": "the bond-buffer swap could not be prepared: fund the proposer with WOOD",
+    "no-route": "no USDG->WOOD route on this chain: fund the proposer with WOOD",
+}
+
+
+def describe_bond_buffer(data: dict[str, Any], *, status: int | None = None) -> str:
+    """One host-facing line from a propose-portfolio response or 409 `data` ("" when nothing to say)."""
+    if not isinstance(data, dict):
+        return ""
+    if data.get("requote"):
+        return (
+            f"the bond's WOOD price moved {data.get('driftBps', '?')} bps since the quote "
+            f"(max {data.get('maxDriftBps', '?')}): re-quote before signing"
+        )
+    if data.get("premiumOverCap"):
+        try:
+            prem = f"+{int(data.get('premiumBps')) / 100:.2f}%"
+            cap = f"{int(data.get('maxPremiumBps')) / 100:.2f}%"
+        except (TypeError, ValueError):
+            prem, cap = "over", "the cap"
+        return (
+            f"the WOOD bond swap is priced {prem} over the WOOD/USD feed, past {cap}: the host may accept it "
+            f"on the signing page ({data.get('optIn') or 'allowBondSwapPremium: true'}) or fund the proposer with WOOD"
+        )
+    buffer = data.get("bondBuffer") if isinstance(data.get("bondBuffer"), dict) else {}
+    note = BOND_BUFFER_NOTES.get(str(buffer.get("status") or ""), "")
+    if note and buffer.get("status") == "premium-over-cap" and data.get("bufferNote"):
+        note = f"{note} ({data['bufferNote']})"
+    return note
+
+
 def parse_envelope(route: str, status: int, payload: dict[str, Any]) -> PreparedAction:
     if status == 404 and not (isinstance(payload, dict) and payload.get("success")):
         raise TxBuilderError(route, _not_deployed(route), 404)
     if not isinstance(payload, dict):
         raise TxBuilderError(route, "response is not a JSON object", status)
     if not payload.get("success"):
-        raise TxBuilderError(route, str(payload.get("error") or "request failed"), status)
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else None
+        raise TxBuilderError(route, str(payload.get("error") or "request failed"), status, data)
     data = payload.get("data") or {}
     meta = payload.get("meta") or {}
     try:
@@ -309,8 +373,19 @@ def build_propose_portfolio_body(
     bond_buffer_bps: int | None = None,
     salt: str | None = None,
     chain_id: int = CHAIN_ID_ROBINHOOD,
+    fill_bond_buffer: bool | None = None,
+    bond_swap_max_slippage_bps: int | None = None,
+    bond_swap_max_premium_bps: int | None = None,
+    allow_bond_swap_premium: bool | None = None,
+    bond_swap_deadline_seconds: int | None = None,
+    quote_usd_per_wood: str | None = None,
+    max_drift_bps: int | None = None,
 ) -> dict[str, Any]:
-    """`POST prepare/propose-portfolio` body. Legs: `{symbol|token, weightBps, swapRoute?}`, weights sum to 10000."""
+    """`POST prepare/propose-portfolio` body. Legs: `{symbol|token, weightBps, swapRoute?}`, weights sum to 10000.
+
+    Bond buffer (sherwood #740): `quote_usd_per_wood` must be the `quoteUsdPerWood` a previous
+    response returned (the ledger price), echoed verbatim, never `feedUsdPerWood`.
+    """
     route = "propose-portfolio"
     if not 1 <= len(legs) <= 20:
         raise TxBuilderError(route, "1..20 legs")
@@ -364,6 +439,25 @@ def build_propose_portfolio_body(
         body["bondBufferBps"] = bond_buffer_bps
     if salt:
         body["salt"] = salt
+    for key, value, lo, hi in (
+        ("bondSwapMaxSlippageBps", bond_swap_max_slippage_bps, 1, 1000),
+        ("bondSwapMaxPremiumBps", bond_swap_max_premium_bps, 0, 5000),
+        ("bondSwapDeadlineSeconds", bond_swap_deadline_seconds, 60, 3600),
+        ("maxDriftBps", max_drift_bps, 1, 5000),
+    ):
+        if value is None:
+            continue
+        if not isinstance(value, int) or not lo <= value <= hi:
+            raise TxBuilderError(route, f"`{key}` must be an integer in [{lo}, {hi}]")
+        body[key] = value
+    if fill_bond_buffer is not None:
+        body["fillBondBuffer"] = bool(fill_bond_buffer)
+    if allow_bond_swap_premium is not None:
+        body["allowBondSwapPremium"] = bool(allow_bond_swap_premium)
+    if quote_usd_per_wood not in (None, ""):
+        if not re.match(r"^\d+(\.\d+)?$", str(quote_usd_per_wood)):
+            raise TxBuilderError(route, "`quoteUsdPerWood` must be the decimal string a previous response returned")
+        body["quoteUsdPerWood"] = str(quote_usd_per_wood)  # verbatim: the server compares it as given
     return body
 
 

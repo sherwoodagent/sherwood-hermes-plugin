@@ -54,6 +54,17 @@ still recorded and the response lists what is missing.
   before the approve.
 - **Drift.** If the WOOD price moves more than 5% between quote and propose,
   re-quote and draft again. Never widen the approval to absorb drift.
+- **Which price you echo (prepare/propose-portfolio, sherwood #740).** The
+  response's `quoteUsdPerWood` is the ledger's WOOD price (haircut x
+  min(feed, cap), about half the market); `feedUsdPerWood` is the market feed.
+  Pass `quote_usd_per_wood` = `quoteUsdPerWood` exactly as returned (never the
+  feed) to `fund_draft_proposal`; the host's signing page re-prepares with it
+  and gets a 409 requote at a 5% move.
+- **Bond-buffer status.** Pass `bond_buffer_status` (`bondBuffer.status`) and
+  `bond_buffer_note` (`bufferNote`) so the draft card shows them. A 409 with
+  `premiumOverCap` means the WOOD swap costs more than 3% over the feed: put
+  its message in `bond_buffer_note` with status `premium-over-cap`; only the
+  host may accept it (`allowBondSwapPremium`), on the signing page.
 
 ## Order of calls
 

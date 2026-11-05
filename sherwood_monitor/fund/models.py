@@ -295,6 +295,12 @@ class ProposalRecord:
     chain_synced_at: float | None = None
     # The chat message the idea was pitched in (drafts that came from a pitch).
     pitch_message_id: int | None = None
+    # From the agent's own prepare/propose-portfolio quote (sherwood #740): the LEDGER's WOOD
+    # price exactly as returned (the drift basis echoed on re-prepare), the bond-buffer status
+    # (swap | covered | insufficient-usdg | premium-over-cap | ...) and a host-facing note.
+    quote_usd_per_wood: str = ""
+    bond_buffer_status: str = ""
+    bond_buffer_note: str = ""
     # The host's "ship it" on the draft card (go-ahead to propose).
     shipped_at: float | None = None
     shipped_by: str = ""

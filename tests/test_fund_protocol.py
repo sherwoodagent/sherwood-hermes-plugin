@@ -230,3 +230,19 @@ def test_leaderboard_ranks_members_by_settled_idea_pnl(svc, clock):
     to_executed(svc)
     svc.record_settle("alpha-fund", "alpha", "p-1", pnl=41_000_000, pnl_bps=820, tx_hash=TX)
     assert svc.leaderboard("alpha-fund") == [{"tg_id": "77", "pnl_bps": 820, "ideas": 1, "wins": 1}]
+
+
+def test_sign_body_carries_the_bond_buffer_intent(svc):
+    """sherwood #740: cap 3% over the feed, 10 min deadline, drift check on the ledger price the agent quoted."""
+    svc.claim_topic("alpha-fund", "alpha", "NVDA AAPL pitch")
+    result = svc.draft_proposal(
+        "alpha-fund", "alpha", topic="NVDA AAPL pitch", thesis="AI capex", legs=legs(),
+        max_capital=500_000_000, max_drawdown_bps=2000, strategy_duration=86400,
+        quote_usd_per_wood="0.00085438", bond_buffer_status="premium-over-cap", bond_buffer_note="+3.40% over the feed",
+    )
+    record = result.proposal
+    assert (record.quote_usd_per_wood, record.bond_buffer_status) == ("0.00085438", "premium-over-cap")
+    body = svc.portfolio_payload(svc.load("alpha-fund").fund, record, proposer="0x" + "33" * 20)["body"]
+    assert body["bondSwapMaxPremiumBps"] == 300 and body["bondSwapDeadlineSeconds"] == 600
+    assert body["quoteUsdPerWood"] == "0.00085438" and body["maxDriftBps"] == 500
+    assert "allowBondSwapPremium" not in body  # only the host opts in, on the signing page

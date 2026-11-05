@@ -444,11 +444,31 @@ def render_draft_card(
     if bond_shortfall_wood and bond_shortfall_wood > 0:
         usd = f" (≈{fmt_usd(bond_shortfall_wood * wood_usd)})" if wood_usd else ""
         lines.append(f"needs ~{fmt_amount(round(bond_shortfall_wood, 1))} WOOD{usd}, swapping…")
+    buffer_line = bond_buffer_line(p)
+    if buffer_line:
+        lines.append(buffer_line)
     lines += ["", "<i>Host: 🚀 Ship it sends this to a vote.</i>"]
     row = [InlineKeyboardButton("🚀 Ship it", callback_data=cb("shipit", p.id))]
     if requires_host_cosign:
         row.append(InlineKeyboardButton("✍️ Co-sign (host)", callback_data=cb("propose", p.id)))
     return "\n".join(lines), _kb([row])
+
+
+BOND_BUFFER_LINES = {
+    "swap": "🔁 bond buffer: the WOOD swap goes first in the bundle",
+    "insufficient-usdg": "⚠️ the proposer's USDG can't pay the WOOD swap: fund it before propose",
+    "premium-over-cap": "⚠️ the WOOD swap is priced over the feed cap: host, accept it on the signing page or fund WOOD",
+    "unavailable": "⚠️ the bond-buffer swap is unavailable: fund the proposer with WOOD",
+    "no-route": "⚠️ no USDG→WOOD route: fund the proposer with WOOD",
+}
+
+
+def bond_buffer_line(p: ProposalView) -> str:
+    """The propose-portfolio `bondBuffer.status` (sherwood #740) as one card line ("" when nothing to say)."""
+    line = BOND_BUFFER_LINES.get((p.bond_buffer_status or "").lower(), "")
+    if line and p.bond_buffer_note:
+        line += f" ({_short(p.bond_buffer_note, 120)})"
+    return line
 
 
 def render_join_prompt(f: FundView, *, base_url: str | None = None) -> tuple[str, InlineKeyboardMarkup]:

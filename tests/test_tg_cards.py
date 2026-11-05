@@ -317,3 +317,11 @@ def test_review_vetoed_cooldown_and_onchain_id_rendering():
     text, _ = render_fund_card(fund(cooldown_until=NOW + 3600), now=NOW)
     hhmm = datetime.fromtimestamp(NOW + 3600, tz=timezone.utc).strftime("%H:%M")
     assert f"⏳ Next proposal possible at {hhmm} UTC" in text
+
+
+def test_draft_card_shows_the_bond_buffer_status():
+    d = proposal(id="d8", status="draft", bond_buffer_status="premium-over-cap", bond_buffer_note="+3.40% over the WOOD/USD feed")
+    text, _ = render_draft_card(d, fund=fund(), people=PEOPLE)
+    assert "priced over the feed cap" in text and "+3.40% over the WOOD/USD feed" in text
+    ok, _ = render_draft_card(proposal(id="d9", status="draft", bond_buffer_status="covered"), fund=fund())
+    assert "bond buffer" not in ok and "⚠️" not in ok

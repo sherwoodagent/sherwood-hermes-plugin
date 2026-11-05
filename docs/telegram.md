@@ -263,6 +263,16 @@ ${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<host_telegram
   (propose-portfolio with the host as `proposer`, pre-GA while
   `ownerOnlyProposals` is on). The plugin builds the body; it never signs or
   sends.
+- **Bond buffer (sherwood #740).** A `propose-portfolio` body carries the
+  plugin's intent: `bondSwapMaxPremiumBps: 300` (the WOOD swap pays at most 3%
+  over the feed), `bondSwapDeadlineSeconds: 600`, and, when the agent quoted
+  first, `quoteUsdPerWood` (the LEDGER price it got back, verbatim, never
+  `feedUsdPerWood`) with `maxDriftBps: 500`. It never sets
+  `allowBondSwapPremium`. On a 409 the page shows `data`: a premium over the
+  cap (`premiumOverCap`, `premiumBps`) lets the host accept it by re-preparing
+  with `allowBondSwapPremium: true`; a drift (`requote: true`) means the agent
+  re-quotes. The draft card shows `bondBuffer.status` and the note the agent
+  recorded.
 - URLs over 2048 characters are not issued (`links.SIGN_URL_MAX`); a
   portfolio body is a few hundred.
 - `links.build_sign_link` / `sign_link_message` / `decode_sign_body` are the
