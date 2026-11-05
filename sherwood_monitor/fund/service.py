@@ -34,7 +34,7 @@ from .models import (
 )
 from .rules import RuleViolation, require
 from .store import FundNotFound, FundStateBackend, FundStoreError, validate_fund_name
-from .txbuilder import DEFAULT_TX_BUILDER_URL, TxBuilderError, build_propose_body
+from .txbuilder import DEFAULT_TX_BUILDER_URL, TxBuilderError, build_propose_body, build_propose_portfolio_body
 
 
 _log = logging.getLogger(__name__)
@@ -451,7 +451,11 @@ class FundService:
             state.proposals.append(record)
             state.claims = [c for c in state.claims if c.agent.lower() != proposer.name.lower()]
             bond = _bond_section(state, proposer, max_capital, bond_quote_wood, wood_balance)
-            return DraftResult(record, self.propose_payload(state.fund, record, strategy=strategy, metadata_uri=metadata_uri), bond)
+            if is_portfolio(record):
+                prepare = self.portfolio_payload(state.fund, record, proposer=proposer.address, metadata_uri=metadata_uri)
+            else:
+                prepare = self.propose_payload(state.fund, record, strategy=strategy, metadata_uri=metadata_uri)
+            return DraftResult(record, prepare, bond)
 
         result = self.backend.update(fund, mutate)
         self._emit(FundEvent(EV_DRAFTED, fund, proposal=result.proposal, data={"bond": result.bond, "prepare": result.prepare}))
@@ -483,6 +487,43 @@ class FundService:
         record = self.backend.update(fund, mutate)
         self._emit(FundEvent(EV_SHIPPED, fund, proposal=record))
         return record
+
+    def portfolio_payload(
+        self, fund: Fund, record: ProposalRecord, *, proposer: str, metadata_uri: str = ""
+    ) -> dict[str, Any]:
+        """The prepare/propose-portfolio request for a draft whose legs are symbol + weight.
+
+        The route returns the txs in order bond approve -> clone -> propose plus
+        bondQuoteWood / bondShortfallWood and an empty `prelude` slot for the
+        USDG->WOOD buffer swap. `proposer` signs every tx: the host's wallet
+        pre-GA (ownerOnlyProposals), the agent's own wallet at GA.
+        """
+        missing: list[str] = []
+        body: dict[str, Any] = {}
+        try:
+            body = build_propose_portfolio_body(
+                vault=fund.vault,
+                proposer=proposer,
+                legs=[{"symbol": leg.symbol, "weightBps": leg.weight_bps} for leg in record.legs if leg.phase == "execute" and leg.symbol],
+                max_capital=record.max_capital,
+                strategy_duration=record.strategy_duration or "",
+                metadata_uri=metadata_uri or None,
+                name=None if metadata_uri else f"{fund.name}: {record.topic or record.thesis[:40]}",
+                description=None if metadata_uri else record.thesis,
+                max_drawdown_bps=record.max_drawdown_bps,
+                chain_id=fund.chain_id,
+            )
+        except TxBuilderError as exc:
+            missing.append(exc.message)
+        if record.strategy_duration <= 0:
+            missing.append("strategyDuration: seconds the position stays open")
+        return {
+            "route": "propose-portfolio",
+            "url": f"{self.tx_builder_url}/prepare/propose-portfolio",
+            "ready": not missing,
+            "missing": missing,
+            "body": body,
+        }
 
     def propose_payload(self, fund: Fund, record: ProposalRecord, *, strategy: str = "", metadata_uri: str = "") -> dict[str, Any]:
         """The prepare/propose request this draft maps to, with what is still missing."""
@@ -619,10 +660,15 @@ class FundService:
     def apply_chain_card(self, fund: str, card: dict[str, Any]) -> int:
         """Apply a tx-builder `GET funds/<vault>/tg-card` read (its `data`). Returns proposals updated.
 
-        Matches proposals by on-chain id. Reads `againstBps`, `voteEnd`,
-        `reviewEnd` and, when the read exposes it, the guardian Approve
-        coverage (`guardianCoverage` / `approveCoverage` / `coverage`), plus
-        the governor's `cooldownPeriod` and `vetoThresholdBps`.
+        The chain is the source of truth where it speaks (docs/tx-builder.md,
+        sherwood PR #739): per proposal (matched by on-chain id) `againstBps`,
+        `voteEnd`, `reviewEnd` and `review.coverage.kind` (none / partial /
+        full / unpriced: the guardian Approve coverage execute needs, about 35%
+        of maxCapital), and the chain `state` moves the local status forward
+        (GuardianReview -> review, Approved -> approved, Executed -> executed,
+        Rejected -> vetoed) when that is a legal step. `proposeGate.cooldownUntil`
+        replaces the local cooldown; `governor` gives cooldownPeriod and
+        vetoThresholdBps. Settles stay with `record_settle` (it needs the P&L).
         """
         data = card.get("data", card) if isinstance(card, dict) else {}
         props = data.get("proposals") or {}
@@ -632,12 +678,16 @@ class FundService:
         if isinstance(data.get("activeProposal"), dict):
             rows.append(data["activeProposal"])
         gov = data.get("governor") if isinstance(data.get("governor"), dict) else {}
-        if gov:
+        gate = data.get("proposeGate") if isinstance(data.get("proposeGate"), dict) else {}
+        if gov or gate:
             def fund_mutate(state: FundState) -> None:
                 if str(gov.get("cooldownPeriod") or "").isdigit():
                     state.fund.cooldown_period = int(gov["cooldownPeriod"])
                 if str(gov.get("vetoThresholdBps") or "").isdigit():
                     state.fund.veto_threshold_bps = int(gov["vetoThresholdBps"])
+                if "cooldownUntil" in gate:
+                    until = _opt_float(gate.get("cooldownUntil"))
+                    state.fund.cooldown_until = until
 
             self.backend.update(fund, fund_mutate)
         state = self.backend.load(fund)
@@ -654,17 +704,38 @@ class FundService:
             record = next((p for p in state.proposals if p.onchain_id == onchain), None)
             if record is None:
                 continue
-            coverage = next((row[k] for k in ("guardianCoverage", "approveCoverage", "coverage") if row.get(k) not in (None, "")), None)
             self.set_chain_state(
                 fund,
                 record.id,
                 against_bps=_opt_int(row.get("againstBps")),
                 voting_ends_at=_opt_float(row.get("voteEnd")),
                 review_ends_at=_opt_float(row.get("reviewEnd")),
-                guardian_coverage=None if coverage is None else (coverage if isinstance(coverage, str) else str(coverage)),
+                guardian_coverage=_coverage_kind(row),
             )
+            target = CHAIN_STATES.get(str(row.get("state") or ""))
+            current = self.backend.load(fund).proposal(record.id)
+            if target and current is not None and current.status != target and rules.check_transition(current.status, target).ok:
+                self._chain_status(fund, record.id, target)
             updated += 1
         return updated
+
+    def _chain_status(self, fund: str, proposal_id: str, status: str) -> None:
+        """Move a proposal to what the chain says (no actor check: the chain already decided)."""
+        now = self.clock()
+        old: dict[str, str] = {}
+
+        def mutate(state: FundState) -> ProposalRecord:
+            record = state.proposal(proposal_id)
+            assert record is not None
+            old["status"] = record.status
+            record.status = status
+            record.updated_at = now
+            if status == "vetoed":
+                _start_cooldown(state, now)
+            return record
+
+        record = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_STATUS, fund, proposal=record, old_status=old.get("status", ""), data={"source": "chain"}))
 
     def set_card_message(self, fund: str, proposal_id: str, card_message_id: str) -> ProposalRecord:
         """The Telegram lane records which message is the proposal's card."""
@@ -773,11 +844,40 @@ class FundService:
         return sorted(rows.values(), key=lambda x: (-x["pnl_bps"], -x["ideas"], str(x["tg_id"])))
 
 
+def is_portfolio(record: ProposalRecord) -> bool:
+    """Every execute leg names a symbol and a weight, and the weights make 100%."""
+    execute = [leg for leg in record.legs if leg.phase == "execute"]
+    return bool(execute) and all(leg.symbol and leg.weight_bps > 0 for leg in execute) and sum(
+        leg.weight_bps for leg in execute
+    ) == 10_000
+
+
 def _start_cooldown(state: FundState, now: float) -> None:
     """The governor blocks a new propose for `cooldown_period` after a veto or a settle."""
     until = now + max(0, int(state.fund.cooldown_period))
     if state.fund.cooldown_until is None or until > state.fund.cooldown_until:
         state.fund.cooldown_until = until
+
+
+# tg-card `proposals[].state` -> local status the chain read may move a proposal to.
+CHAIN_STATES = {
+    "GuardianReview": "review",
+    "Approved": "approved",
+    "Executed": "executed",
+    "Rejected": "vetoed",
+}
+
+
+def _coverage_kind(row: dict[str, Any]) -> str | None:
+    review = row.get("review") if isinstance(row.get("review"), dict) else {}
+    coverage = review.get("coverage")
+    if isinstance(coverage, dict) and coverage.get("kind"):
+        return str(coverage["kind"])
+    if isinstance(coverage, str) and coverage:
+        return coverage
+    if review.get("blocked"):
+        return "blocked"
+    return None
 
 
 def _opt_int(value: Any) -> int | None:

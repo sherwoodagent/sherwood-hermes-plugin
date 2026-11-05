@@ -102,18 +102,28 @@ def test_review_and_approved_sit_between_voting_and_executed(svc):
 def test_chain_card_sets_against_windows_and_guardian_coverage(svc, events):
     draft(svc)
     svc.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=2)
+    svc.set_proposal_status("alpha-fund", "alpha", "p-1", "voting")
+    # Shape from sherwood docs/tx-builder.md (PR #739): GET funds/<vault>/tg-card data.
     card = {"success": True, "data": {
         "governor": {"cooldownPeriod": "3600", "vetoThresholdBps": "2000"},
-        "proposals": {"open": [{"id": "2", "againstBps": 500, "voteEnd": "1800001800", "reviewEnd": "1800003600",
-                                 "guardianCoverage": "FULL"}],
+        "proposeGate": {"openProposals": 1, "cooldownUntil": "1800009000", "ready": False},
+        "proposals": {"open": [{"id": "2", "state": "GuardianReview", "againstBps": 500,
+                                 "voteEnd": "1800001800", "reviewEnd": "1800003600",
+                                 "review": {"opened": True, "resolved": False, "blocked": False,
+                                            "coverage": {"kind": "full", "deployBps": 10000}}}],
                       "recent": [{"id": "99", "againstBps": 9}]}}}
     assert svc.apply_chain_card("alpha-fund", card) == 1
-    p = svc.load("alpha-fund").proposal("2")
-    assert (p.against_bps, p.voting_ends_at, p.review_ends_at, p.guardian_coverage) == (500, 1800001800.0, 1800003600.0, "FULL")
-    assert events[-1].kind == "tally"
+    st = svc.load("alpha-fund")
+    p = st.proposal("2")
+    assert (p.against_bps, p.voting_ends_at, p.review_ends_at, p.guardian_coverage) == (500, 1800001800.0, 1800003600.0, "full")
+    assert p.status == "review" and st.fund.cooldown_until == 1800009000.0  # chain state + proposeGate win
+    assert [e.kind for e in events[-2:]] == ["tally", "status"] and events[-1].data == {"source": "chain"}
     n = len(events)
     svc.apply_chain_card("alpha-fund", card)  # nothing changed: no event
     assert len(events) == n
+    card["data"]["proposals"]["open"][0]["state"] = "Rejected"
+    svc.apply_chain_card("alpha-fund", card)
+    assert svc.load("alpha-fund").proposal("2").status == "vetoed"
 
 
 # -- (c) agent fee -------------------------------------------------------------------------
@@ -166,6 +176,10 @@ def test_request_draft_claims_the_topic_and_the_draft_inherits_idea_by(svc, even
     record = draft_after_claim(svc, claim.topic)
     assert record.idea_by == "77" and record.pitch_message_id == 41
     assert events[-1].kind == "drafted" and events[-1].proposal.id == record.id
+    prepare = events[-1].data["prepare"]  # symbol + weight legs map to prepare/propose-portfolio
+    assert prepare["route"] == "propose-portfolio" and prepare["ready"]
+    assert prepare["body"]["legs"] == [{"weightBps": 6000, "symbol": "NVDA"}, {"weightBps": 4000, "symbol": "AAPL"}]
+    assert prepare["body"]["maxCapital"] == "500000000" and prepare["body"]["proposer"] == "0x" + "33" * 20
     # The pitch claim reserves the topic like any claim.
     with pytest.raises(RuleViolation):
         svc.request_draft("alpha-fund", "alpha", idea_by="78", pitch="short $TSLA")

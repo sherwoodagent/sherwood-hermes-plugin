@@ -46,8 +46,9 @@ def client(rec):
 
 def test_routes_cover_the_fund_flow():
     assert set(ROUTES) == {
-        "create-fund", "approve-depositor", "register-agent", "deposit", "propose", "vote",
-        "execute", "settle", "redeem", "identity-mint", "governor-set",
+        "create-fund", "approve-depositor", "approve-depositors", "register-agent", "deposit", "propose",
+        "propose-portfolio", "vote", "execute", "settle", "redeem", "identity-mint", "governor-set",
+        "set-agent-fee", "owner-stake",
     }
 
 
@@ -168,3 +169,71 @@ def test_module_never_signs():
     src = Path(txbuilder.__file__).read_text()
     for forbidden in ("eth_keys", "eth_account", "sign_transaction", "private_key", "privateKey"):
         assert forbidden not in src
+
+
+# -- routes from sherwood PR #739 (docs/tx-builder.md) ---------------------------------------
+def test_new_routes_bodies():
+    rec = Recorder()
+    c = client(rec)
+    c.approve_depositors(vault=VAULT, depositors=[MEMBER_ADDR, GUEST_ADDR])
+    c.set_agent_fee(vault=VAULT, bps=500)
+    c.owner_stake(owner=HOST_ADDR)
+    urls = [u.rsplit("/", 1)[1] for u, _, _ in rec.calls]
+    assert urls == ["approve-depositors", "set-agent-fee", "owner-stake"]
+    assert rec.calls[0][1] == {"chainId": 4663, "vault": VAULT, "depositors": [MEMBER_ADDR, GUEST_ADDR]}
+    assert rec.calls[1][1] == {"chainId": 4663, "vault": VAULT, "bps": 500}
+    with pytest.raises(TxBuilderError):
+        c.set_agent_fee(vault=VAULT, bps=2600)
+    with pytest.raises(TxBuilderError):
+        c.approve_depositors(vault=VAULT, depositors=[])
+
+
+def test_propose_portfolio_body_and_response_extras():
+    body = txbuilder.build_propose_portfolio_body(
+        vault=VAULT, proposer=HOST_ADDR, legs=[{"symbol": "nvda", "weight_bps": 6000}, {"symbol": "AAPL", "weightBps": 4000}],
+        max_capital_decimal="10", strategy_duration="6h", metadata_uri="ipfs://bafkqaaa", bond_buffer_bps=500,
+    )
+    assert body == {
+        "chainId": 4663, "vault": VAULT, "proposer": HOST_ADDR,
+        "legs": [{"weightBps": 6000, "symbol": "NVDA"}, {"weightBps": 4000, "symbol": "AAPL"}],
+        "strategyDuration": "6h", "maxCapitalDecimal": "10", "metadataURI": "ipfs://bafkqaaa", "bondBufferBps": 500,
+    }
+    for bad in ({"legs": [{"symbol": "NVDA", "weightBps": 5000}]}, {"legs": [{"weightBps": 10000}]}, {"metadata_uri": None}):
+        args = dict(vault=VAULT, proposer=HOST_ADDR, legs=[{"symbol": "NVDA", "weightBps": 10000}],
+                    max_capital_decimal="10", strategy_duration=3600, metadata_uri="ipfs://x")
+        args.update(bad)
+        with pytest.raises(TxBuilderError):
+            txbuilder.build_propose_portfolio_body(**args)
+    env = ok_envelope("prepare.proposePortfolio", txs=[
+        {"to": "0xF8BC08092C06dB6148114DCf82AF881F1085f92b", "data": "0x095ea7b3", "value": "0x0", "chainId": 4663},
+        {"to": TARGET, "data": "0x26ab0cd4", "value": "0x0", "chainId": 4663},
+        {"to": TARGET, "data": "0x784ea274", "value": "0x0", "chainId": 4663},
+    ])
+    env["data"].update({"prelude": [], "clone": TARGET, "bondQuoteWood": "40812151661088890702",
+                        "bondApproveWood": "42852759244143335237", "bondShortfallWood": "0", "warnings": ["cooldown"]})
+    action = client(Recorder(env)).propose_portfolio(body)
+    assert [t.data[:10] for t in action.txs] == ["0x095ea7b3", "0x26ab0cd4", "0x784ea274"]  # approve -> clone -> propose
+    assert action.extra["bondShortfallWood"] == "0" and action.prelude == [] and action.warnings == ["cooldown"]
+
+
+def test_new_route_404_names_the_route_and_the_pr():
+    c = client(Recorder({"success": False, "error": "Not Found"}, status=404))
+    with pytest.raises(TxBuilderError) as exc:
+        c.approve_depositors(vault=VAULT, depositors=[MEMBER_ADDR])
+    assert exc.value.status == 404 and "prepare/approve-depositors" in str(exc.value) and "#739" in str(exc.value)
+
+
+def test_fund_card_read():
+    calls = []
+
+    def get_json(url, timeout):
+        calls.append(url)
+        return 200, {"success": True, "data": {"vault": VAULT, "proposeGate": {"ready": True}}}
+
+    c = TxBuilderClient("https://api.example/api/v1", get_json=get_json)
+    assert c.fund_card(VAULT, check=[MEMBER_ADDR])["proposeGate"] == {"ready": True}
+    assert calls == [f"https://api.example/api/v1/funds/{VAULT}/tg-card?chain=4663&check={MEMBER_ADDR}"]
+    missing = TxBuilderClient("https://api.example/api/v1", get_json=lambda u, t: (404, {}))
+    with pytest.raises(TxBuilderError) as exc:
+        missing.fund_card(VAULT)
+    assert "tg-card" in str(exc.value) and "not deployed" in str(exc.value)
