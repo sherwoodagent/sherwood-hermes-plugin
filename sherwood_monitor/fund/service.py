@@ -88,7 +88,8 @@ def pitch_topic(text: str) -> str:
             tickers.append(t.upper())
     if tickers:
         return " ".join(tickers[:4]) + " pitch"
-    words = re.sub(r"@\w+", " ", text or "").split()
+    words = re.sub(r"@\w+", " ", text or "")
+    words = re.sub(r"[^A-Za-z0-9 $#./+-]+", " ", words).split()  # topic text is data: no tags, no quotes
     return " ".join(words[:6])[:60] or "chat pitch"
 
 

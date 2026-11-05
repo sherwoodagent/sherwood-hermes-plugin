@@ -39,7 +39,8 @@ from tests.tg_fakes import FakeJobQueue, fake_bot  # noqa: E402
 
 CHAT = -100500
 HOST_TG = 900
-ALICE, BOB, CAROL = 10, 11, 12
+ALICE, BOB, CAROL, DAVE, EVE = 10, 11, 12, 13, 66
+GROUP = {HOST_TG, ALICE, BOB, CAROL, DAVE}  # who Hermes' Telegram allowlist admits (EVE is a stranger)
 SECRET = "integration-link-secret"
 BOT_ID = 999
 HOST_CFG = {
@@ -110,7 +111,8 @@ def connect(ctx: FakeCtx):
     added: list = []
     bot = fake_bot(BOT_ID)
     app = SimpleNamespace(bot=bot, job_queue=FakeJobQueue(), add_handler=lambda h, group=0: added.append((h, group)))
-    factory(app, MagicMock())
+    adapter = SimpleNamespace(_is_callback_user_authorized=lambda uid, **kw: int(uid) in GROUP)
+    factory(app, adapter)
     handlers = next(h.callback.__self__ for h, _ in added if hasattr(h.callback, "__self__"))
     assert isinstance(handlers, FundHandlers)
     rt = handlers.rt
@@ -223,7 +225,11 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
                             text="@sherwoodagentbot long $NVDA and $AAPL into earnings", mentions_bot=True)
     rt.note_person(CHAT, SimpleNamespace(tg_id=ALICE, username="alice", first_name=None, last_name=None, handle="@alice"))
     await rt.flow.on_message(pitch)
-    for user in (ALICE, BOB, CAROL):
+    for user in (ALICE, EVE, BOB, CAROL):  # the author and a stranger do not count
+        await rt.flow.on_reaction(ReactionChange(chat_id=CHAT, message_id=41, user_id=user, new=("🔥",)))
+    await settle_tasks()
+    assert ctx.call_tool("fund_status")["pitch_claims"] == []
+    for user in (DAVE,):
         await rt.flow.on_reaction(ReactionChange(chat_id=CHAT, message_id=41, user_id=user, new=("🔥",)))
     await settle_tasks()
     claims = ctx.call_tool("fund_status")["pitch_claims"]
@@ -231,7 +237,15 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
 
     # The agent's next turn sees both the pitch context and the draft request, through ONE hook.
     (hook,) = ctx.hooks["pre_llm_call"]
-    ctx_out = await hook(platform="telegram", user_message="@sherwoodagentbot long $NVDA and $AAPL into earnings")
+    said = "@sherwoodagentbot long $NVDA and $AAPL into earnings"
+    # Bound to the chat and sender: a CLI/cron turn, another chat or another member's turn gets nothing.
+    def fund_blocks(out):
+        return "sherwood-fund" in (out or {}).get("context", "")
+
+    assert not fund_blocks(await hook(user_message=said))  # (drains the monitor's own warnings only)
+    assert not fund_blocks(await hook(platform="telegram", chat_id="-100999", sender_id=str(ALICE), user_message=said))
+    assert not fund_blocks(await hook(platform="telegram", chat_id=str(CHAT), sender_id=str(EVE), user_message=said))
+    ctx_out = await hook(platform="telegram", chat_id=str(CHAT), sender_id=str(ALICE), user_message=said)
     assert "<sherwood-fund-pitch>" in ctx_out["context"]
     assert "<sherwood-fund-draft-requested>" in ctx_out["context"] and 'topic="NVDA AAPL pitch"' in ctx_out["context"]
 

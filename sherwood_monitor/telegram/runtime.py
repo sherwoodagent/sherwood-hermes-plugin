@@ -67,6 +67,8 @@ class TelegramRuntime:
         self.settings = settings or TelegramSettings.from_env()
         self.clock = clock
         self._secret = secret
+        # (chat_id, user_id) -> authorized, from Hermes' Telegram adapter (set in handler.wire).
+        self.sender_check: Callable[[int, int], Any] | None = None
         self.flow = PitchFlow(
             host_for_chat=self.host_for_chat,
             on_draft_requested=self._on_draft_requested,
@@ -74,6 +76,7 @@ class TelegramRuntime:
             fire_emoji=self.settings.fire_emoji,
             pitch_ttl_s=self.settings.pitch_ttl_s,
             clock=clock,
+            authorized=self.user_authorized,
         )
         self.app: Any = None
         self.bot: Any = None
@@ -147,6 +150,26 @@ class TelegramRuntime:
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     # -- fund-state helpers --------------------------------------------------
+
+    async def user_authorized(self, chat_id: int, user_id: int) -> bool:
+        """May this group user pitch or 🔥? Hermes' own allowlist decides (fail closed).
+
+        With the adapter's check wired (``handler.wire``) it is the same verdict
+        Hermes applies to inline-button callers; without it, only the fund's host
+        and approved members count.
+        """
+        if self.sender_check is not None:
+            try:
+                return bool(await maybe_await(self.sender_check(int(chat_id), int(user_id))))
+            except Exception as exc:
+                _log.warning("Hermes sender check failed for %s in %s: %s", user_id, chat_id, exc)
+                return False
+        fund = await maybe_await(self.gateway.fund_for_chat(chat_id))
+        if fund is None:
+            return False
+        if fund.host_tg_id is not None and int(fund.host_tg_id) == int(user_id):
+            return True
+        return any(int(m.tg_id) == int(user_id) for m in fund.members)
 
     async def host_for_chat(self, chat_id: int) -> int | None:
         fund = await maybe_await(self.gateway.fund_for_chat(chat_id))

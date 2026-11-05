@@ -579,9 +579,18 @@ def build_handlers(runtime: TelegramRuntime) -> list[tuple[BaseHandler, int]]:
     ]
 
 
-def wire(application: Any, runtime: TelegramRuntime) -> list[tuple[BaseHandler, int]]:
-    """Attach the runtime and register every handler on the PTB Application."""
+def wire(application: Any, runtime: TelegramRuntime, adapter: Any = None) -> list[tuple[BaseHandler, int]]:
+    """Attach the runtime and register every handler on the PTB Application.
+
+    Our observers run ahead of Hermes' core handlers, so Hermes' allowlist has
+    not judged a group message yet when the pitch flow sees it. ``adapter`` is
+    Hermes' Telegram adapter (the factory's second argument); its inline-button
+    authorization check (same chain as a message) gates who may pitch or 🔥.
+    """
     runtime.attach(application)
+    check = getattr(adapter, "_is_callback_user_authorized", None) if adapter is not None else None
+    if callable(check):
+        runtime.sender_check = lambda chat_id, user_id: check(str(user_id), chat_id=str(chat_id), chat_type="group")
     handlers = build_handlers(runtime)
     for handler, group in handlers:
         application.add_handler(handler, group=group)

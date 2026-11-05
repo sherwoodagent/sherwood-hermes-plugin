@@ -1,6 +1,7 @@
 """Handler wiring, callback routing, host checks, personal links, reactions."""
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -56,6 +57,7 @@ def make_runtime(gw=None, **settings_kw):
     rt = TelegramRuntime(gw, settings, clock=Clock(), secret=lambda: SECRET)
     bot = fake_bot(BOT_ID)
     rt.attach(SimpleNamespace(bot=bot, job_queue=FakeJobQueue()))
+    rt.sender_check = lambda chat_id, user_id: True  # Hermes' allowlist admits the group (chat-scoped grant)
     return rt, gw, bot
 
 
@@ -427,7 +429,8 @@ async def test_pitch_then_three_fire_reactions_request_a_draft():
     assert (ev.idea_by, ev.source_message_id, ev.chat_id) == (ALICE, 100, CHAT)
     assert ev.text == "@sherwoodagentbot long $NVDA into earnings"
     hook = rt.flow.make_pre_llm_call_hook()
-    assert "<sherwood-fund-pitch>" in hook(platform="telegram", user_message="long $NVDA into earnings")["context"]
+    out = hook(platform="telegram", chat_id=str(CHAT), sender_id=str(ALICE), user_message="long $NVDA into earnings")
+    assert "<sherwood-fund-pitch>" in out["context"]
 
 
 async def test_host_ship_it_reply_to_riff_requests_a_draft():
@@ -464,3 +467,28 @@ async def test_observer_errors_are_swallowed():
     rt.flow.on_message = AsyncMock(side_effect=RuntimeError("boom"))
     pitch = ptb_message(100, ALICE, "@sherwoodagentbot long $NVDA", entities=[MessageEntity(MessageEntity.MENTION, 0, 17)])
     assert await FundHandlers(rt).on_group_message(SimpleNamespace(message=pitch), SimpleNamespace(bot=bot)) is None
+
+
+async def test_without_hermes_authz_only_members_and_host_can_pitch():
+    """Review #28 F1(d): our observers run before Hermes' allowlist, so the flow checks the sender itself."""
+    rt, gw, bot = make_runtime()
+    rt.sender_check = None  # no adapter check wired: fall back to the fund's host + approved members
+    h = FundHandlers(rt)
+    ctx = SimpleNamespace(bot=bot)
+    stranger = ptb_message(
+        100, ALICE, "@sherwoodagentbot long $NVDA into earnings",
+        entities=[MessageEntity(MessageEntity.MENTION, 0, 17)], username="alice",
+    )
+    await h.on_group_message(SimpleNamespace(message=stranger), ctx)
+    assert rt.flow.open_pitches(CHAT) == []
+    assert await rt.user_authorized(CHAT, HOST)
+
+
+def test_wire_uses_the_adapter_sender_check():
+    app = ApplicationBuilder().token("123:TEST").build()
+    rt = TelegramRuntime(FakeGateway(), TelegramSettings(), secret=lambda: SECRET)
+    seen = []
+    adapter = SimpleNamespace(_is_callback_user_authorized=lambda uid, **kw: seen.append((uid, kw)) or uid == "10")
+    wire(app, rt, adapter)
+    assert asyncio.run(rt.user_authorized(CHAT, 10)) and not asyncio.run(rt.user_authorized(CHAT, 11))
+    assert seen[0] == ("10", {"chat_id": str(CHAT), "chat_type": "group"})
