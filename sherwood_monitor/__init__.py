@@ -2,21 +2,27 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any
 
+from .bgloop import BackgroundLoop
 from .cli import register_cli
 from .config import load_config
 from .event_buffer import EventBuffer
 from .fund import make_fund_guard, register_fund
+from .fund.secrets import SHERWOOD_AGENT_ADDRESS, SHERWOOD_PRIVATE_KEY, get_secret
+from .key_derivation import normalize_address, normalize_private_key
 from .hooks import (
     make_post_tool_call_hook,
     make_pre_llm_call_hook,
     make_pre_tool_call_hook,
+    make_session_finalize_hook,
     make_session_hooks,
 )
 from .preflight import (
@@ -36,6 +42,10 @@ _log = logging.getLogger(__name__)
 
 TOOLSET = "sherwood-monitor"
 
+# The last register() call's runtime (tests and debugging): the background loop,
+# the supervisor, the sidecar (or None), and the teardown callable.
+_RUNTIME: dict[str, Any] = {}
+
 
 def _plugin_root() -> Path:
     # Computed lazily so tests can patch Path.home() before calling register().
@@ -47,19 +57,33 @@ def _sidecar_dir() -> Path:
     return Path(__file__).parent.parent / "xmtp_sidecar"
 
 
-def _read_sherwood_private_key(home: Path) -> str | None:
-    """Read privateKey from ~/.sherwood/config.json. Returns None if missing."""
-    config_path = home / ".sherwood" / "config.json"
-    if not config_path.exists():
+def _monitor_private_key() -> str | None:
+    """The monitor wallet's key, from the declared secret ``SHERWOOD_PRIVATE_KEY``.
+
+    Read through Hermes' secret scope only; the plugin never reads the Sherwood
+    CLI's config file. Unset or malformed -> ``None`` and the XMTP sidecar is
+    not started. The value is never logged.
+    """
+    raw = get_secret(SHERWOOD_PRIVATE_KEY)
+    if not raw:
+        _log.info("XMTP sidecar not started: %s is not set", SHERWOOD_PRIVATE_KEY)
         return None
-    try:
-        data = json.loads(config_path.read_text())
-        key = data.get("privateKey") or data.get("private_key")
-        if key and isinstance(key, str):
-            return key
-    except Exception as exc:
-        _log.warning("failed to read sherwood config.json: %s", exc)
-    return None
+    key = normalize_private_key(raw)
+    if key is None:
+        _log.warning("XMTP sidecar not started: %s is not a 32-byte hex key", SHERWOOD_PRIVATE_KEY)
+    return key
+
+
+def _log_start_failure(subdomain: str) -> Any:
+    def _done(fut: Any) -> None:
+        try:
+            exc = fut.exception()
+        except BaseException:  # cancelled at shutdown
+            return
+        if exc is not None:
+            _log.warning("auto-start failed for %s: %s", subdomain, exc)
+
+    return _done
 
 
 def _iso_from_ns(sent_at_ns: Any) -> str:
@@ -81,11 +105,30 @@ def register(ctx: Any) -> None:
 
     buffer = EventBuffer()
 
+    # The monitor wallet (declared secrets only; never the Sherwood CLI's config).
+    private_key = _monitor_private_key()
+
     # Preflight: warn if CLI missing/misconfigured, but continue registering.
-    # Also checks synchronously whether the sidecar is built.
-    pre = run_preflight(cfg.sherwood_bin, sidecar_dir=sidecar_dir, home=home)
+    # Also checks synchronously whether the sidecar is built; that warning is
+    # shown only when XMTP is configured (SHERWOOD_PRIVATE_KEY set).
+    pre = run_preflight(
+        cfg.sherwood_bin, sidecar_dir=sidecar_dir, home=home, xmtp_configured=private_key is not None
+    )
     for warn in pre.warnings:
         buffer.push(f"<sherwood-monitor-warning>\n{warn}\n</sherwood-monitor-warning>")
+
+    # Upgrades from 0.6.0 are not prompted for new requires_env entries, and
+    # 0.7.0 no longer reads the CLI's config: say once that the gas watchdog
+    # (and XMTP) are off until the monitor wallet is set.
+    if cfg.funds and private_key is None and normalize_address(get_secret(SHERWOOD_AGENT_ADDRESS)) is None:
+        buffer.push(
+            "<sherwood-monitor-warning>\n"
+            f"The gas watchdog is off: set {SHERWOOD_AGENT_ADDRESS} (the monitor wallet's 0x address) "
+            f"in the Hermes profile .env, or {SHERWOOD_PRIVATE_KEY} to also enable XMTP for funds whose "
+            "XMTP group is in Base's ENS record. Since 0.7.0 the plugin does not read the Sherwood "
+            "CLI's ~/.sherwood/config.json. Never paste a key into chat."
+            "\n</sherwood-monitor-warning>"
+        )
 
     # ------------------------------------------------------------------
     # Sidecar setup — all three paths converge on effective_post_fn
@@ -99,15 +142,13 @@ def register(ctx: Any) -> None:
         _log.debug("XMTP post skipped (no sidecar configured) for %s", subdomain)
 
     effective_post_fn = _noop_post
+    # Filled when the sidecar branch below runs; ensure_streams() starts it lazily.
+    sidecar_state_ref: list[dict[str, Any]] = []
+    sidecar_start_ref: list[Any] = []
 
-    private_key = _read_sherwood_private_key(home)
     if private_key is None:
-        buffer.push(
-            "<sherwood-monitor-warning>\n"
-            "XMTP disabled: ~/.sherwood/config.json not found. "
-            "Run `sherwood config set` to enable."
-            "\n</sherwood-monitor-warning>"
-        )
+        # XMTP is optional: one log line (in _monitor_private_key); no sidecar warning.
+        pass
     elif not pre.sidecar_built:
         # Warning already injected by run_preflight; skip spawn, keep _noop_post
         pass
@@ -121,17 +162,11 @@ def register(ctx: Any) -> None:
             db_path=db_path,
         )
 
-        # Kick off sidecar.start() as a background task. register() is sync so
-        # we get the current running loop (Hermes runs inside an async runtime)
-        # and schedule the start task on it. The post_fn wrapper awaits the task
-        # lazily so the first XMTP post blocks until the sidecar is ready.
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        sidecar_state: dict[str, Any] = {"started": False, "failed": False}
+        # The sidecar runs on the plugin's own loop (bgloop): Hermes' loops do not
+        # run between turns. It starts with the streams, at the first turn of
+        # the process (register() also runs for every `hermes` CLI command, which
+        # must not spawn node). The post_fn wrapper waits for it lazily.
+        sidecar_state: dict[str, Any] = {"started": False, "failed": False, "future": None}
 
         # router reference captured by closure below; defined after sidecar wiring
         # We use a holder so the closure sees the final router object.
@@ -176,6 +211,11 @@ def register(ctx: Any) -> None:
                     lines.append(f"  sherwood chat {sub} add {sidecar_address}")
                 lines.append("")
                 lines.append("Run these as the fund creator.")
+                lines.append(
+                    "XMTP streaming works only for funds whose XMTP group id is in their ENS "
+                    "record on Base. Robinhood Chain funds have no such record, so adding the "
+                    "sidecar will not help there; their on-chain events still arrive."
+                )
                 buffer.push(
                     "<sherwood-monitor-warning>\n"
                     + "\n".join(lines)
@@ -223,15 +263,19 @@ def register(ctx: Any) -> None:
                 except Exception as exc:
                     _log.warning("stream_start failed for %s: %s", sub, exc)
 
-        sidecar_start_task = loop.create_task(_start_sidecar_and_wire())
+        sidecar_start_fn = _start_sidecar_and_wire
+        sidecar_state_ref.append(sidecar_state)
+        sidecar_start_ref.append(sidecar_start_fn)
 
         async def _async_post(subdomain: str, markdown: str) -> None:
             """Post summary via sidecar; waits for sidecar to be ready on first call."""
+            future = sidecar_state["future"]
+            if future is None:
+                _log.debug("XMTP post skipped (sidecar not started) for %s", subdomain)
+                return
             if not sidecar_state["started"] and not sidecar_state["failed"]:
                 try:
-                    await asyncio.wait_for(
-                        asyncio.shield(sidecar_start_task), timeout=30.0
-                    )
+                    await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), timeout=30.0)
                 except (asyncio.TimeoutError, Exception) as exc:
                     _log.warning("waiting for sidecar start timed out: %s", exc)
             if sidecar_state["failed"] or sidecar is None:
@@ -246,6 +290,57 @@ def register(ctx: Any) -> None:
     # ------------------------------------------------------------------
     router = EventRouter(buffer=buffer, cfg=cfg, post_fn=effective_post_fn)
     supervisor = Supervisor(cfg=cfg, router=router)
+    # A Hermes killed without stopping its streams leaves a status file listing
+    # them; blank it so the stream watchdog does not cry "NO SUPERVISOR" forever.
+    supervisor.clear_stale_status()
+
+    # Streams and the sidecar live on the plugin's own loop for the life of this
+    # Hermes process (Hermes fires on_session_end after every turn, so nothing
+    # stops them there). They start at the first turn when auto_start is true,
+    # or when the agent calls sherwood_monitor_start.
+    bg = BackgroundLoop()
+    lifecycle = {"streams_started": False, "closed": False}
+    lifecycle_lock = threading.Lock()
+
+    def ensure_streams() -> None:
+        """Start the sidecar and the auto_start streams once per process (non-blocking)."""
+        with lifecycle_lock:
+            if lifecycle["streams_started"] or lifecycle["closed"]:
+                return
+            lifecycle["streams_started"] = True
+        if sidecar is not None and sidecar_state_ref and sidecar_state_ref[0]["future"] is None:
+            sidecar_state_ref[0]["future"] = bg.submit(sidecar_start_ref[0]())
+        if cfg.auto_start:
+            for sub in cfg.funds:
+                bg.submit(supervisor.start(sub)).add_done_callback(_log_start_failure(sub))
+
+    def teardown() -> None:
+        """Stop every stream and the sidecar, then the loop (process exit; idempotent)."""
+        with lifecycle_lock:
+            if lifecycle["closed"]:
+                return
+            lifecycle["closed"] = True
+        if bg.closed or not bg.started:
+            # Nothing ever ran on the plugin loop (e.g. a short `hermes` CLI command).
+            bg.close()
+            return
+
+        async def _stop() -> None:
+            await supervisor.stop_all()
+            if sidecar is not None:
+                try:
+                    await sidecar.shutdown()
+                except Exception as exc:
+                    _log.warning("sidecar shutdown error: %s", exc)
+
+        try:
+            bg.run(_stop(), timeout=15)
+        except Exception as exc:  # loop wedged or already gone: kill the children directly
+            _log.warning("monitor teardown fell back to SIGTERM: %s", type(exc).__name__)
+            supervisor.kill_all_sync()
+        bg.close()
+
+    atexit.register(teardown)
 
     # Give the background task closure a reference to the final router
     if "router_holder" in dir():  # only defined when sidecar branch was taken
@@ -256,7 +351,7 @@ def register(ctx: Any) -> None:
 
     # Hermes' register_tool needs a toolset, and only awaits handlers registered
     # with is_async=True; these five handlers are coroutines.
-    tool_handlers = make_handlers(supervisor, cfg)
+    tool_handlers = make_handlers(supervisor, cfg, runner=bg.call)
     for schema in (START, STOP, STATUS, EXPOSURE, CRON_TICK):
         ctx.register_tool(
             name=schema["name"],
@@ -266,21 +361,14 @@ def register(ctx: Any) -> None:
             is_async=True,
         )
 
-    session_hooks = make_session_hooks(cfg=cfg, buffer=buffer, supervisor=supervisor)
+    session_hooks = make_session_hooks(
+        cfg=cfg, buffer=buffer, supervisor=supervisor, ensure_streams=ensure_streams
+    )
     ctx.register_hook("on_session_start", session_hooks["on_session_start"])
-
-    # Teardown: stop supervisor AND sidecar
-    _captured_sidecar = sidecar
-
-    async def _on_session_end(**_: Any) -> None:
-        await supervisor.stop_all()
-        if _captured_sidecar is not None:
-            try:
-                await _captured_sidecar.shutdown()
-            except Exception as exc:
-                _log.warning("sidecar shutdown error: %s", exc)
-
-    ctx.register_hook("on_session_end", _on_session_end)
+    # Teardown at Hermes shutdown only: on_session_finalize with reason
+    # "shutdown" (CLI quit, gateway shutdown), atexit as the fallback. Not
+    # on_session_end, which Hermes 0.22 fires at the end of every turn.
+    ctx.register_hook("on_session_finalize", make_session_finalize_hook(teardown))
 
     # Group-chat fund (host + join modes): tools, slash commands, skills, and
     # the draft guard that rides on the pre_tool_call hook below. A failure
@@ -319,9 +407,14 @@ def register(ctx: Any) -> None:
         make_pre_tool_call_hook(state_fetcher=state_fetcher, fund_guard=fund_guard),
     )
     ctx.register_hook("post_tool_call", make_post_tool_call_hook(memory_writer=stderr_memory_writer, buffer=buffer))
-    ctx.register_hook("pre_llm_call", make_pre_llm_call_hook(buffer, context_sources))
+    ctx.register_hook("pre_llm_call", make_pre_llm_call_hook(buffer, context_sources, before=ensure_streams))
 
     register_cli(ctx, supervisor, fund_rt)
+
+    _RUNTIME.clear()
+    _RUNTIME.update(
+        {"bg": bg, "supervisor": supervisor, "sidecar": sidecar, "teardown": teardown, "buffer": buffer}
+    )
 
     # register_skill takes the SKILL.md path, not the directory.
     skill_path = Path(__file__).parent.parent / "skills" / "sherwood-agent" / "SKILL.md"

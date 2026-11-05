@@ -83,7 +83,7 @@ def test_registers_against_the_real_hermes_signatures(tmp_path, monkeypatch):
     assert set(ctx.commands) == {"fund", "join-fund", "fund-approve", "fund-agents", "leaderboard"}
     assert set(ctx.skills) == {"sherwood-agent", "fund-pitch", "fund-propose", "fund-settle"}
     assert all(p.name == "SKILL.md" for p in ctx.skills.values())
-    assert set(ctx.hooks) == {"on_session_start", "on_session_end", "pre_tool_call", "post_tool_call", "pre_llm_call"}
+    assert set(ctx.hooks) == {"on_session_start", "on_session_finalize", "pre_tool_call", "post_tool_call", "pre_llm_call"}
 
 
 def test_fund_skills_stay_short():
@@ -96,7 +96,8 @@ def test_hooks_accept_hermes_kwargs(tmp_path, monkeypatch):
     ctx = boot(tmp_path, monkeypatch)
     kw = {"session_id": "s1", "platform": "telegram", "task_id": "t1"}
     asyncio.run(ctx.fire("on_session_start", **kw))
-    asyncio.run(ctx.fire("on_session_end", **kw))
+    asyncio.run(ctx.fire("on_session_end", **kw))  # not registered: a turn's end stops nothing
+    asyncio.run(ctx.fire("on_session_finalize", reason="session_boundary", **kw))
     asyncio.run(ctx.fire("pre_llm_call", **kw))
     asyncio.run(ctx.fire("post_tool_call", tool_name="terminal", args={"command": "ls"}, result="", **kw))
 
@@ -112,11 +113,18 @@ def test_manifest_v2_matches_registrations(tmp_path, monkeypatch):
     assert set(manifest["provides_hooks"]) == set(ctx.hooks)
     assert manifest.get("capabilities", []) == []
     env = {e["name"]: e for e in manifest["requires_env"]}
-    assert set(env) == {"TELEGRAM_BOT_TOKEN", "PRIVY_APP_ID", "PRIVY_APP_SECRET", "SHERWOOD_TG_LINK_SECRET",
-                        "SHERWOOD_TG_API_TOKEN", "TX_BUILDER_URL", "APP_BASE_URL"}
-    assert {n for n, e in env.items() if e["secret"]} == {"TELEGRAM_BOT_TOKEN", "PRIVY_APP_SECRET", "SHERWOOD_TG_LINK_SECRET",
-                                                          "SHERWOOD_TG_API_TOKEN"}
+    # Every declared env var is read somewhere (no Privy keys). The monitor wallet comes from
+    # SHERWOOD_PRIVATE_KEY / SHERWOOD_AGENT_ADDRESS, never from the Sherwood CLI's config file.
+    assert set(env) == {"TELEGRAM_BOT_TOKEN", "SHERWOOD_TG_LINK_SECRET", "SHERWOOD_TG_API_TOKEN",
+                        "SHERWOOD_PRIVATE_KEY", "SHERWOOD_AGENT_ADDRESS"}
+    assert {n for n, e in env.items() if e["secret"]} == {"TELEGRAM_BOT_TOKEN", "SHERWOOD_TG_LINK_SECRET",
+                                                          "SHERWOOD_TG_API_TOKEN", "SHERWOOD_PRIVATE_KEY"}
     assert all(e.get("description") and e.get("url") for e in env.values())
+    # URL overrides have defaults (config_schema), so they sit in optional_env: no install prompt.
+    optional = {e["name"]: e for e in manifest["optional_env"]}
+    assert set(optional) == {"TX_BUILDER_URL", "APP_BASE_URL"}
+    assert not any(e["secret"] for e in optional.values())
+    assert {"tx_builder_url", "app_base_url"} <= set(manifest["config_schema"])
     settings_keys = {f.name for f in fields(FundSettings)}
     assert set(manifest["config_schema"]) <= settings_keys
     for key, spec in manifest["config_schema"].items():

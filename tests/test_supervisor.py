@@ -241,3 +241,34 @@ async def test_stop_all_cleans_up_every_state(monkeypatch):
     await sup.stop_all()
     for p in procs:
         p.terminate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_writes_stream_status_for_the_watchdog(tmp_path):
+    """start / exit / stop each leave a status file the cron watchdog can read (no secrets in it)."""
+    import os
+
+    from sherwood_monitor import supervisor as sup_mod
+
+    status_path = sup_mod.default_status_path()
+    cfg = Config(sherwood_bin="sherwood")
+    router = MagicMock()
+    router.route = AsyncMock()
+    router.events_seen = MagicMock(return_value=1)
+    router.last_event_at = MagicMock(return_value=1700000000.0)
+    line = json.dumps({"source": "chain", "type": "VoteCast", "block": 1, "tx": "0x", "args": {}})
+    proc = _fake_proc([line])
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        sup = Supervisor(cfg=cfg, router=router)
+        await sup.start("alpha")
+        await asyncio.wait_for(sup.wait_until_exit("alpha"), timeout=2)
+        data = json.loads(status_path.read_text())
+        assert data["host_pid"] == os.getpid()
+        row = data["funds"][0]
+        assert row["subdomain"] == "alpha" and row["last_event_at"] == 1700000000.0
+        assert "stderr_tail" not in row
+        await sup.stop("alpha")
+
+    data = json.loads(status_path.read_text())
+    assert data["funds"] == []  # a clean stop is not a dead stream

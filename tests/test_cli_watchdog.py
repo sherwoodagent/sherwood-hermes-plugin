@@ -21,7 +21,10 @@ def _redirect_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(wd, "PLUGIN_ROOT", tmp_path)
     monkeypatch.setattr(wd, "CONFIG_PATH", tmp_path / "config.yaml")
     monkeypatch.setattr(wd, "WATCHDOG_STATE_PATH", tmp_path / "watchdog_state.json")
-    monkeypatch.setattr(wd, "SHERWOOD_CONFIG_PATH", tmp_path / "sherwood_config.json")
+    monkeypatch.setattr(wd, "STREAM_STATUS_PATH", tmp_path / "stream_status.json")
+    # The monitor wallet comes from env only; clear it so tests never see a real one.
+    monkeypatch.delenv("SHERWOOD_PRIVATE_KEY", raising=False)
+    monkeypatch.delenv("SHERWOOD_AGENT_ADDRESS", raising=False)
 
 
 def _cfg(**overrides) -> Config:
@@ -179,73 +182,120 @@ async def test_aum_silent_on_aggregate_failure(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_gas_silent_when_no_sherwood_config(monkeypatch, tmp_path):
+TEST_KEY = "0x" + "11" * 32  # test-only key, not a real wallet
+ADDR = "0x1234567890123456789012345678901234567890"
+
+
+def test_gas_silent_and_warns_when_unconfigured(monkeypatch, tmp_path, caplog):
     _redirect_paths(monkeypatch, tmp_path)
-    # Don't create sherwood_config.json — _read_sherwood_config returns {}
-    out = wd._gas(_cfg())
+    with patch("sherwood_monitor.cli_watchdog._eth_balance") as bal, caplog.at_level("WARNING"):
+        out = wd._gas(_cfg())
     assert out == ""
+    bal.assert_not_called()
+    assert "gas watchdog unconfigured" in caplog.text
+
+
+def test_gas_never_reads_the_sherwood_cli_config(monkeypatch, tmp_path):
+    """A key and RPCs in ~/.sherwood/config.json are ignored (catalog rule 11)."""
+    _redirect_paths(monkeypatch, tmp_path)
+    (tmp_path / ".sherwood").mkdir()
+    (tmp_path / ".sherwood" / "config.json").write_text(
+        json.dumps({"privateKey": TEST_KEY, "rpc": {"robinhood": "https://example.invalid"}})
+    )
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.0) as bal:
+        out = wd._gas(_cfg())
+    assert out == ""
+    bal.assert_not_called()
+    assert not hasattr(wd, "SHERWOOD_CONFIG_PATH")
 
 
 def test_gas_alerts_when_balance_below_floor(monkeypatch, tmp_path):
     _redirect_paths(monkeypatch, tmp_path)
-    (tmp_path / "sherwood_config.json").write_text(
-        json.dumps(
-            {
-                # 32-byte test private key (NOT a real key — keccak("test-only"))
-                "privateKey": "0x" + "11" * 32,
-                "rpc": {"base": "https://example.invalid/rpc"},
-            }
-        )
-    )
-    # 0.001 ETH = 10^15 wei = 0x38d7ea4c68000
-    with patch(
-        "sherwood_monitor.cli_watchdog._eth_balance", return_value=0.001
-    ), patch(
-        "sherwood_monitor.cli_watchdog._agent_address_from_privkey",
-        return_value="0x1234567890123456789012345678901234567890",
-    ):
-        out = wd._gas(_cfg(gas_alert_min_eth=0.002))
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.001) as bal:
+        out = wd._gas(_cfg(gas_alert_min_eth=0.002, gas_rpc_url="https://rpc.example.invalid/key"))
+    bal.assert_called_once_with("https://rpc.example.invalid/key", ADDR)
     assert "Sherwood gas alert" in out
-    assert "base: 0.001000 ETH" in out
-    assert "0x1234567890123456789012345678901234567890" in out
+    assert "robinhood: 0.001000 ETH" in out
+    assert ADDR in out
+
+
+def test_gas_defaults_to_the_public_robinhood_rpc(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=1.0) as bal:
+        wd._gas(_cfg())
+    bal.assert_called_once_with("https://rpc.mainnet.chain.robinhood.com", ADDR)
+
+
+def test_gas_derives_the_address_from_the_key(monkeypatch, tmp_path):
+    from sherwood_monitor.key_derivation import address_from_private_key
+
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.001) as bal:
+        out = wd._gas(_cfg(gas_alert_min_eth=0.002))
+    expected = address_from_private_key(TEST_KEY)
+    assert bal.call_args.args[1] == expected
+    assert expected in out
+    assert TEST_KEY not in out
+
+
+def test_gas_address_wins_over_the_key(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=1.0) as bal:
+        wd._gas(_cfg())
+    assert bal.call_args.args[1] == ADDR
+
+
+def test_gas_skips_a_malformed_address_without_echoing_it(monkeypatch, tmp_path, caplog):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", "0xnope-secretish")
+    with patch("sherwood_monitor.cli_watchdog._eth_balance") as bal, caplog.at_level("WARNING"):
+        out = wd._gas(_cfg())
+    assert out == ""
+    bal.assert_not_called()
+    assert "not a 0x address" in caplog.text
+    assert "secretish" not in caplog.text
+
+
+def test_gas_skips_a_malformed_key_without_echoing_it(monkeypatch, tmp_path, caplog):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", "0xdeadbeef")
+    with patch("sherwood_monitor.cli_watchdog._eth_balance") as bal, caplog.at_level("WARNING"):
+        out = wd._gas(_cfg())
+    assert out == ""
+    bal.assert_not_called()
+    assert "deadbeef" not in caplog.text
 
 
 def test_gas_silent_when_balance_above_floor(monkeypatch, tmp_path):
     _redirect_paths(monkeypatch, tmp_path)
-    (tmp_path / "sherwood_config.json").write_text(
-        json.dumps({"privateKey": "0x" + "11" * 32, "rpc": {"base": "https://example.invalid"}})
-    )
-    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.5), patch(
-        "sherwood_monitor.cli_watchdog._agent_address_from_privkey",
-        return_value="0xabc",
-    ):
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.5):
         out = wd._gas(_cfg(gas_alert_min_eth=0.002))
     assert out == ""
 
 
-def test_gas_skips_unreadable_rpc(monkeypatch, tmp_path):
-    """An RPC that returns None (network down, malformed) must not block other chains."""
+def test_gas_silent_when_rpc_unreadable(monkeypatch, tmp_path):
+    """An RPC that returns None (network down, malformed) is not a false alarm."""
     _redirect_paths(monkeypatch, tmp_path)
-    (tmp_path / "sherwood_config.json").write_text(
-        json.dumps(
-            {
-                "privateKey": "0x" + "11" * 32,
-                "rpc": {"base": "https://up.invalid", "hyperevm": "https://down.invalid"},
-            }
-        )
-    )
-    # base returns low balance, hyperevm returns None (failed call).
-    def _bal(rpc, _addr):
-        return 0.001 if "up.invalid" in rpc else None
-
-    with patch("sherwood_monitor.cli_watchdog._eth_balance", side_effect=_bal), patch(
-        "sherwood_monitor.cli_watchdog._agent_address_from_privkey",
-        return_value="0xabc",
-    ):
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=None):
         out = wd._gas(_cfg(gas_alert_min_eth=0.002))
-    # Alert on base; hyperevm silently dropped (not False-positive flagged).
-    assert "base: 0.001000 ETH" in out
-    assert "hyperevm" not in out
+    assert out == ""
+
+
+def test_gas_silent_when_rpc_url_blank(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setenv("SHERWOOD_AGENT_ADDRESS", ADDR)
+    with patch("sherwood_monitor.cli_watchdog._eth_balance") as bal:
+        out = wd._gas(_cfg(gas_rpc_url=""))
+    assert out == ""
+    bal.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -253,55 +303,79 @@ def test_gas_skips_unreadable_rpc(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_stream_silent_when_hermes_missing(monkeypatch, tmp_path):
+def _write_stream_status(tmp_path, funds, host_pid=None):
+    import os
+
+    (tmp_path / "stream_status.json").write_text(
+        json.dumps({"written_at": 0, "host_pid": os.getpid() if host_pid is None else host_pid, "funds": funds})
+    )
+
+
+def test_stream_silent_without_a_status_file(monkeypatch, tmp_path):
+    """Hermes never ran a supervisor: nothing to judge, silent. No `hermes` shell-out at all."""
     _redirect_paths(monkeypatch, tmp_path)
-    with patch("shutil.which", return_value=None):
+    with patch("subprocess.run") as run:
         out = wd._stream(_cfg())
     assert out == ""
+    run.assert_not_called()
 
 
 def test_stream_flags_dead_supervisor(monkeypatch, tmp_path):
+    import os
+    import time as _time
+
     _redirect_paths(monkeypatch, tmp_path)
-    status_payload = {
-        "funds": [
-            {"subdomain": "alpha", "pid": 0, "last_event_at": None},
-            {"subdomain": "beta", "pid": 1234, "last_event_at": int(__import__("time").time())},
-        ]
-    }
-    with patch("shutil.which", return_value="/usr/local/bin/hermes"), patch(
-        "subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=json.dumps(status_payload), stderr=""),
-    ):
-        out = wd._stream(_cfg(stream_stale_minutes=30))
+    _write_stream_status(tmp_path, [
+        {"subdomain": "alpha", "pid": 0, "last_event_at": None, "restarting": False},
+        {"subdomain": "beta", "pid": os.getpid(), "last_event_at": int(_time.time()), "restarting": False},
+    ])
+    out = wd._stream(_cfg(stream_stale_minutes=30))
     assert "alpha: NO SUPERVISOR (pid=0)" in out
-    assert "beta" not in out  # fresh event, healthy
+    assert "beta" not in out  # live pid, fresh event
+
+
+def test_stream_restarting_child_is_not_dead(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    _write_stream_status(tmp_path, [{"subdomain": "alpha", "pid": 999999, "last_event_at": None, "restarting": True}])
+    assert wd._stream(_cfg()) == ""
+
+
+def test_stream_flags_all_funds_when_hermes_is_gone(monkeypatch, tmp_path):
+    import os
+
+    _redirect_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(wd, "_pid_alive", lambda pid: pid == os.getpid())
+    _write_stream_status(
+        tmp_path,
+        [{"subdomain": "alpha", "pid": os.getpid(), "last_event_at": None, "restarting": False}],
+        host_pid=424242,
+    )
+    out = wd._stream(_cfg())
+    assert "alpha: NO SUPERVISOR (Hermes is not running)" in out
 
 
 def test_stream_flags_stale_event(monkeypatch, tmp_path):
-    _redirect_paths(monkeypatch, tmp_path)
+    import os
     import time as _time
 
+    _redirect_paths(monkeypatch, tmp_path)
     stale_ts = int(_time.time()) - 3600  # 60 min ago
-    status_payload = {
-        "funds": [{"subdomain": "gamma", "pid": 4242, "last_event_at": stale_ts}]
-    }
-    with patch("shutil.which", return_value="/usr/local/bin/hermes"), patch(
-        "subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=json.dumps(status_payload), stderr=""),
-    ):
-        out = wd._stream(_cfg(stream_stale_minutes=30))
+    _write_stream_status(tmp_path, [{"subdomain": "gamma", "pid": os.getpid(), "last_event_at": stale_ts}])
+    out = wd._stream(_cfg(stream_stale_minutes=30))
     assert "gamma" in out and "stale" in out
 
 
-def test_stream_silent_when_status_returns_empty(monkeypatch, tmp_path):
-    """No configured funds → empty funds list → silent."""
+def test_stream_silent_when_status_has_no_funds(monkeypatch, tmp_path):
+    """Hermes stopped the supervisors cleanly (session end) -> empty funds list -> silent."""
     _redirect_paths(monkeypatch, tmp_path)
-    with patch("shutil.which", return_value="/usr/local/bin/hermes"), patch(
-        "subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=json.dumps({"funds": []}), stderr=""),
-    ):
-        out = wd._stream(_cfg())
-    assert out == ""
+    _write_stream_status(tmp_path, [], host_pid=424242)
+    assert wd._stream(_cfg()) == ""
+
+
+def test_stream_silent_on_a_corrupt_status_file(monkeypatch, tmp_path):
+    _redirect_paths(monkeypatch, tmp_path)
+    (tmp_path / "stream_status.json").write_text("{not json")
+    assert wd._stream(_cfg()) == ""
 
 
 # ---------------------------------------------------------------------------

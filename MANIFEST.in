@@ -1,6 +1,7 @@
 include setup.py
 include pyproject.toml
 include README.md
+include LICENSE
 include BOOT.md
 include SMOKE_TEST.md
 recursive-include xmtp_sidecar *.ts *.json

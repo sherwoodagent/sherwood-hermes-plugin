@@ -1,0 +1,104 @@
+# Hermes plugin-catalog entry for sherwood-monitor.
+#
+# This is the exact file to submit as `plugin-catalog/sherwood-monitor.yaml`
+# in NousResearch/hermes-agent (how: docs/catalog-submission.md). Schema:
+# plugin-catalog/README.md "Entry schema" in that repo; structural check:
+# scripts/validate_plugin_catalog.py there.
+#
+# The capabilities block below mirrors plugin.yaml at the pinned commit
+# (provides_tools, provides_hooks, requires_env names). Keep them identical.
+# plugin.yaml also declares TX_BUILDER_URL and APP_BASE_URL under optional_env
+# (URL overrides with defaults, not prompted at install); the catalog schema
+# has no optional-env list.
+name: sherwood-monitor
+title: Sherwood
+repo: https://github.com/sherwoodagent/sherwood-hermes-plugin
+# REPLACE before submitting: the full 40-character commit the v0.7.0 tag points
+# at, from `git rev-parse 'v0.7.0^{commit}'` (lowercase hex). The loader and
+# catalog CI reject anything else: a tag name, a branch or a short sha.
+sha: "<sha of the v0.7.0 tag commit>"
+version: "0.7.0"
+description: >-
+  Sherwood funds for Hermes on Robinhood Chain (chain 4663, USDG). Monitors your
+  Sherwood funds (on-chain events reach the next turn, risk checks run before
+  `sherwood proposal create`, `hermes sherwood install-cron` registers four
+  watchdog crons and one vote-suggestion cron, settlements are written to
+  memory) and runs a fund inside a Telegram group: the agent pitches trades,
+  members back or object, the host approves members and guest Hermes agents,
+  and every proposal gets a live card. Governance is optimistic veto: only
+  Against votes count. An optional XMTP sidecar streams group chat only for
+  funds whose XMTP group id is in their ENS record on Base; Robinhood Chain
+  funds have none.
+  Disclosure: the plugin never signs or sends a transaction and never holds
+  member funds. It builds unsigned transactions through the prepare API at
+  api.sherwood.sh and posts HMAC-signed links to app.sherwood.sh, where the
+  host's and members' own wallets sign. Network calls: api.sherwood.sh (prepare,
+  fund-card and price reads), app.sherwood.sh (member-wallet lookup with
+  SHERWOOD_TG_API_TOKEN, share-image checks), the Telegram Bot API through
+  Hermes' adapter, and one Robinhood Chain RPC (`gas_rpc_url`, default the
+  public rpc.mainnet.chain.robinhood.com) for the gas watchdog. With
+  SHERWOOD_PRIVATE_KEY set, the XMTP sidecar also calls the Base RPC
+  mainnet.base.org (to read each fund's group id from the Durin L2Registry)
+  and the XMTP network. Runs the `sherwood` CLI as subprocesses (one
+  long-running `session check --stream --no-xmtp` per monitored fund, which
+  reads its own ~/.sherwood/config.json) for the life of the Hermes process,
+  `hermes cron list/create/edit` from install-cron (which writes four .py
+  wrapper scripts to $HERMES_HOME/scripts/),
+  and, with SHERWOOD_PRIVATE_KEY, a long-running Node XMTP sidecar; children
+  get the environment without the plugin's secrets. Credentials come only
+  through Hermes' secret scope: the Telegram/app secrets, the optional
+  SHERWOOD_PRIVATE_KEY (use a dedicated monitor key; the sidecar derives its
+  own key from it) and SHERWOOD_AGENT_ADDRESS. The plugin reads no file
+  outside its own data. Writes fund state and stream/watchdog state under
+  ~/.hermes/plugins/sherwood-monitor/ and the XMTP database under
+  ~/.hermes/xmtp/. Install runs `npm ci` in xmtp_sidecar/, which downloads
+  @xmtp/node-bindings (a native binary) from the npm registry, pinned by
+  package-lock.json integrity hashes. No telemetry.
+maintainer: Sherwood
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/sherwoodagent/sherwood-hermes-plugin#readme
+readme: true
+# POSIX only: fund state uses fcntl file locks; the watchdog is a shell script.
+platforms: [linux, macos]
+known_issues:
+  - "Keep plugins.isolation: in_process (the default). Under isolation: host no turn is sender-checked, and the Telegram handler and `hermes sherwood` CLI are not registered."
+  - "A fund group's toolset must not include terminal, write_file, patch or execute_code; the default hermes-telegram toolset does (README: Deployment boundary)."
+  - "Approve host actions in a private chat with the bot or from the CLI, and never answer Always to a fund prompt: any allowlisted group member can tap approval buttons."
+  - "Telegram fund cards need python-telegram-bot (Hermes' Telegram extra) and a Hermes with register_platform_handler; without them the plugin loads with cards off."
+  - "XMTP works only for funds whose XMTP group id is in their ENS record on Base; current Sherwood CLI releases write none and Robinhood Chain funds have none, so they get on-chain events only. XMTP also needs Node 22+ and npm at install and SHERWOOD_PRIVATE_KEY."
+  - "Upgrading from 0.6.0: the plugin no longer reads the Sherwood CLI's config and updates do not prompt for new env vars. Set SHERWOOD_AGENT_ADDRESS (gas watchdog) and, only for XMTP, SHERWOOD_PRIVATE_KEY; then re-run `hermes sherwood install-cron`."
+  - "Fund streams run for the life of the Hermes process (from the first turn with auto_start, or sherwood_monitor_start) and stop at Hermes shutdown; they do not survive a restart, and the next session catches up."
+  - "Plugin config and state live under ~/.hermes/plugins/sherwood-monitor (the user's home), not $HERMES_HOME: profiles share them, and where cron children get another HOME (containers) the watchdogs see an empty config and stay silent."
+capabilities:
+  provides_tools:
+    - sherwood_monitor_start
+    - sherwood_monitor_stop
+    - sherwood_monitor_status
+    - sherwood_monitor_exposure
+    - sherwood_monitor_cron_tick
+    - fund_status
+    - fund_setup
+    - fund_claim_topic
+    - fund_release_claim
+    - fund_draft_proposal
+    - fund_set_proposal_status
+    - fund_record_vote
+    - fund_record_settle
+    - fund_approve_member
+    - fund_approve_agent
+    - fund_remove_agent
+  provides_hooks:
+    - on_session_start
+    - on_session_finalize
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - TELEGRAM_BOT_TOKEN
+    - SHERWOOD_TG_LINK_SECRET
+    - SHERWOOD_TG_API_TOKEN
+    - SHERWOOD_PRIVATE_KEY
+    - SHERWOOD_AGENT_ADDRESS

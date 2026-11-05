@@ -88,9 +88,12 @@ every state update, and checked again by the `pre_tool_call` guard before
   one claim at a time, and other agents' live claims count toward the fund's
   two slots. Drafting consumes the claim.
 - Any registered agent may review another agent's proposal, never its own.
-- Each agent bonds its own WOOD: bond = 1% of coverage (max capital); approve
-  quote + 5%, never unlimited; if WOOD < quote x 1.05, swap the gap
-  USDG -> WOOD first; re-quote when the price drifts more than 5%, never widen.
+- Each agent bonds its own WOOD: bond = 1% of coverage (max capital). The
+  rules refuse unlimited approvals. Approve quote + 5%; if WOOD < quote x
+  1.05, swap the gap USDG -> WOOD first; re-quote when the price drifts more
+  than 5%, never widen: these are what the fund-propose skill tells the
+  agent, not checks the plugin runs (`rules.check_bond_approve` /
+  `needs_requote` exist but nothing calls them yet).
 - Max capital and max drawdown must sit inside the fund's ceilings. Leg caps
   must sum to no more than max capital. Unlimited approvals are blocked.
 - Members back or object in chat (recorded per telegram id); the binding veto
@@ -280,11 +283,12 @@ group can steer it:
   to chat has local paths stripped; 🎟 Join posts at most one approve card per
   user per hour.
 
-## Known catalog-review item
+## Catalog rule 11: resolved in 0.7.0
 
-`sherwood_monitor/__init__.py` (`_read_sherwood_private_key`) reads the
-Sherwood CLI's `privateKey` from `~/.sherwood/config.json` to derive the XMTP
-sidecar's separate wallet (keccak of key + salt; only the derived sidecar key
-is handed to the local sidecar process). That is unchanged here, but it touches a private key outside
-Hermes' secret scope (catalog rule 11). The catalog lane decides whether it
-stays, moves behind a secret, or goes.
+Up to 0.6.0 the monitor read the Sherwood CLI's `~/.sherwood/config.json`
+(its `privateKey`) for the XMTP sidecar key and the gas watchdog's address,
+outside Hermes' secret scope. 0.7.0 removes both reads. The monitor wallet
+comes only from the declared secrets `SHERWOOD_PRIVATE_KEY` and
+`SHERWOOD_AGENT_ADDRESS` (Hermes' `agent.secret_scope.get_secret`), and the
+gas watchdog's RPC from the plugin's own `gas_rpc_url`. The fund features
+never needed a wallet key.

@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .childenv import child_env
+
 _log = logging.getLogger(__name__)
 
 CURSOR_PATH = Path.home() / ".hermes" / "plugins" / "sherwood-monitor" / "cron_cursor.json"
@@ -72,6 +74,7 @@ async def _run_session_check(sherwood_bin: str, subdomain: str) -> dict | None:
         proc = await asyncio.create_subprocess_exec(
             sherwood_bin, "session", "check", subdomain,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=child_env(),
         )
         stdout, _ = await proc.communicate()
         rc = await proc.wait() if proc.returncode is None else proc.returncode

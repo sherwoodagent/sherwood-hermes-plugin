@@ -81,13 +81,13 @@ def rpc(method, params, req_id=1):
 
 ## ENS Resolution
 
-`resolve_subdomain` reads the `xmtpGroupId` text record from the Durin L2Registry on Base mainnet. The key matches what the Sherwood CLI writes when `sherwood chat <name> init` is called.
+`resolve_subdomain` reads the `xmtpGroupId` text record from the Durin L2Registry on Base mainnet (one `eth_call` to `https://mainnet.base.org` by default). Older Sherwood CLI releases wrote that record. Current releases write no ENS record (Robinhood Chain has no registry), so Robinhood Chain funds do not resolve and get no XMTP stream; their on-chain events still reach the plugin through `sherwood session check`.
 
 ### ENV knobs
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SIDECAR_L2_REGISTRY` | `0x7a019ce699e27b0ad1e5b51344a58116b9f3b9b1` | L2Registry address (override for Base Sepolia: `0x06eb7b85b59bc3e50fe4837be776cdd26de602cf`) |
+| `SIDECAR_L2_REGISTRY` | `0x7a019ce699e27b0ad1e5b51344a58116b9f3b9b1` | L2Registry address on Base mainnet |
 | `SIDECAR_BASE_RPC` | `https://mainnet.base.org` | Base RPC URL |
 
 ## Pinned binding

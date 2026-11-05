@@ -13,7 +13,24 @@ from __future__ import annotations
 # so the plugin still registers (fund tools, Telegram cards) in a Hermes venv
 # that has not installed the XMTP sidecar's crypto deps yet.
 
+import re
+
 DEFAULT_SALT = "sherwood-monitor-sidecar-v1"
+
+_PRIVATE_KEY_RE = re.compile(r"^(?:0x)?([0-9a-fA-F]{64})$")
+_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+
+
+def normalize_private_key(raw: str | None) -> str | None:
+    """``0x`` + 64 hex (the ``0x`` may be missing), else ``None``. Never echoes the input."""
+    match = _PRIVATE_KEY_RE.match((raw or "").strip())
+    return "0x" + match.group(1).lower() if match else None
+
+
+def normalize_address(raw: str | None) -> str | None:
+    """``0x`` + 40 hex, else ``None``."""
+    value = (raw or "").strip()
+    return value if _ADDRESS_RE.match(value) else None
 
 
 def derive_sidecar_key(primary_key_hex: str, salt: str = DEFAULT_SALT) -> str:

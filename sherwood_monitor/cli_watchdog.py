@@ -35,17 +35,21 @@ from typing import Any
 from .config import Config, load_config
 from .cron_tick import cron_tick
 from .exposure import aggregate_exposure
+from .fund.secrets import SHERWOOD_AGENT_ADDRESS, SHERWOOD_PRIVATE_KEY, get_secret
+from .key_derivation import address_from_private_key, normalize_address, normalize_private_key
 
 _log = logging.getLogger(__name__)
 
 PLUGIN_ROOT = Path.home() / ".hermes" / "plugins" / "sherwood-monitor"
 CONFIG_PATH = PLUGIN_ROOT / "config.yaml"
 WATCHDOG_STATE_PATH = PLUGIN_ROOT / "watchdog_state.json"
-SHERWOOD_CONFIG_PATH = Path.home() / ".sherwood" / "config.json"
+# Written by the in-process Supervisor (supervisor.write_status); read by `stream`.
+STREAM_STATUS_PATH = PLUGIN_ROOT / "stream_status.json"
+# The gas watchdog checks one chain: Robinhood Chain (4663), RPC from `gas_rpc_url`.
+GAS_CHAIN_LABEL = "robinhood"
 
-# Stream watchdog reads supervisor in-process status via a one-shot
-# `hermes sherwood status` call. The supervisor lives in the Hermes runtime,
-# so the cron script can't introspect it directly — it shells out instead.
+# The stream watchdog reads the status file the Supervisor writes from inside
+# the Hermes runtime (a fresh `hermes` process would have an empty Supervisor).
 
 
 # ---------------------------------------------------------------------------
@@ -78,32 +82,40 @@ def _save_state(state: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Sherwood config reader (for gas watchdog — RPC URLs + agent privkey)
+# Monitor wallet (for the gas watchdog). Declared secrets only: the plugin
+# never reads the Sherwood CLI's config file.
 # ---------------------------------------------------------------------------
 
 
-def _read_sherwood_config() -> dict[str, Any]:
-    if not SHERWOOD_CONFIG_PATH.exists():
-        return {}
-    try:
-        return json.loads(SHERWOOD_CONFIG_PATH.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
-        _log.warning("sherwood config unreadable: %s", exc)
-        return {}
+def _agent_address() -> str | None:
+    """``SHERWOOD_AGENT_ADDRESS``, else the address of ``SHERWOOD_PRIVATE_KEY``, else ``None``.
 
-
-def _agent_address_from_privkey(priv_hex: str) -> str | None:
-    """Derive 0x-prefixed checksum-less address from a hex private key."""
-    try:
-        from eth_keys import keys
-        from eth_utils import to_checksum_address
-
-        key_hex = priv_hex[2:] if priv_hex.startswith("0x") else priv_hex
-        pk = keys.PrivateKey(bytes.fromhex(key_hex))
-        return to_checksum_address(pk.public_key.to_address())
-    except Exception as exc:
-        _log.warning("agent address derivation failed: %s", exc)
-        return None
+    Logs one warning (stderr, never stdout: stdout is the alert) when neither is
+    usable. Never logs a value.
+    """
+    raw_address = get_secret(SHERWOOD_AGENT_ADDRESS)
+    if raw_address:
+        address = normalize_address(raw_address)
+        if address is None:
+            _log.warning("gas watchdog skipped: %s is not a 0x address", SHERWOOD_AGENT_ADDRESS)
+        return address
+    raw_key = get_secret(SHERWOOD_PRIVATE_KEY)
+    if raw_key:
+        key = normalize_private_key(raw_key)
+        if key is None:
+            _log.warning("gas watchdog skipped: %s is not a 32-byte hex key", SHERWOOD_PRIVATE_KEY)
+            return None
+        try:
+            return address_from_private_key(key)
+        except Exception as exc:
+            _log.warning("gas watchdog skipped: address derivation failed (%s)", type(exc).__name__)
+            return None
+    _log.warning(
+        "gas watchdog unconfigured: set %s (or %s); skipping",
+        SHERWOOD_AGENT_ADDRESS,
+        SHERWOOD_PRIVATE_KEY,
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +242,25 @@ async def _aum(cfg: Config) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _is_http_url(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(str(url))
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
+
+
 def _eth_balance(rpc_url: str, address: str) -> float | None:
-    """Make a single eth_getBalance JSON-RPC call. Returns wei→ether or None."""
+    """Make a single eth_getBalance JSON-RPC call. Returns wei→ether or None.
+
+    Never raises and never logs the URL beyond scheme://host (provider URLs
+    carry API keys), so a bad `gas_rpc_url` cannot reach a cron alert.
+    """
+    if not _is_http_url(rpc_url):
+        _log.warning("gas watchdog skipped: gas_rpc_url must be an http(s) URL")
+        return None
     payload = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -240,10 +269,10 @@ def _eth_balance(rpc_url: str, address: str) -> float | None:
             "id": 1,
         }
     ).encode()
-    req = urllib.request.Request(
-        rpc_url, data=payload, headers={"Content-Type": "application/json"}
-    )
     try:
+        req = urllib.request.Request(
+            rpc_url, data=payload, headers={"Content-Type": "application/json"}
+        )
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read()
         body = json.loads(raw)
@@ -253,7 +282,7 @@ def _eth_balance(rpc_url: str, address: str) -> float | None:
         wei = int(result, 16)
         return wei / 1e18
     except Exception as exc:
-        _log.warning("eth_getBalance failed (%s): %s", _redact_url(rpc_url), exc)
+        _log.warning("eth_getBalance failed (%s): %s", _redact_url(rpc_url), type(exc).__name__)
         return None
 
 
@@ -271,36 +300,26 @@ def _redact_url(url: str) -> str:
 
 
 def _gas(cfg: Config) -> str:
-    sherwood = _read_sherwood_config()
-    priv = sherwood.get("privateKey") or sherwood.get("private_key")
-    rpc_map = sherwood.get("rpc") or {}
-    if not priv or not isinstance(rpc_map, dict) or not rpc_map:
-        # No agent wallet or no RPCs configured — nothing to check. Silent.
-        return ""
+    """Alert when the monitor wallet's ETH on Robinhood Chain is below the floor.
 
-    address = _agent_address_from_privkey(str(priv))
+    Silent when the wallet is unconfigured (one stderr warning), when
+    `gas_rpc_url` is empty, or when the RPC call fails.
+    """
+    address = _agent_address()
     if address is None:
         return ""
-
-    low: list[tuple[str, float]] = []
-    for chain_name, rpc_url in rpc_map.items():
-        if not isinstance(rpc_url, str) or not rpc_url:
-            continue
-        balance_eth = _eth_balance(rpc_url, address)
-        if balance_eth is None:
-            continue
-        if balance_eth < cfg.gas_alert_min_eth:
-            low.append((str(chain_name), balance_eth))
-
-    if not low:
+    rpc_url = (cfg.gas_rpc_url or "").strip()
+    if not rpc_url:
         return ""
-
-    lines = [f"Sherwood gas alert — agent {address}:"]
-    for chain_name, bal in low:
-        lines.append(
-            f"- {chain_name}: {bal:.6f} ETH (below {cfg.gas_alert_min_eth} ETH floor)"
-        )
-    return "\n".join(lines)
+    balance_eth = _eth_balance(rpc_url, address)
+    if balance_eth is None or balance_eth >= cfg.gas_alert_min_eth:
+        return ""
+    return "\n".join(
+        [
+            f"Sherwood gas alert — agent {address}:",
+            f"- {GAS_CHAIN_LABEL}: {balance_eth:.6f} ETH (below {cfg.gas_alert_min_eth} ETH floor)",
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -308,50 +327,43 @@ def _gas(cfg: Config) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    except OSError:
+        return False
+    return True
+
+
 def _stream(cfg: Config) -> str:
-    """Read `hermes sherwood status` (one-shot subprocess) and flag stale streams.
+    """Flag funds whose supervisor stream is dead or stale.
 
-    The supervisor lives inside the Hermes runtime; a script can't introspect
-    its in-memory state directly. Status is exposed via the host `hermes`
-    binary, which we shell out to. If `hermes` is unavailable we stay silent
-    (no false alarms when the host plugin isn't even running).
+    Reads `stream_status.json`, written by the Supervisor inside the Hermes
+    runtime (on start, exit, stop, and at most every 30 s on events). No file,
+    or no live funds in it (Hermes stopped them cleanly): silent. A dead
+    Hermes process or a dead `sherwood session check` child that is not
+    restarting: dead. No event for `stream_stale_minutes`: stale.
     """
-    import shutil
-    import subprocess
-
-    hermes = shutil.which("hermes")
-    if hermes is None:
-        return ""
-
     try:
-        res = subprocess.run(
-            [hermes, "sherwood", "status"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except Exception as exc:
-        _log.warning("stream: `hermes sherwood status` failed to invoke: %s", exc)
-        return ""
-
-    if res.returncode != 0 or not res.stdout.strip():
-        # Hermes not currently running, or status path errored. Either way,
-        # surface as silent — the user has bigger problems to address first.
-        return ""
-
-    try:
-        payload = json.loads(res.stdout)
-    except json.JSONDecodeError:
+        payload = json.loads(STREAM_STATUS_PATH.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return ""
 
     items = payload.get("funds") if isinstance(payload, dict) else None
-    if not isinstance(items, list):
+    if not isinstance(items, list) or not items:
         return ""
+    host_alive = _pid_alive(payload.get("host_pid"))
 
     stale_threshold_s = cfg.stream_stale_minutes * 60
     now_s = int(time.time())
     stale: list[str] = []
-    dead: list[str] = []
+    dead: list[tuple[str, str]] = []
 
     for item in items:
         if not isinstance(item, dict):
@@ -360,8 +372,11 @@ def _stream(cfg: Config) -> str:
         pid = item.get("pid", 0)
         last_event_at = item.get("last_event_at")  # epoch seconds or null
 
-        if not pid:
-            dead.append(sub)
+        if not host_alive:
+            dead.append((sub, "Hermes is not running"))
+            continue
+        if not item.get("restarting") and not _pid_alive(pid):
+            dead.append((sub, f"pid={pid or 0}"))
             continue
         if isinstance(last_event_at, (int, float)) and last_event_at > 0:
             age_s = now_s - int(last_event_at)
@@ -372,8 +387,8 @@ def _stream(cfg: Config) -> str:
         return ""
 
     lines = ["Sherwood stream health:"]
-    for sub in dead:
-        lines.append(f"- {sub}: NO SUPERVISOR (pid=0)")
+    for sub, why in dead:
+        lines.append(f"- {sub}: NO SUPERVISOR ({why})")
     for entry in stale:
         lines.append(f"- {entry}: stale, threshold {cfg.stream_stale_minutes}m")
     return "\n".join(lines)

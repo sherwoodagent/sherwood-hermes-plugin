@@ -5,12 +5,14 @@
  * Text records are stored under the L2Registry contract on Base mainnet
  * (address 0x7a019ce699e27b0ad1e5b51344a58116b9f3b9b1).
  *
- * The CLI stores the XMTP group ID under key "xmtpGroupId"
- * (see cli/src/commands/chat.ts and cli/src/lib/xmtp.ts).
+ * Older Sherwood CLI releases stored the XMTP group ID there under key
+ * "xmtpGroupId". Current releases write no ENS record (Robinhood Chain has no
+ * registry), so funds they create do not resolve here and get no XMTP stream;
+ * their on-chain events still reach the plugin through `sherwood session check`.
  *
  * ENV knobs:
- *   SIDECAR_L2_REGISTRY   — override registry address (for Base Sepolia: 0x06eb7b85b59bc3e50fe4837be776cdd26de602cf)
- *   SIDECAR_BASE_RPC      — override Base RPC URL
+ *   SIDECAR_L2_REGISTRY   — override the registry address
+ *   SIDECAR_BASE_RPC      — override the Base RPC URL (default https://mainnet.base.org)
  */
 
 import { createPublicClient, http } from "viem";

@@ -6,6 +6,10 @@ from pathlib import Path
 
 from .yamlio import YAMLError, safe_load
 
+# Public Robinhood Chain (4663) RPC. It throttles under load; one balance call
+# per gas-watchdog tick is fine. Set `gas_rpc_url` to a dedicated RPC if needed.
+DEFAULT_GAS_RPC_URL = "https://rpc.mainnet.chain.robinhood.com"
+
 DEFAULT_CONFIG_YAML = """# sherwood-monitor config
 # Edit `funds` to add subdomains you want to monitor.
 funds: []
@@ -21,6 +25,7 @@ concentration_threshold_pct: 30.0
 # threshold here only affects when the corresponding alert fires.
 aum_alert_threshold_pct: 5.0       # alert when |Δ TVL| since last tick exceeds N% of prior reading
 gas_alert_min_eth: 0.002           # alert when agent wallet ETH balance falls below this floor
+gas_rpc_url: https://rpc.mainnet.chain.robinhood.com  # Robinhood Chain RPC for the gas watchdog
 stream_stale_minutes: 30           # alert when a fund's supervisor hasn't produced an event in N minutes
 proposal_reasoning_enabled: true   # if false, the agent-driven `sherwood-proposal-reasoning` cron is NOT registered
 """
@@ -37,6 +42,7 @@ class Config:
     concentration_threshold_pct: float = 30.0
     aum_alert_threshold_pct: float = 5.0
     gas_alert_min_eth: float = 0.002
+    gas_rpc_url: str = DEFAULT_GAS_RPC_URL
     stream_stale_minutes: int = 30
     proposal_reasoning_enabled: bool = True
 
@@ -75,6 +81,7 @@ def load_config(path: Path) -> Config:
         concentration_threshold_pct=float(raw.get("concentration_threshold_pct", 30.0)),
         aum_alert_threshold_pct=float(raw.get("aum_alert_threshold_pct", 5.0)),
         gas_alert_min_eth=float(raw.get("gas_alert_min_eth", 0.002)),
+        gas_rpc_url=str(raw.get("gas_rpc_url") or DEFAULT_GAS_RPC_URL).strip(),
         stream_stale_minutes=stream_stale,
         proposal_reasoning_enabled=bool(raw.get("proposal_reasoning_enabled", True)),
     )
