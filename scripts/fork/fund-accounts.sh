@@ -15,7 +15,8 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-[ "$(cast chain-id --rpc-url "$RPC")" = "4663" ] || { echo "not a 4663 fork" >&2; exit 2; }
+require_anvil fund-accounts.sh
+[ "$(cast chain-id --rpc-url "$RPC")" = "$CHAIN_ID" ] || { echo "RPC is not chain $CHAIN_ID" >&2; exit 2; }
 
 set_erc20() { # token slot holder amountWei
   local key; key="$(cast index address "$3" "$2")"

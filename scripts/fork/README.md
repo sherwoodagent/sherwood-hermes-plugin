@@ -17,10 +17,11 @@ Unsigned propose calldata from that run: [results/2026-11-05/](results/2026-11-0
 |---|---|
 | `start-anvil.sh` | Starts anvil, forked at a pinned block, on `127.0.0.1:$FORK_PORT` (default 8545). Run it under `railway run` (see below). Detaches anvil and writes `out/anvil.pid` and `out/anvil.log`, with URLs redacted. |
 | `install-cli.sh` | Installs `@sherwoodagent/cli@0.102.0` into `.cli/` (gitignored), checking the tarball's integrity. |
-| `sw.sh` | Wrapper for the CLI. `SW_ROLE=host scripts/fork/sw.sh vault info ...`. Gives each role its own HOME and an anvil dev key, allows only the local RPC, and blocks writes to production APIs. |
-| `fund-accounts.sh` | Clears the EIP-7702 code on the dev accounts and sets their ETH, WOOD and USDG balances through storage slots. Idempotent. |
-| `loop.sh` | Runs the loop in stages: `identity create members agent p1 p2 review execute settle redeem weth`. Each finished stage is recorded in `out/state.env`, so a rerun skips it. |
-| `lib.sh` | Shared addresses and helpers: `step` logs every tx a CLI call mined, `send_calldata` signs a `--calldata-only` JSON with cast, plus `warp` and `expect_revert`. |
+| `sw.sh` | Wrapper for the CLI, with an isolated HOME and production API writes blocked. It takes `RPC_URL`, `CHAIN_ID` and `SIGNER` as parameters (see [Mainnet use](#mainnet-use)). With `SIGNER=anvil` (the default) it signs with the dev key for `SW_ROLE` and allows only a local RPC. |
+| `plan.sh` | External-signer driver, for mainnet or a fork. `plan.sh <step> ...` builds one loop step as unsigned `--calldata-only` JSON and appends it to an ordered `plan.md` "send these in order" list. It never signs or sends. |
+| `fund-accounts.sh` | Fork only. Clears the EIP-7702 code on the dev accounts and sets their ETH, WOOD and USDG balances through storage slots. Idempotent. |
+| `loop.sh` | Fork only. Runs the loop in stages: `identity create members agent p1 p2 review execute settle redeem weth`. Each finished stage is recorded in `out/state.env`, so a rerun skips it. |
+| `lib.sh` | Shared addresses, parameters and helpers. `step` logs every tx a CLI call mined. `send_calldata` signs a `--calldata-only` JSON with cast (`SIGNER=anvil`) or appends it to the plan (`SIGNER=external`). Also `warp` and `expect_revert`, both fork only. |
 
 Roles (anvil dev accounts 0 to 5): host/owner `0xf39F…2266`, agent `0x7099…79C8`,
 member A `0x3C44…93BC`, member B `0x90F7…b906`, WETH-vault host `0x15d3…6A65`,
@@ -110,10 +111,58 @@ To run from scratch, restart anvil and delete `out/state.env`.
   `--metadata-uri`, so it fails when that API is unreachable. The fork uses
   `--calldata-only` and signs the txs with cast (`send_calldata`).
 - **Signed `vault create` and `vault add` try to create or join an XMTP group on the production
-  XMTP network.** `SHERWOOD_SKIP_XMTP` only affects `session check`.
+  XMTP network.** `SHERWOOD_SKIP_XMTP` only affects `session check`, so `loop.sh` builds both
+  with `--calldata-only` and signs them with cast. No XMTP client starts.
 - **`proposal execute --dry-run` exits 1 on a fork even when execute will succeed.** The
   simulation API cannot see fork state, and the eth_call fallback reverts
   `NotActiveProposalStrategy`. Read its `Coverage` line and do not gate on its exit code.
 - **The CLI guardian review refuses to Approve a 20% agent fee.** That is the vault
   default and also the governor cap, and the review reports `EXCESSIVE_PERFORMANCE_FEE`.
   `loop.sh` sets the fee to 5%.
+
+## Mainnet use
+
+From the first mainnet PR on, testing moves to Robinhood Chain mainnet with tiny USDG
+amounts, and every spend waits for Carlos's GO. The same scripts drive mainnet through an
+**external signer**: they print unsigned calldata and an ordered "send these in order" list.
+They never hold or read a key.
+
+Parameters (env), shared by `sw.sh`, `lib.sh` and `plan.sh`:
+
+| Var | Fork | Mainnet |
+|---|---|---|
+| `RPC_URL` | `http://127.0.0.1:8545` (default) | an RPC you trust for chain 4663. Keep keyed URLs in the environment, never in a file |
+| `CHAIN_ID` | `4663` (default) | `4663`. Every script checks that the RPC answers it, and every calldata tx carries it |
+| `SIGNER` | `anvil` (default): anvil dev keys, local RPC only | `external`: no key at all; `sw.sh` runs only `--calldata-only` or read-only commands |
+| `FORK_OUT_DIR` | `scripts/fork/out` | any directory; `plan.md` and `plan/NN-<step>.json` are written there |
+
+```bash
+export SIGNER=external CHAIN_ID=4663 RPC_URL=...   # mainnet RPC, from the environment
+export FORK_OUT_DIR=$PWD/mainnet-run
+scripts/fork/install-cli.sh
+scripts/fork/plan.sh approve  <vault> <member>                 # host signs
+scripts/fork/plan.sh deposit  <vault> <member> 5               # member signs: USDG approve + deposit
+scripts/fork/plan.sh propose  <vault> <host> ipfs://<CID> 2 NVDA,AAPL,SPY 3400,3300,3300 v3:500,v3:500,v4:500:5 125
+cat "$FORK_OUT_DIR/plan.md"                                    # the ordered list to sign
+```
+
+`plan.md` is a table of step, signer, `to`, selector, value and the JSON file and index of each tx.
+Send the txs in that order from the named wallet (MetaMask agent wallet, Privy, a Safe, or anything
+that takes EIP-5792 `{to, data, value, chainId}`).
+
+- Build each step right before sending it. The CLI reads live state: the bond quote, whether the
+  clone exists, and the cooldown. Steps also wait on the clock: voting 30 min, review 30 min,
+  settle at least 1h after execute. Check `SIGNER=external scripts/fork/sw.sh proposal status <id> --vault <v>`
+  between steps.
+- Pin metadata yourself (`sherwood pin-metadata`, outside these scripts) and pass the
+  `ipfs://` URI. `sw.sh` blocks the pinning API so nothing leaves by accident.
+- `loop.sh` and `fund-accounts.sh` are fork only. They warp time and set balances, and they refuse
+  `SIGNER=external`. The full ordered mainnet checklist, with the method, target contract and
+  signer of every tx, is in [RESULTS-2026-11-05.md](RESULTS-2026-11-05.md#ordered-tx-list-for-the-loop-mainnet-checklist).
+- Before the first mainnet propose: set the agent fee below 16% (`plan.sh agent-fee <vault> 500`)
+  and make sure a staked guardian will Approve with enough WOOD lock, or execute reverts
+  `InsufficientApproveCoverage`.
+- On a fork, `plan.sh` can preview mainnet calldata without sending anything:
+  `SIGNER=external RPC_URL=http://127.0.0.1:8545 scripts/fork/plan.sh ...`. It was smoke-tested
+  this way for `approve`, `deposit` and `propose`. The other steps are wired the same way but
+  have not run under `SIGNER=external`.

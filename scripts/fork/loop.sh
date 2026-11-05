@@ -18,7 +18,8 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
-[ "$(cast chain-id --rpc-url "$RPC")" = "4663" ] || { echo "loop: $RPC is not a 4663 fork" >&2; exit 2; }
+require_anvil "loop.sh (it warps time and uses dev keys; for mainnet use plan.sh)"
+[ "$(cast chain-id --rpc-url "$RPC")" = "$CHAIN_ID" ] || { echo "loop: $RPC is not chain $CHAIN_ID" >&2; exit 2; }
 
 STATE="$FORK_OUT_DIR/state.env"; touch "$STATE"
 # shellcheck disable=SC1090
