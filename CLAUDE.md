@@ -14,7 +14,7 @@ When bumping the plugin version, ALL of these must move together:
 | `pyproject.toml` | `version` field |
 | `BOOT.md` (if behavior changed) | reflect new cron entries / hooks |
 | `README.md` (if install / UX changed) | install command, cron list, config keys |
-| `catalog/sherwood-monitor.yaml` | `version`, and `capabilities` if tools / hooks / env changed (`tests/test_catalog_entry.py` checks it against `plugin.yaml`); the `sha` is filled in only in the catalog PR, after the tag (`docs/catalog-submission.md`) |
+| `catalog/sherwood-monitor.yaml` | `version`, the `sha` placeholder `"<sha of the v<version> tag commit>"` (and its comment), and `capabilities` if tools / hooks / env changed (`tests/test_catalog_entry.py` checks all of it against `plugin.yaml`); the real `sha` goes in only in the catalog PR, after the tag (`docs/catalog-submission.md`) |
 | Git tag | `.github/workflows/release.yml` creates `v<version>` on the merge commit when the version has no tag; check that it exists |
 
 Then open follow-up PRs in the consumer repos:

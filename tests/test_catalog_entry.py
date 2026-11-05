@@ -8,7 +8,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = ROOT / "catalog" / "sherwood-monitor.yaml"
-SHA_PLACEHOLDER = "<sha of the v0.7.0 tag commit>"
 
 
 def _load() -> tuple[dict, dict]:
@@ -38,7 +37,8 @@ def test_catalog_entry_metadata_matches_the_manifest():
 
 
 def test_catalog_sha_is_a_placeholder_or_a_full_pin():
-    entry, _ = _load()
-    # The file in this repo carries the placeholder; the copy submitted to the
-    # catalog carries the 40-hex commit of the release tag.
-    assert entry["sha"] == SHA_PLACEHOLDER or re.fullmatch(r"[0-9a-f]{40}", entry["sha"])
+    entry, manifest = _load()
+    # The file in this repo carries the placeholder for this version's tag; the
+    # copy submitted to the catalog carries the 40-hex commit of that tag.
+    placeholder = f"<sha of the v{manifest['version']} tag commit>"
+    assert entry["sha"] == placeholder or re.fullmatch(r"[0-9a-f]{40}", entry["sha"])
