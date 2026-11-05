@@ -13,8 +13,8 @@ Callback data (``shfund:<action>:<arg>``, at most 64 bytes):
     join:<vault>          personal /tg/join link (anyone)
     shipit:<draft>        host only
     propose:<draft>       host only: hands back the host signing page link
-    approve_member:<tg>   host only
-    approve_agent:<name>  host only
+    approve_member:<tg>   host only (then hands the host a /tg/sign link)
+    approve_agent:<name>  host only (then hands the host a /tg/sign link)
     remove_agent:<name>   host only
 """
 from __future__ import annotations
@@ -54,10 +54,15 @@ STATUS_CHIPS = {
     "proposed": "📨 PROPOSED",
     "voting": "🗳 VOTING",
     "passed": "✅ PASSED",
+    "review": "🛡 GUARDIAN REVIEW",
+    "approved": "🛡 GUARDIAN APPROVED",
     "vetoed": "⛔ VETOED",
     "executed": "⚡ EXECUTED",
     "settled": "🏁 SETTLED",
+    "cancelled": "✖️ CANCELLED",
 }
+
+BOND_CHALLENGE_DAYS = 14
 
 LINK_LABELS = {
     "join": ("join", "🎟 Join in browser"),
@@ -65,6 +70,7 @@ LINK_LABELS = {
     "withdraw": ("withdraw", "↩️ Withdraw in browser"),
     "vote": ("vote", "❌ Cast Against in browser"),
     "propose": ("host co-sign", "✍️ Co-sign in browser"),
+    "sign": ("host signing", "✍️ Sign in browser"),
 }
 
 People = Mapping[int, Person]
@@ -189,7 +195,10 @@ def avatars(ids: Iterable[int], people: People | None, limit: int = MAX_AVATARS)
 def legs_line(p: ProposalView) -> str:
     if not p.legs:
         return ""
-    return " · ".join(f"<b>{esc(leg.symbol)}</b> {fmt_weight(leg.weight_bps)}" for leg in p.legs)
+    return " · ".join(
+        f"<b>{esc(leg.symbol)}</b> {fmt_weight(leg.weight_bps)}" if leg.weight_bps > 0 else esc(leg.symbol)
+        for leg in p.legs
+    )
 
 
 def bond_line(bond_wood: float, wood_usd: float | None) -> str:
@@ -241,7 +250,7 @@ def render_proposal_card(
     """Proposal card with live veto meter and countdown while voting."""
     current = time.time() if now is None else now
     status = (p.status or "").lower()
-    lines = [f"{status_chip(status)} · <b>Proposal #{esc(p.id)}</b>", f"<i>{_thesis(p.thesis)}</i>", ""]
+    lines = [f"{status_chip(status)} · <b>Proposal #{esc(p.display_id)}</b>", f"<i>{_thesis(p.thesis)}</i>", ""]
 
     legs = legs_line(p)
     if legs:
@@ -256,13 +265,19 @@ def render_proposal_card(
             lines.append(f"Size {goal}")
     lines.append("")
 
-    if status in ("voting", "passed", "vetoed", "executed", "settled"):
+    if status in ("voting", "passed", "review", "approved", "vetoed", "executed", "settled"):
         meter = veto_meter(p.against_bps, p.threshold_bps)
         if status == "voting":
             clock = countdown(p.voting_ends_at, current)
             lines.append(f"{meter} · {clock}" if clock else meter)
         else:
             lines.append(meter)
+    if status == "review":
+        clock = countdown(p.review_ends_at, current).replace("voting closed", "review closed")
+        cover = f" · coverage {esc(p.guardian_coverage)}" if p.guardian_coverage else ""
+        lines.append("🛡 Guardian review" + (f" · {clock}" if clock else "") + cover)
+    elif status == "approved":
+        lines.append("🛡 Guardian approved" + (f" · coverage {esc(p.guardian_coverage)}" if p.guardian_coverage else ""))
 
     social = []
     if p.backers:
@@ -287,6 +302,8 @@ def render_proposal_card(
             f"<i>Only Against counts. Silence = pass unless Against reaches "
             f"{fmt_weight(p.threshold_bps)} of shares before the window ends.</i>"
         )
+    elif status == "vetoed":
+        lines.append("<i>Vetoed. The agent's bond comes back at once.</i>")
 
     rows: list[list[InlineKeyboardButton]] = []
     if status in ("proposed", "voting"):
@@ -324,12 +341,15 @@ def render_fund_card(
     if f.open_proposals:
         lines += ["", "<b>Open proposals</b>"]
         for p in f.open_proposals:
-            item = f"• #{esc(p.id)} {_short(p.thesis)} · {status_chip(p.status)}"
+            item = f"• #{esc(p.display_id)} {_short(p.thesis)} · {status_chip(p.status)}"
             if (p.status or "").lower() == "voting":
                 clock = countdown(p.voting_ends_at, current)
                 if clock:
                     item += f" · {clock}"
             lines.append(item)
+    if f.cooldown_until and f.cooldown_until > current:
+        hhmm = datetime.fromtimestamp(int(f.cooldown_until), tz=timezone.utc).strftime("%H:%M")
+        lines += ["", f"⏳ Next proposal possible at {hhmm} UTC"]
     lines.append("")
     agents = ", ".join(esc(a) for a in f.agents) if f.agents else "none"
     lines.append(f"Members {len(f.members)} · Agents {agents}")
@@ -341,6 +361,9 @@ def render_fund_card(
             InlineKeyboardButton("💰 Deposit", callback_data=cb("deposit", f.vault.lower())),
             InlineKeyboardButton("↩️ Withdraw", callback_data=cb("withdraw", f.vault.lower())),
         ],
+        # Members join from here (personal /tg/join link): no /join command in
+        # groups, /join-fund belongs to guest AGENTS (a Hermes slash command).
+        [InlineKeyboardButton("🎟 Join", callback_data=cb("join", f.vault.lower()))],
     ]
     return "\n".join(lines), _kb(rows)
 
@@ -369,7 +392,11 @@ def render_settle_receipt(
     if r.idea_by is not None:
         parts.append(f"idea by {person_handle(r.idea_by, people)}")
     parts.append(f"backed by {int(r.backers)}")
-    lines = [f"🏁 <b>Proposal #{esc(r.proposal_id)} settled</b>", " · ".join(parts)]
+    lines = [
+        f"🏁 <b>Proposal #{esc(r.proposal_id)} settled</b>",
+        " · ".join(parts),
+        f"<i>The agent's bond stays in escrow for the {BOND_CHALLENGE_DAYS}-day challenge window.</i>",
+    ]
     rows = [[_view_button(fund.vault, base_url)]] if fund is not None else []
     return "\n".join(lines), _kb(rows)
 

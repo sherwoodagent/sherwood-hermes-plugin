@@ -22,7 +22,6 @@ from telegram.ext import (  # noqa: E402
 
 from sherwood_monitor.telegram.handler import (  # noqa: E402
     COMMAND_GROUP,
-    JOIN_FUND_HYPHEN_RE,
     OBSERVER_GROUP,
     FundHandlers,
     incoming_from_message,
@@ -108,7 +107,10 @@ def test_wire_registers_scoped_handlers_in_the_right_groups():
     assert ours_cb.pattern.pattern == "^shfund:"
     assert group0.index(ours_cb) < group0.index(core_cb)
     commands = {c for h in group0 if isinstance(h, CommandHandler) for c in h.commands}
-    assert commands == {"fund", "leaderboard", "join_fund", "start"}
+    # No /join_fund or /join-fund here: /join-fund is the core command for guest
+    # AGENTS; members join from the fund card's Join button.
+    assert commands == {"fund", "leaderboard", "start"}
+    assert not any(isinstance(h, MessageHandler) for h in group0 if h is not core_cmd)
     assert all(group0.index(h) < group0.index(core_cmd) for h in group0 if h not in (core_cb, core_cmd))
 
     observers = app.handlers[OBSERVER_GROUP]
@@ -127,10 +129,11 @@ def test_callback_pattern_leaves_core_buttons_alone():
     assert not ours.pattern.match("approve:exec:1") and not ours.pattern.match("model:pick")
 
 
-def test_join_fund_hyphen_spelling():
-    assert JOIN_FUND_HYPHEN_RE.match("/join-fund")
-    assert JOIN_FUND_HYPHEN_RE.match("/join-fund@sherwoodagentbot now").group(1) == "sherwoodagentbot"
-    assert not JOIN_FUND_HYPHEN_RE.match("/join-funds")
+def test_join_fund_is_left_to_the_core_command():
+    """/join-fund (a guest agent asking to co-manage) must reach Hermes' core command."""
+    from sherwood_monitor.telegram import handler as h
+
+    assert not hasattr(h.FundHandlers, "cmd_join_fund") and not hasattr(h, "JOIN_FUND_HYPHEN_RE")
 
 
 # -- callbacks ---------------------------------------------------------------------
@@ -362,17 +365,11 @@ async def test_fund_command_posts_card_with_capability_notice():
     assert "group admin" not in msg.reply_html.await_args.args[0]
 
 
-async def test_leaderboard_and_join_commands():
+async def test_leaderboard_command():
     rt, gw, bot = make_runtime()
     upd, msg = command_update("/leaderboard")
     await FundHandlers(rt).cmd_leaderboard(upd, SimpleNamespace(bot=bot))
     assert "1. @alice <b>+12.4%</b> · 3 ideas" in msg.reply_html.await_args.args[0]
-    upd, msg = command_update("/join-fund")
-    await FundHandlers(rt).cmd_join_fund(upd, SimpleNamespace(bot=bot))
-    assert msg.reply_html.await_args.args[0].startswith("🎟 <b>Join Robin Fund</b>")
-    upd, msg = command_update("/join-fund@someotherbot")
-    await FundHandlers(rt).cmd_join_fund(upd, SimpleNamespace(bot=bot))
-    msg.reply_html.assert_not_awaited()
 
 
 async def test_fund_command_in_unlinked_chat():

@@ -13,7 +13,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Mapping, Protocol, Sequence, runtime_checkable
 
-PROPOSAL_STATUSES = ("draft", "proposed", "voting", "passed", "vetoed", "executed", "settled")
+PROPOSAL_STATUSES = (
+    "draft", "proposed", "voting", "passed", "review", "approved", "vetoed", "executed", "settled", "cancelled",
+)
 DEFAULT_THRESHOLD_BPS = 2000
 
 
@@ -39,6 +41,8 @@ class Person:
 
 @dataclass(frozen=True)
 class Leg:
+    """A leg as the card shows it. ``weight_bps == 0`` = a summary line (raw-calldata legs)."""
+
     symbol: str
     weight_bps: int
 
@@ -65,6 +69,13 @@ class ProposalView:
     threshold_bps: int = DEFAULT_THRESHOLD_BPS
     image_url: str | None = None
     capital_symbol: str = "USDC"
+    onchain_id: int | None = None  # the governor's proposal id; vote links need it
+    review_ends_at: int | None = None  # guardian review window end (status "review")
+    guardian_coverage: str = ""  # tg-card review.coverage.kind: none | partial | full | unpriced
+
+    @property
+    def display_id(self) -> str:
+        return str(self.onchain_id) if self.onchain_id is not None else self.id
 
 
 @dataclass(frozen=True)
@@ -105,6 +116,7 @@ class FundView:
     positions: tuple[Position, ...] = ()
     open_proposals: tuple[ProposalView, ...] = ()
     nav_symbol: str = "USDC"
+    cooldown_until: int | None = None  # no new proposal before this (governor cooldown)
 
 
 @dataclass(frozen=True)

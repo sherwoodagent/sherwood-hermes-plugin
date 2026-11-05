@@ -204,6 +204,7 @@ def test_fund_card_golden():
             {"text": "💰 Deposit", "callback_data": f"shfund:deposit:{VAULT}"},
             {"text": "↩️ Withdraw", "callback_data": f"shfund:withdraw:{VAULT}"},
         ],
+        [{"text": "🎟 Join", "callback_data": f"shfund:join:{VAULT}"}],
     ]
 
 
@@ -225,7 +226,10 @@ def test_member_card_golden():
 def test_settle_receipt_golden():
     r = Receipt(proposal_id="42", pnl_bps=820, symbol="NVDA", idea_by=1, backers=5)
     text, markup = render_settle_receipt(r, people=PEOPLE, fund=fund())
-    assert text == "🏁 <b>Proposal #42 settled</b>\n<b>+8.2%</b> on NVDA · idea by @alice · backed by 5"
+    assert text == (
+        "🏁 <b>Proposal #42 settled</b>\n<b>+8.2%</b> on NVDA · idea by @alice · backed by 5\n"
+        "<i>The agent's bond stays in escrow for the 14-day challenge window.</i>"
+    )
     assert receipt_plain(r, PEOPLE) == "+8.2% on NVDA · idea by @alice · backed by 5"
     assert kb(markup) == [[{"text": "📊 View fund", "url": FUND_URL}]]
 
@@ -296,3 +300,20 @@ def test_personal_link_is_a_url_button():
     text, markup = render_personal_link("vote", "https://app.sherwood.sh/tg/vote?x=1", "Robin <Fund>")
     assert "personal vote link for <b>Robin &lt;Fund&gt;</b>" in text and "15 minutes" in text
     assert kb(markup) == [[{"text": "❌ Cast Against in browser", "url": "https://app.sherwood.sh/tg/vote?x=1"}]]
+
+
+def test_review_vetoed_cooldown_and_onchain_id_rendering():
+    from datetime import datetime, timezone
+
+    review = proposal(id="p-3", onchain_id=9, status="review", review_ends_at=NOW + 600, guardian_coverage="full")
+    text, markup = render_proposal_card(review, fund=fund(), people=PEOPLE, now=NOW)
+    assert text.startswith("🛡 GUARDIAN REVIEW · <b>Proposal #9</b>")
+    assert "🛡 Guardian review · ends in 10m · coverage full" in text
+    assert not [b for row in kb(markup) for b in row if b.get("callback_data", "").startswith("shfund:vote")]
+    vetoed, _ = render_proposal_card(proposal(status="vetoed"), fund=fund(), now=NOW)
+    assert "bond comes back at once" in vetoed
+    summary = proposal(legs=(Leg("swap 400 USDG -> TSLA", 0),))
+    assert "swap 400 USDG -&gt; TSLA" in render_proposal_card(summary, now=NOW)[0]
+    text, _ = render_fund_card(fund(cooldown_until=NOW + 3600), now=NOW)
+    hhmm = datetime.fromtimestamp(NOW + 3600, tz=timezone.utc).strftime("%H:%M")
+    assert f"⏳ Next proposal possible at {hhmm} UTC" in text

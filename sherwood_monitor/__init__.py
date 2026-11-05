@@ -286,8 +286,10 @@ def register(ctx: Any) -> None:
     # the draft guard that rides on the pre_tool_call hook below. A failure
     # here must not take the monitor down with it.
     fund_guard = None
+    fund_rt = None
     try:
-        fund_guard = make_fund_guard(register_fund(ctx, cfg_path))
+        fund_rt = register_fund(ctx, cfg_path)
+        fund_guard = make_fund_guard(fund_rt)
     except Exception as exc:
         _log.warning("fund features disabled: %s", exc)
         buffer.push(
@@ -296,13 +298,28 @@ def register(ctx: Any) -> None:
             "\n</sherwood-monitor-warning>"
         )
 
+    # Telegram group cards: a lazy platform handler (Hermes calls its factory only
+    # when its Telegram adapter connects, i.e. with a bot token), so a missing
+    # token or a missing python-telegram-bot never fails plugin load. Its pitch
+    # context folds into the single pre_llm_call hook below.
+    context_sources: list[Any] = []
+    if fund_rt is not None:
+        try:
+            from .fund.telegram import wire_fund_telegram
+
+            bridge = wire_fund_telegram(ctx, fund_rt, push_context=buffer.push)
+            if bridge is not None:
+                context_sources.append(bridge.pre_llm_context)
+        except Exception as exc:
+            _log.warning("telegram fund cards disabled: %s", exc)
+
     state_fetcher = partial(default_state_fetcher, cfg.sherwood_bin)
     ctx.register_hook(
         "pre_tool_call",
         make_pre_tool_call_hook(state_fetcher=state_fetcher, fund_guard=fund_guard),
     )
     ctx.register_hook("post_tool_call", make_post_tool_call_hook(memory_writer=stderr_memory_writer, buffer=buffer))
-    ctx.register_hook("pre_llm_call", make_pre_llm_call_hook(buffer))
+    ctx.register_hook("pre_llm_call", make_pre_llm_call_hook(buffer, context_sources))
 
     register_cli(ctx, supervisor)
 

@@ -128,6 +128,66 @@ def build_link(
     raise ValueError(f"unknown link kind: {kind!r}")
 
 
+# ---------------------------------------------------------------------------
+# Host signing page: ${APP_BASE_URL}/tg/sign (the app lane adds the route).
+# ---------------------------------------------------------------------------
+
+SIGN_ACTIONS = ("approve-depositor", "approve-depositors", "register-agent", "propose-portfolio", "propose", "set-agent-fee")
+# A URL button this long still opens in every Telegram client we tried; past it,
+# hand the host the CLI path instead of a link.
+SIGN_URL_MAX = 2048
+
+
+def encode_sign_body(body: dict) -> str:
+    """Compact JSON, base64url without padding: the prepare body the page posts."""
+    import base64
+    import json
+
+    raw = json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_sign_body(encoded: str) -> dict:
+    import base64
+    import json
+
+    pad = "=" * (-len(encoded) % 4)
+    return json.loads(base64.urlsafe_b64decode(encoded + pad).decode("utf-8"))
+
+
+def sign_link_message(vault: str, action: str, body_b64: str, tg_user_id: object, ts: int) -> str:
+    """The string signed for host signing links: ``"<vault>|<action>|<body>|<tg>|<ts>"``."""
+    if action not in SIGN_ACTIONS:
+        raise ValueError(f"unknown signing action: {action!r}")
+    return f"{canonical_address(vault)}|{action}|{body_b64}|{_canonical_tg(tg_user_id)}|{int(ts)}"
+
+
+def build_sign_link(
+    *,
+    vault: str,
+    action: str,
+    body: dict,
+    tg_user_id: object,
+    secret: str | bytes,
+    base_url: str | None = None,
+    ts: int | None = None,
+) -> str | None:
+    """``${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<id>&ts=<s>&sig=<hex>``.
+
+    The page decodes ``body`` (the exact ``POST /api/v1/prepare/<action>`` body),
+    verifies ``sig`` over ``"<vault>|<action>|<body>|<tg>|<ts>"``, checks the
+    Telegram login is ``tg``, prepares through the tx-builder and has the
+    host's wallet sign. Returns None when the URL would exceed SIGN_URL_MAX.
+    """
+    ts_i = int(time.time()) if ts is None else int(ts)
+    v = canonical_address(vault)
+    tg = _canonical_tg(tg_user_id)
+    encoded = encode_sign_body(body)
+    sig = sign_link(secret, sign_link_message(v, action, encoded, tg, ts_i))
+    url = f"{_base(base_url)}/tg/sign?fund={v}&action={action}&body={encoded}&tg={tg}&ts={ts_i}&sig={sig}"
+    return url if len(url) <= SIGN_URL_MAX else None
+
+
 def fund_page_url(vault: str, base_url: str | None = None) -> str:
     """Public, unsigned fund page: ``${APP_BASE_URL}/tg/fund/<vault>``."""
     return f"{_base(base_url)}/tg/fund/{canonical_address(vault)}"

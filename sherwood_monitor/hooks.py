@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -75,9 +76,33 @@ def on_session_end_factory(supervisor: Supervisor) -> Callable[..., Awaitable[No
     return on_session_end
 
 
-def make_pre_llm_call_hook(buffer: EventBuffer) -> Callable[..., Awaitable[dict | None]]:
-    async def hook(**_: Any) -> dict | None:
+ContextSource = Callable[..., Any]  # (**hook kwargs) -> {"context": str} | None (sync or async)
+
+
+def make_pre_llm_call_hook(
+    buffer: EventBuffer, extra_sources: list[ContextSource] | tuple[ContextSource, ...] = ()
+) -> Callable[..., Awaitable[dict | None]]:
+    """The plugin's ONE pre_llm_call hook.
+
+    It drains the event buffer (monitor warnings, settlements, fund draft
+    requests) and folds in every `extra_sources` callback (the Telegram pitch
+    context), so the plugin never registers a second pre_llm_call hook. A
+    failing source is logged and skipped.
+    """
+
+    async def hook(**kwargs: Any) -> dict | None:
         blocks = buffer.drain()
+        for source in extra_sources:
+            try:
+                out = source(**kwargs)
+                if inspect.isawaitable(out):
+                    out = await out
+            except Exception as exc:
+                _log.warning("pre_llm_call context source %r failed: %s", source, exc)
+                continue
+            text = out.get("context") if isinstance(out, dict) else None
+            if text:
+                blocks.append(str(text))
         if not blocks:
             return None
         return {"context": "\n\n".join(blocks)}

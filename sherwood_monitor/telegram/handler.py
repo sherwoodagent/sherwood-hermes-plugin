@@ -7,10 +7,14 @@ catch-alls in group 0 (``filters.TEXT``, ``filters.COMMAND``, an unscoped
 ``CallbackQueryHandler``). So:
 
 * group 0 holds only handlers we want to OWN: the ``^shfund:`` callback
-  pattern, ``/fund``, ``/leaderboard``, ``/join_fund`` (+ the ``/join-fund``
-  spelling) and ``/start sf…`` deep-link payloads in DMs. Hermes runs plugin
-  factories before core registers (and hoists late ones ahead of core), so
-  these win; everything else falls through to Hermes.
+  pattern, ``/fund`` and ``/leaderboard`` in groups (the rich card with
+  buttons; the plugin's core ``/fund`` / ``/leaderboard`` slash commands answer
+  everywhere else: CLI, DMs, other platforms) and ``/start sf…`` deep-link
+  payloads in DMs. Hermes runs plugin factories before core registers (and
+  hoists late ones ahead of core), so these win; everything else falls
+  through to Hermes. ``/join-fund`` is NOT handled here: it is the core
+  command a guest agent's owner runs; members join through the fund card's
+  🎟 Join button (a personal /tg/join link).
 * group ``OBSERVER_GROUP`` (-10) holds observers (pitch / 🔥 reply / "ship it"
   messages and ``message_reaction`` updates). A separate group never
   displaces core, and running before group 0 queues the pitch context before
@@ -42,7 +46,6 @@ from telegram.ext import (
 from .cards import (
     HOST_ONLY_ACTIONS,
     parse_cb,
-    render_join_prompt,
     render_leaderboard,
     render_personal_link,
 )
@@ -57,7 +60,6 @@ _log = logging.getLogger(__name__)
 COMMAND_GROUP = 0
 OBSERVER_GROUP = -10
 CALLBACK_PATTERN = r"^shfund:"
-JOIN_FUND_HYPHEN_RE = re.compile(r"^/join-fund(?:@(\w+))?(?:\s|$)", re.IGNORECASE)
 START_PAYLOAD_RE = re.compile(r"^/start(?:@\w+)?\s+(sf[a-z]_\S+)\s*$")
 GROUP_TYPES = (ChatType.GROUP, ChatType.SUPERGROUP)
 
@@ -215,7 +217,11 @@ class FundHandlers:
 
     async def _cb_back(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
         user_id = int(query.from_user.id)
-        view = await maybe_await(self.rt.gateway.toggle_backer(chat_id, arg, user_id))
+        try:
+            view = await maybe_await(self.rt.gateway.toggle_backer(chat_id, arg, user_id))
+        except FundActionError as exc:
+            await _answer(query, str(exc) or "Couldn't record that.", show_alert=True)
+            return
         if view is None:
             await _answer(query, "Proposal not found.")
             return
@@ -241,6 +247,10 @@ class FundHandlers:
         if view is None or (view.status or "").lower() != "voting":
             await _answer(query, "Voting is closed for this proposal.")
             return
+        onchain = view.onchain_id if view.onchain_id is not None else (int(view.id) if str(view.id).isdigit() else None)
+        if onchain is None:
+            await _answer(query, "This proposal isn't on-chain yet.")
+            return
         secret = self._secret_or_none()
         if not secret:
             await _answer(query, "Links are not configured yet. Ask the host.", show_alert=True)
@@ -251,10 +261,10 @@ class FundHandlers:
             secret=secret,
             base_url=self.settings.app_base_url,
             governor=view.governor or fund.governor,
-            proposal_id=view.id,
+            proposal_id=onchain,
         )
         await self.deliver_personal_link(
-            query, context, kind="vote", fund=fund, url=url, start_payload=_start_payload("vote", fund.vault, view.id)
+            query, context, kind="vote", fund=fund, url=url, start_payload=_start_payload("vote", fund.vault, onchain)
         )
 
     async def _cb_fund_link(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
@@ -265,6 +275,8 @@ class FundHandlers:
         if not secret:
             await _answer(query, "Links are not configured yet. Ask the host.", show_alert=True)
             return
+        if action == "join":
+            await self._note_join_request(query, chat_id)
         url = build_link(
             action,
             tg_user_id=query.from_user.id,
@@ -275,6 +287,23 @@ class FundHandlers:
         await self.deliver_personal_link(
             query, context, kind=action, fund=fund, url=url, start_payload=_start_payload(action, fund.vault)
         )
+
+    async def _note_join_request(self, query: Any, chat_id: int) -> None:
+        """Record the member's join request in fund state and show the host an Approve card.
+
+        Optional gateway hook ``request_membership(chat_id, person) -> bool`` (True = a new
+        request). Never blocks handing out the link.
+        """
+        hook = getattr(self.rt.gateway, "request_membership", None)
+        person = person_from_user(query.from_user)
+        if not callable(hook) or person is None:
+            return
+        try:
+            is_new = await maybe_await(hook(chat_id, person))
+            if is_new and self.rt.connected:
+                await self.rt.post_member_request(chat_id, person)
+        except Exception as exc:  # the link still goes out
+            _log.warning("join request for %s in %s not recorded: %s", person.tg_id, chat_id, exc)
 
     async def _cb_shipit(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
         try:
@@ -316,7 +345,17 @@ class FundHandlers:
         except ValueError:
             await _answer(query, "Bad button data.")
             return
-        await _answer(query, toast or stamp)
+        url = None
+        signer = getattr(gw, "host_action_url", None)
+        if action in ("approve_member", "approve_agent") and callable(signer):
+            try:
+                url = await maybe_await(signer(chat_id, action, arg, by))
+            except Exception as exc:
+                _log.warning("host signing link for %s %s failed: %s", action, arg, exc)
+        if url:
+            await self.deliver_personal_link(query, context, kind="sign", fund=fund, url=url, start_payload=None)
+        else:
+            await _answer(query, toast or stamp)
         host = person_from_user(query.from_user)
         base = getattr(query.message, "text_html", None) or ""
         try:
@@ -432,23 +471,6 @@ class FundHandlers:
             self.rt.flow.note_bot_card(chat_id, int(sent.message_id))
 
     @_safe
-    async def cmd_join_fund(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        msg = update.effective_message
-        if msg is None:
-            return
-        m = JOIN_FUND_HYPHEN_RE.match(msg.text or "")
-        if m and m.group(1) and m.group(1).lower() != self._bot_username(context).lower():
-            return  # /join-fund@someotherbot
-        chat_id = int(msg.chat.id)
-        fund = await self._fund_for_chat(chat_id)
-        if fund is None:
-            return
-        text, markup = render_join_prompt(fund, base_url=self.settings.app_base_url)
-        sent = await msg.reply_html(text, reply_markup=markup, link_preview_options=NO_PREVIEW)
-        if sent is not None and getattr(sent, "message_id", None) is not None:
-            self.rt.flow.note_bot_card(chat_id, int(sent.message_id))
-
-    @_safe
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """``/start sf<k>_<vault>[_<id>]`` in a DM: send the personal link there."""
         msg = update.effective_message
@@ -540,10 +562,6 @@ def build_handlers(runtime: TelegramRuntime) -> list[tuple[BaseHandler, int]]:
         (CallbackQueryHandler(h.on_callback, pattern=CALLBACK_PATTERN), COMMAND_GROUP),
         (CommandHandler("fund", h.cmd_fund, filters=groups), COMMAND_GROUP),
         (CommandHandler("leaderboard", h.cmd_leaderboard, filters=groups), COMMAND_GROUP),
-        (CommandHandler("join_fund", h.cmd_join_fund, filters=groups), COMMAND_GROUP),
-        # Telegram commands cannot contain '-', so "/join-fund" arrives as "/join"
-        # plus text; catch the literal spelling before Hermes' COMMAND catch-all.
-        (MessageHandler(groups & filters.Regex(JOIN_FUND_HYPHEN_RE), h.cmd_join_fund), COMMAND_GROUP),
         (
             CommandHandler("start", h.cmd_start, filters=filters.ChatType.PRIVATE & filters.Regex(START_PAYLOAD_RE)),
             COMMAND_GROUP,

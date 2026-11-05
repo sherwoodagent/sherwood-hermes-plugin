@@ -119,7 +119,8 @@ def test_register_telegram_registers_factory_and_hook():
     assert not runtime.connected
     app = ApplicationBuilder().token("123:TEST").build()
     factory(app, MagicMock())
-    assert runtime.connected and sum(len(h) for h in app.handlers.values()) == 8
+    # callback, /fund, /leaderboard, /start (DM) + 2 observers; no /join_fund (guest-agent core command)
+    assert runtime.connected and sum(len(h) for h in app.handlers.values()) == 6
     factory(None, MagicMock())  # other platforms hand None: no crash
 
 

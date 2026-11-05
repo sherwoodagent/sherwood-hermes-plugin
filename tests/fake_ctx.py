@@ -36,6 +36,7 @@ class FakeCtx:
         self.commands: dict[str, dict[str, Any]] = {}
         self.cli_commands: dict[str, dict[str, Any]] = {}
         self.skills: dict[str, Path] = {}
+        self.platform_handlers: dict[str, list[Callable[..., Any]]] = defaultdict(list)
         self.injected: list[dict[str, Any]] = []
         self._config = dict(config or {})
 
@@ -85,6 +86,15 @@ class FakeCtx:
         if not p.is_file():
             raise FileNotFoundError(f"SKILL.md not found at {p}")
         self.skills[name] = p
+
+    def register_platform_handler(self, platform: str, factory: Callable) -> None:
+        """`factory(native, adapter)` runs when the platform adapter connects (PTB Application for telegram)."""
+        if not callable(factory):
+            raise ValueError("a platform handler factory with a non-callable factory")
+        key = (platform or "").strip().lower()
+        if not key:
+            raise ValueError("a platform handler factory with an empty platform name")
+        self.platform_handlers[key].append(factory)
 
     def get_config(self, key: str, default: Any = None) -> Any:
         return self._config.get(key, default)
