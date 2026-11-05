@@ -112,7 +112,15 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
         return render_agents(state, now=svc.clock())
 
     def leaderboard(raw: str, source: Any) -> str:
-        return "Leaderboard: not yet."
+        _, chat = session_ids(source)
+        name = rt.fund_for(raw.split()[0] if raw else None, chat_id=chat)
+        rows = svc.leaderboard(name)
+        if not rows:
+            return f"Leaderboard ({name}): no settled ideas yet."
+        lines = [f"Leaderboard ({name}), members by the P&L of their settled ideas:"]
+        for i, r in enumerate(rows[:10], start=1):
+            lines.append(f"{i}. member {r['tg_id']}: {r['pnl_bps'] / 100:+.1f}% over {r['ideas']} idea(s), {r['wins']} win(s)")
+        return "\n".join(lines)
 
     return {
         "fund": _safe(fund),

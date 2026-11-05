@@ -1,23 +1,43 @@
 """Plain-text renderings of fund state: the status card, agent list, receipts.
 
-The slash commands return these strings. The Telegram lane renders the same
-`FundCard.buttons` as an inline keyboard; a button is either a URL into the
-Sherwood app or a slash command to run.
+The slash commands return these strings. `FundCard.buttons` follow the
+Telegram button contract (docs/telegram.md): a Telegram button cannot run a
+slash command, so a button is one of
+
+- `url`: a public link, e.g. the spectator page `${APP_BASE_URL}/tg/fund/<vault>`;
+- `link`: a PERSONAL signed `/tg/<link>?fund=<vault>&tg=..&sig=..` link
+  (deposit, withdraw, join). The group card carries a `shfund:<link>:<vault>`
+  callback and the bot hands the tapping user their own URL button;
+- `action`: a host-only callback (`shfund:<action>:<arg>`).
+
+Money only moves in the browser, signed by the member's or host's wallet.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
+from ..telegram.links import fund_page_url
 from . import rules
-from .models import WOOD_DECIMALS, FundState, ProposalRecord, SettleReceipt
+from .models import BOND_CHALLENGE_WINDOW_DAYS, WOOD_DECIMALS, FundState, ProposalRecord, SettleReceipt
 from .units import format_units
+
+PERSONAL_LINKS = ("deposit", "withdraw", "join")
+STATUS_LABELS = {"review": "guardian review", "approved": "guardian approved"}
 
 
 @dataclass(frozen=True)
 class CardButton:
     label: str
-    url: str = ""
-    command: str = ""
+    url: str = ""  # public URL button
+    link: str = ""  # personal signed /tg link kind: deposit | withdraw | join
+    action: str = ""  # host-only callback action
+    arg: str = ""  # callback argument (the vault for links)
+
+    @property
+    def callback_data(self) -> str:
+        kind = self.link or self.action
+        return f"shfund:{kind}:{self.arg}" if kind else ""
 
 
 @dataclass(frozen=True)
@@ -28,8 +48,29 @@ class FundCard:
     def as_text(self) -> str:
         if not self.buttons:
             return self.text
-        parts = [f"[{b.label}] {b.url or b.command}" for b in self.buttons]
-        return self.text + "\n\nButtons: " + " · ".join(parts)
+        parts = []
+        for b in self.buttons:
+            if b.url:
+                parts.append(f"[{b.label}] {b.url}")
+            elif b.link:
+                parts.append(f"[{b.label}] personal link: tap it on the fund card in the group")
+        return self.text + ("\n\nButtons: " + " · ".join(parts) if parts else "")
+
+
+def hhmm(ts: float) -> str:
+    return time.strftime("%H:%M", time.gmtime(ts))
+
+
+def bond_note(status: str) -> str:
+    """Where the proposer's WOOD bond is after the proposal ends (fork run, finding 8)."""
+    if status == "vetoed":
+        return "Bond: returned to the agent at once (reclaim-bond right after the veto)."
+    if status == "settled":
+        return (
+            f"Bond: locked in escrow for the {BOND_CHALLENGE_WINDOW_DAYS}-day challenge window "
+            f"(reclaimable after executedAt + duration + {BOND_CHALLENGE_WINDOW_DAYS} days)."
+        )
+    return ""
 
 
 def short_addr(addr: str) -> str:
@@ -50,9 +91,15 @@ def proposal_line(state: FundState, p: ProposalRecord, now: float) -> str:
     when = ""
     if p.status in ("proposed", "voting") and p.voting_ends_at:
         when = f", {_minutes(p.voting_ends_at - now)} left" if p.voting_ends_at > now else ", voting ended"
+    if p.status == "review" and p.review_ends_at:
+        when = f", {_minutes(p.review_ends_at - now)} left" if p.review_ends_at > now else ", review ended"
+        if p.guardian_coverage:
+            when += f", coverage {p.guardian_coverage}"
     tally = f" · {len(p.backers)} back / {len(p.objectors)} object" if (p.backers or p.objectors) else ""
+    against = f" · Against {p.against_bps / 100:g}%" if p.against_bps else ""
     reviews = f" · {len(p.reviews)} agent review(s)" if p.reviews else ""
-    return f"{tag} {p.topic or p.thesis[:40]} by {p.proposer_agent} · {p.status}{when} · max {amount(state, p.max_capital)}{tally}{reviews}"
+    status = STATUS_LABELS.get(p.status, p.status)
+    return f"{tag} {p.topic or p.thesis[:40]} by {p.proposer_agent} · {status}{when} · max {amount(state, p.max_capital)}{against}{tally}{reviews}"
 
 
 def render_fund_card(state: FundState, *, now: float, app_base_url: str = "") -> FundCard:
@@ -71,15 +118,22 @@ def render_fund_card(state: FundState, *, now: float, app_base_url: str = "") ->
     lines += [f"  {proposal_line(state, p, now)}" for p in open_]
     for c in rules.active_claims(state, now):
         lines.append(f"Drafting: {c.agent} on {c.topic!r} ({_minutes(c.expires_at - now)} left on the claim)")
+    if f.cooldown_until and f.cooldown_until > now:
+        lines.append(f"Next proposal possible at {hhmm(f.cooldown_until)} UTC (governor cooldown after the last veto/settle)")
+    if f.agent_fee_bps is not None:
+        lines.append(f"Agent fee {f.agent_fee_bps / 100:g}% (max {rules.MAX_AGENT_FEE_BPS / 100:g}% so guardians can approve)")
+    if not rules.check_proposable_asset(state).ok:
+        lines.append(f"{f.asset} fund: deposits work, proposals cannot (PortfolioStrategy needs USDG).")
     if state.receipts:
         lines.append("Last settle: " + receipt_line(state, state.receipts[-1]))
-    base = (app_base_url or "").rstrip("/")
+    lines.append(f"Bring your Hermes: its owner runs /join-fund {f.name}; the host approves it here.")
     buttons: list[CardButton] = []
-    if base:
-        buttons.append(CardButton("Deposit", url=f"{base}/fund/{f.name}"))
-        buttons.append(CardButton("Proposals", url=f"{base}/fund/{f.name}/proposals"))
-    buttons.append(CardButton("Agents", command=f"/fund-agents {f.name}"))
-    buttons.append(CardButton("Bring your Hermes", command=f"/join-fund {f.name}"))
+    if rules.is_address(f.vault):
+        vault = f.vault.lower()
+        buttons.append(CardButton("📊 View", url=fund_page_url(vault, app_base_url or None)))
+        buttons.append(CardButton("💰 Deposit", link="deposit", arg=vault))
+        buttons.append(CardButton("↩️ Withdraw", link="withdraw", arg=vault))
+        buttons.append(CardButton("🎟 Join", link="join", arg=vault))
     return FundCard("\n".join(lines), buttons)
 
 
@@ -133,6 +187,9 @@ def render_receipt(state: FundState, r: SettleReceipt) -> str:
         lines.append(f"Idea by member {r.idea_by}")
     if r.tx_hash:
         lines.append(f"Tx: {r.tx_hash}")
+    lines.append(bond_note("settled"))
+    if state.fund.cooldown_until:
+        lines.append(f"Next proposal possible at {hhmm(state.fund.cooldown_until)} UTC (governor cooldown).")
     return "\n".join(lines)
 
 

@@ -47,6 +47,8 @@ _LEG = {
         "value": {"type": "string", "description": "Native value in wei (usually 0)"},
         "cap": {"type": "string", "description": "Max vault-asset outflow for this call, in asset units ('400'); 0 for approve"},
         "amount": {"type": "string", "description": "For approve legs: the token amount approved. Never unlimited."},
+        "symbol": {"type": "string", "description": "PortfolioStrategy leg: the stock token symbol, e.g. 'NVDA'"},
+        "weight_bps": {"type": "integer", "description": "PortfolioStrategy leg: weight in bps of max capital (6000 = 60%)"},
     },
     "required": ["summary"],
 }
@@ -72,6 +74,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "max_capital": {"type": "string", "description": "Per-proposal ceiling in asset units ('1000')"},
             "max_drawdown_bps": {"type": "integer"},
             "voting_period": {"type": "integer", "description": "Seconds (1800 for the demo vault)"},
+            "agent_fee_bps": {
+                "type": "integer",
+                "description": "Vault agent fee in bps, at most 1500 (guardians refuse to approve near the 20% cap); 500 recommended",
+            },
             "metadata_uri": {"type": "string", "description": "ipfs:// fund metadata, for the create-fund body"},
         },
         ["fund"],
@@ -111,10 +117,14 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "fund_set_proposal_status": _schema(
         "fund_set_proposal_status",
         "Move your proposal along: proposed (with onchain_id and tx_hash once propose lands), voting, "
-        "passed, vetoed, executed, cancelled (drop a draft). Proposer or host only.",
+        "review (guardian review window after voting), approved (a guardian approved with enough WOOD "
+        "coverage; execute needs it), passed, vetoed, executed, cancelled (drop a draft). Proposer or host only.",
         {
             "proposal_id": {"type": "string"},
-            "status": {"type": "string", "enum": ["proposed", "voting", "passed", "vetoed", "executed", "cancelled"]},
+            "status": {
+                "type": "string",
+                "enum": ["proposed", "voting", "passed", "review", "approved", "vetoed", "executed", "cancelled"],
+            },
             "onchain_id": {"type": "integer"},
             "tx_hash": {"type": "string"},
             "card_message_id": {"type": "string"},
@@ -261,6 +271,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             "claims": [asdict(c) for c in rules.active_claims(state, now)],
             "agents": [asdict(a) for a in state.agents],
             "members": {"approved": sum(m.approved for m in state.members), "waiting": sum(not m.approved for m in state.members)},
+            "cooldown_until": state.fund.cooldown_until,
+            "pitch_claims": [asdict(c) for c in rules.active_claims(state, now) if c.idea_by],
         }
 
     def fund_setup(args: dict[str, Any]) -> dict[str, Any]:
@@ -274,7 +286,9 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         asset_arg = str(args.get("asset") or "").upper()
         if asset_arg and asset_arg not in ("USDG", "WETH"):
             raise UnitsError("asset must be USDG or WETH")
-        ints = {k: int(args[k]) for k in ("max_drawdown_bps", "voting_period") if args.get(k) not in (None, "")}
+        ints = {k: int(args[k]) for k in ("max_drawdown_bps", "voting_period", "agent_fee_bps") if args.get(k) not in (None, "")}
+        if "agent_fee_bps" in ints:
+            rules.require(rules.check_agent_fee(ints["agent_fee_bps"]))
         cap_raw = args.get("max_capital")
         host_address = str(args.get("host_address") or rt.settings.agent_address or "")
         for key in ("vault", "governor"):
@@ -316,6 +330,17 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
 
             state = svc.backend.update(name, mutate)
         out: dict[str, Any] = {"fund": state.fund.name, "created": created, "state": asdict(state.fund)}
+        notes = []
+        if not rules.check_proposable_asset(state).ok:
+            notes.append(rules.check_proposable_asset(state).reason)
+        if state.fund.agent_fee_bps is None:
+            notes.append(
+                "set the vault agent fee to <= 15% before the first proposal (500 bps recommended; the default 20% "
+                "makes guardians refuse to approve): `sherwood vault set-agent-fee --bps 500 --calldata-only`, "
+                "host signs, then fund_setup agent_fee_bps=500"
+            )
+        if notes:
+            out["notes"] = notes
         if not state.fund.vault:
             out["next"] = "create the vault: sign the create-fund txs, then call fund_setup again with vault and governor"
             out["prepare"] = {

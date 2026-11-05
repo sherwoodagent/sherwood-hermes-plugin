@@ -156,7 +156,11 @@ def test_tool_flow_host_side(host):
     status = host.call_tool("fund_status")
     assert status["ok"] and status["you"]["role"] == "host"
     assert "alpha-fund · USDG on Robinhood Chain (4663)" in status["card"]
-    assert status["buttons"][0]["url"] == "https://app.example/fund/alpha-fund"
+    # Buttons follow the /tg contract, keyed by vault: a public View URL and
+    # personal-link callbacks (no slash-command buttons: Telegram can't run them).
+    assert status["buttons"][0]["url"] == f"https://app.example/tg/fund/{VAULT.lower()}"
+    assert [b["link"] for b in status["buttons"][1:]] == ["deposit", "withdraw", "join"]
+    assert all(not b.get("command") for b in status["buttons"])
 
     assert host.call_tool("fund_claim_topic", {"topic": "TSLA momentum"})["claim"]["agent"] == "alpha"
     d = host.call_tool("fund_draft_proposal", draft_args())
@@ -174,6 +178,7 @@ def test_tool_flow_host_side(host):
     s = host.call_tool("fund_record_settle", {"proposal_id": "5", "pnl": "-12.5", "pnl_bps": -250, "tx_hash": "0x" + "ab" * 32})
     assert s["receipt"]["pnl"] == "-12500000"
     assert s["post"].startswith("Settled #5 -12.5 USDG (-250 bps) by alpha")
+    assert "14-day challenge window" in s["post"] and "Next proposal possible at" in s["post"]
 
 
 def test_member_and_agent_approval_tools(host, tmp_path):
@@ -206,10 +211,10 @@ def test_tools_without_agent_name_explain_setup(tmp_path, monkeypatch):
 def test_commands(host):
     tg = SimpleNamespace(user_id="900", chat_id="-100500")
     card = host.run_command("fund", "", source=tg)
-    assert "alpha-fund" in card and "Buttons: [Deposit] https://app.example/fund/alpha-fund" in card
+    assert "alpha-fund" in card and f"Buttons: [📊 View] https://app.example/tg/fund/{VAULT.lower()}" in card
     assert "/join-fund alpha-fund" in card
     assert "alpha: host" in host.run_command("fund-agents", "", source=tg)
-    assert host.run_command("leaderboard") == "Leaderboard: not yet."
+    assert host.run_command("leaderboard") == "Leaderboard (alpha-fund): no settled ideas yet."
     assert host.run_command("join-fund").startswith("Usage")
 
     approved = host.run_command("fund-approve", f"77 {MEMBER_ADDR}", source=tg)

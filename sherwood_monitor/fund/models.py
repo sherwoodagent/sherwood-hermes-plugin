@@ -28,6 +28,17 @@ TOKEN_ADDRESSES_4663: dict[str, str] = {
 
 DEFAULT_VOTING_PERIOD_SECONDS = 1800
 DEFAULT_VETO_THRESHOLD_BPS = 2000  # optimistic veto: Against >= 20% of supply
+# Governor cooldown after a vetoed or settled proposal: the next propose reverts
+# CooldownNotElapsed() until it passes (fork run 2026-11-05, finding 3).
+DEFAULT_COOLDOWN_SECONDS = 3600
+# The guardian review refuses to Approve near the governor's 20% fee cap
+# (EXCESSIVE_PERFORMANCE_FEE); set the vault agent fee at or below 15%.
+MAX_AGENT_FEE_BPS = 1500
+# PortfolioStrategy needs a USD-pegged vault asset (AssetNotUsdPegged on WETH).
+PROPOSABLE_ASSETS = frozenset({"USDG"})
+# A settled proposal's bond stays in ProposerBondEscrow this long after
+# executedAt + duration; a vetoed one comes back at once.
+BOND_CHALLENGE_WINDOW_DAYS = 14
 CLAIM_TTL_SECONDS = 600
 MAX_OPEN_PER_FUND = 2
 MAX_OPEN_PER_AGENT = 1
@@ -37,12 +48,16 @@ AGENT_ROLES = ("host", "guest")
 
 # Proposal lifecycle. `cancelled` is not on-chain: it closes a draft that was
 # never proposed (or an agent's drafts when the host removes it), so an
-# abandoned draft cannot hold a slot forever.
+# abandoned draft cannot hold a slot forever. After voting the governor runs a
+# guardian review (`review`, 30 min); execute needs a staked guardian's
+# Approve with enough WOOD coverage (`approved`).
 PROPOSAL_STATUSES = (
     "draft",
     "proposed",
     "voting",
     "passed",
+    "review",
+    "approved",
     "vetoed",
     "executed",
     "settled",
@@ -50,7 +65,7 @@ PROPOSAL_STATUSES = (
 )
 # A draft counts as open: it holds the agent's single slot and one of the
 # fund's two slots from the moment it is recorded.
-OPEN_STATUSES = frozenset({"draft", "proposed", "voting", "passed", "executed"})
+OPEN_STATUSES = frozenset({"draft", "proposed", "voting", "passed", "review", "approved", "executed"})
 TERMINAL_STATUSES = frozenset({"vetoed", "settled", "cancelled"})
 
 T = TypeVar("T")
@@ -90,6 +105,11 @@ class Fund:
     # None = no plugin ceiling (the governor's own caps still apply on-chain).
     max_capital: str | None = None  # asset base units
     max_drawdown_bps: int | None = None
+    # Vault agent (performance) fee; None = not recorded. At most MAX_AGENT_FEE_BPS.
+    agent_fee_bps: int | None = None
+    cooldown_period: int = DEFAULT_COOLDOWN_SECONDS
+    # No new proposal before this time (set when a proposal is vetoed or settled).
+    cooldown_until: float | None = None
     created_at: float = 0
 
     @property
@@ -100,6 +120,9 @@ class Fund:
     def from_dict(cls, raw: dict[str, Any]) -> "Fund":
         d = _pick(cls, raw)
         d["max_drawdown_bps"] = _opt_int(d.get("max_drawdown_bps"))
+        d["agent_fee_bps"] = _opt_int(d.get("agent_fee_bps"))
+        if d.get("cooldown_until") is not None:
+            d["cooldown_until"] = float(d["cooldown_until"])
         if d.get("max_capital") is not None:
             d["max_capital"] = str(d["max_capital"])
         for key in ("telegram_chat_id", "host_telegram_id"):
@@ -177,6 +200,12 @@ class Claim:
     topic: str
     expires_at: float
     created_at: float = 0
+    # Set when the claim came from a chat pitch (DraftRequested): whose idea it
+    # was, the pitch text, and where it was pitched. The draft inherits idea_by.
+    idea_by: str = ""
+    pitch: str = ""
+    chat_id: str = ""
+    source_message_id: int | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Claim":
@@ -201,6 +230,10 @@ class Leg:
     value: str = "0"
     cap: str = "0"
     amount: str = ""  # token base units for approve legs ("" when n/a)
+    # PortfolioStrategy legs: the stock token and its weight (bps of max capital).
+    # The cards show these; prepare/propose-portfolio takes them directly.
+    symbol: str = ""
+    weight_bps: int = 0
 
     @property
     def has_call(self) -> bool:
@@ -215,6 +248,8 @@ class Leg:
             if key in d and d[key] is not None:
                 d[key] = str(d[key])
         d.setdefault("summary", "")
+        if d.get("weight_bps") not in (None, ""):
+            d["weight_bps"] = int(d["weight_bps"])
         return cls(**d)
 
 
@@ -251,6 +286,18 @@ class ProposalRecord:
     idea_by: str = ""  # telegram id of the member whose idea it was
     card_message_id: str = ""
     voting_ends_at: float | None = None
+    # Chain reads (tx-builder GET funds/<vault>/tg-card): Against as bps of the
+    # votable supply, the guardian review window, and the guardian Approve
+    # coverage when the read exposes it ("" = unknown).
+    against_bps: int = 0
+    review_ends_at: float | None = None
+    guardian_coverage: str = ""
+    chain_synced_at: float | None = None
+    # The chat message the idea was pitched in (drafts that came from a pitch).
+    pitch_message_id: int | None = None
+    # The host's "ship it" on the draft card (go-ahead to propose).
+    shipped_at: float | None = None
+    shipped_by: str = ""
     created_at: float = 0
     updated_at: float = 0
 
@@ -266,6 +313,9 @@ class ProposalRecord:
         d["backers"] = [str(x) for x in raw.get("backers", [])]
         d["objectors"] = [str(x) for x in raw.get("objectors", [])]
         d["onchain_id"] = _opt_int(d.get("onchain_id"))
+        d["pitch_message_id"] = _opt_int(d.get("pitch_message_id"))
+        if d.get("against_bps") not in (None, ""):
+            d["against_bps"] = int(d["against_bps"])
         for key in ("max_capital", "bond_wood"):
             if key in d:
                 d[key] = str(d[key])

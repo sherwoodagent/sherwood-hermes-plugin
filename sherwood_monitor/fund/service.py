@@ -5,9 +5,17 @@ reactions, tools and slash commands here). Every write is a single
 `backend.update()`, so a rule is checked against the same state it mutates,
 under the file lock. Rule failures raise `RuleViolation` (code + reason);
 nothing is written when one is raised.
+
+Observers: `subscribe(fn)` registers a callback that gets a `FundEvent` after
+each successful write (never inside the lock, never on a rule failure). The
+Telegram bridge (`fund/telegram.py`) uses it to post and refresh cards; this
+module imports nothing from the Telegram side. A failing observer is logged
+and never fails the write.
 """
 from __future__ import annotations
 
+import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -29,6 +37,9 @@ from .store import FundNotFound, FundStateBackend, FundStoreError, validate_fund
 from .txbuilder import DEFAULT_TX_BUILDER_URL, TxBuilderError, build_propose_body
 
 
+_log = logging.getLogger(__name__)
+
+
 class FundServiceError(Exception):
     pass
 
@@ -38,6 +49,47 @@ class DraftResult:
     proposal: ProposalRecord
     prepare: dict[str, Any]  # {"route", "url", "ready", "missing", "body"}
     bond: dict[str, Any] = field(default_factory=dict)
+
+
+# FundEvent kinds
+EV_DRAFT_REQUESTED = "draft_requested"  # a chat pitch earned its draft: a claim with idea_by
+EV_DRAFTED = "drafted"  # a draft proposal was recorded
+EV_SHIPPED = "shipped"  # the host said "ship it" on a draft
+EV_STATUS = "status"  # a proposal moved along its lifecycle
+EV_VOTE = "vote"  # a chat back/object or an agent review
+EV_TALLY = "tally"  # chain read changed Against / windows / guardian coverage
+EV_SETTLED = "settled"  # settle recorded; carries the receipt
+EV_MEMBER_REQUESTED = "member_requested"
+EV_MEMBER_APPROVED = "member_approved"
+
+
+@dataclass(frozen=True)
+class FundEvent:
+    kind: str
+    fund: str
+    proposal: ProposalRecord | None = None
+    old_status: str = ""
+    receipt: SettleReceipt | None = None
+    claim: Claim | None = None
+    member: Member | None = None
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+FundObserver = Callable[[FundEvent], Any]
+
+_TICKER_RE = re.compile(r"\$([A-Za-z][A-Za-z0-9]{0,9})\b")
+
+
+def pitch_topic(text: str) -> str:
+    """A claim topic for a chat pitch: its $TICKERs, else its first words."""
+    tickers = []
+    for t in _TICKER_RE.findall(text or ""):
+        if t.upper() not in tickers:
+            tickers.append(t.upper())
+    if tickers:
+        return " ".join(tickers[:4]) + " pitch"
+    words = re.sub(r"@\w+", " ", text or "").split()
+    return " ".join(words[:6])[:60] or "chat pitch"
 
 
 class FundService:
@@ -51,6 +103,25 @@ class FundService:
         self.backend = backend
         self.clock = clock
         self.tx_builder_url = (tx_builder_url or DEFAULT_TX_BUILDER_URL).rstrip("/")
+        self._observers: list[FundObserver] = []
+
+    # -- observers -------------------------------------------------------------------------
+    def subscribe(self, fn: FundObserver) -> Callable[[], None]:
+        """Call `fn(FundEvent)` after every successful write. Returns an unsubscribe."""
+        self._observers.append(fn)
+
+        def unsubscribe() -> None:
+            if fn in self._observers:
+                self._observers.remove(fn)
+
+        return unsubscribe
+
+    def _emit(self, event: FundEvent) -> None:
+        for fn in list(self._observers):
+            try:
+                fn(event)
+            except Exception as exc:  # an observer never fails a write
+                _log.warning("fund observer %r failed on %s: %s", fn, event.kind, exc)
 
     # -- reads -------------------------------------------------------------------------------
     def load(self, fund: str) -> FundState:
@@ -90,6 +161,7 @@ class FundService:
     # -- host setup ------------------------------------------------------------------------
     def create_fund(self, fund: Fund, host_agent: Agent) -> FundState:
         now = self.clock()
+        require(rules.check_agent_fee(fund.agent_fee_bps))
         fund.name = validate_fund_name(fund.name)
         fund.created_at = fund.created_at or now
         host_agent.role = "host"
@@ -117,7 +189,9 @@ class FundService:
                 member.username = username
             return member
 
-        return self.backend.update(fund, mutate)
+        member = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_MEMBER_REQUESTED, fund, member=member))
+        return member
 
     def approve_member(
         self,
@@ -153,7 +227,9 @@ class FundService:
             body = {"chainId": state.fund.chain_id, "vault": state.fund.vault, "depositor": member.address}
             return member, body
 
-        return self.backend.update(fund, mutate)
+        member, body = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_MEMBER_APPROVED, fund, member=member, data={"body": body}))
+        return member, body
 
     # -- agents --------------------------------------------------------------------------
     def request_agent(self, fund: str, agent: Agent) -> Agent:
@@ -279,6 +355,52 @@ class FundService:
 
         return self.backend.update(fund, mutate)
 
+    def request_draft(
+        self,
+        fund: str,
+        agent: str,
+        *,
+        idea_by: str,
+        pitch: str,
+        chat_id: str = "",
+        source_message_id: int | None = None,
+        topic: str = "",
+    ) -> Claim:
+        """A chat pitch earned its draft (3 fire or the host's "ship it").
+
+        The agent cannot write legs from a chat message, so this does what the
+        coordination rules allow without them: it CLAIMS the pitch's topic for
+        `agent` (same checks as `claim_topic`: other agents see "drafting X"),
+        tagged with whose idea it was. The agent then drafts with
+        `fund_draft_proposal` on that topic; the draft inherits `idea_by`.
+        """
+        now = self.clock()
+        topic = (topic or pitch_topic(pitch)).strip()
+
+        def mutate(state: FundState) -> Claim:
+            state.claims = rules.active_claims(state, now)
+            require(rules.check_claim(state, agent, topic, now))
+            proposer = state.agent(agent)
+            assert proposer is not None
+            key = proposer.name.lower()
+            state.claims = [c for c in state.claims if c.agent.lower() != key]
+            claim = Claim(
+                agent=proposer.name,
+                topic=topic,
+                expires_at=rules.claim_expires_at(now),
+                created_at=now,
+                idea_by=str(idea_by or ""),
+                pitch=(pitch or "").strip()[:1000],
+                chat_id=str(chat_id or ""),
+                source_message_id=source_message_id,
+            )
+            state.claims.append(claim)
+            return claim
+
+        claim = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_DRAFT_REQUESTED, fund, claim=claim))
+        return claim
+
     def draft_proposal(
         self,
         fund: str,
@@ -308,6 +430,7 @@ class FundService:
             ))
             proposer = state.agent(agent)
             assert proposer is not None
+            claim = rules.claim_of(state, agent, now)
             record = ProposalRecord(
                 id=f"p-{state.next_proposal_seq}",
                 proposer_agent=proposer.name,
@@ -319,7 +442,8 @@ class FundService:
                 governor=state.fund.governor,
                 topic=topic.strip(),
                 strategy_duration=strategy_duration,
-                idea_by=str(idea_by or ""),
+                idea_by=str(idea_by or (claim.idea_by if claim else "") or ""),
+                pitch_message_id=claim.source_message_id if claim else None,
                 created_at=now,
                 updated_at=now,
             )
@@ -329,7 +453,36 @@ class FundService:
             bond = _bond_section(state, proposer, max_capital, bond_quote_wood, wood_balance)
             return DraftResult(record, self.propose_payload(state.fund, record, strategy=strategy, metadata_uri=metadata_uri), bond)
 
-        return self.backend.update(fund, mutate)
+        result = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_DRAFTED, fund, proposal=result.proposal, data={"bond": result.bond, "prepare": result.prepare}))
+        return result
+
+    def ship_draft(self, fund: str, proposal_id: str, *, caller_telegram_id: str | None = None) -> ProposalRecord:
+        """The host's "ship it" on a draft card: the go-ahead to propose it on-chain.
+
+        Nothing is signed here. With `proposal_signer: agent` the agent proposes
+        from its own wallet; with `host` (pre-GA) the host co-signs from a link.
+        """
+        now = self.clock()
+
+        def mutate(state: FundState) -> ProposalRecord:
+            require(rules.check_caller_is_host(state, caller_telegram_id))
+            record = state.proposal(proposal_id)
+            if record is None:
+                raise RuleViolation(rules.deny("unknown_proposal", f"no proposal {proposal_id}"))
+            if record.status != "draft":
+                raise RuleViolation(rules.deny("not_draft", f"proposal {record.id} is {record.status}, not a draft"))
+            if not record.legs or int(record.max_capital or 0) <= 0:
+                raise RuleViolation(rules.deny("draft_not_ready", f"{record.proposer_agent} is still building {record.id}"))
+            require(rules.check_cooldown(state, now))
+            record.shipped_at = now
+            record.shipped_by = str(caller_telegram_id or "")
+            record.updated_at = now
+            return record
+
+        record = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_SHIPPED, fund, proposal=record))
+        return record
 
     def propose_payload(self, fund: Fund, record: ProposalRecord, *, strategy: str = "", metadata_uri: str = "") -> dict[str, Any]:
         """The prepare/propose request this draft maps to, with what is still missing."""
@@ -397,6 +550,7 @@ class FundService:
     ) -> ProposalRecord:
         """Move a proposal along its lifecycle (draft -> proposed -> ... ). Proposer or host only."""
         now = self.clock()
+        old: dict[str, str] = {}
 
         def mutate(state: FundState) -> ProposalRecord:
             record = state.proposal(proposal_id)
@@ -404,6 +558,9 @@ class FundService:
                 raise RuleViolation(rules.deny("unknown_proposal", f"no proposal {proposal_id}"))
             _require_proposer_or_host(state, actor, record)
             require(rules.check_transition(record.status, status))
+            if record.status == "draft" and status == "proposed":
+                require(rules.check_cooldown(state, now))
+            old["status"] = record.status
             record.status = status
             record.updated_at = now
             if onchain_id is not None:
@@ -411,11 +568,103 @@ class FundService:
             if status == "proposed":
                 record.propose_tx = tx_hash or record.propose_tx
                 record.voting_ends_at = now + state.fund.voting_period
+            if status == "review" and record.review_ends_at is None:
+                record.review_ends_at = now + state.fund.voting_period  # reviewPeriod = 1800 s on 4663
+            if status == "vetoed":
+                _start_cooldown(state, now)
             if card_message_id:
                 record.card_message_id = str(card_message_id)
             return record
 
-        return self.backend.update(fund, mutate)
+        record = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_STATUS, fund, proposal=record, old_status=old.get("status", "")))
+        return record
+
+    def set_chain_state(
+        self,
+        fund: str,
+        proposal_id: str,
+        *,
+        against_bps: int | None = None,
+        voting_ends_at: float | None = None,
+        review_ends_at: float | None = None,
+        guardian_coverage: str | None = None,
+    ) -> ProposalRecord:
+        """Store what a chain read says about a proposal (veto meter, windows, guardian coverage)."""
+        now = self.clock()
+        changed: dict[str, bool] = {}
+
+        def mutate(state: FundState) -> ProposalRecord:
+            record = state.proposal(proposal_id)
+            if record is None:
+                raise RuleViolation(rules.deny("unknown_proposal", f"no proposal {proposal_id}"))
+            updates = {
+                "against_bps": None if against_bps is None else max(0, int(against_bps)),
+                "voting_ends_at": None if voting_ends_at is None else float(voting_ends_at),
+                "review_ends_at": None if review_ends_at is None else float(review_ends_at),
+                "guardian_coverage": None if guardian_coverage is None else str(guardian_coverage),
+            }
+            for key, value in updates.items():
+                if value is not None and getattr(record, key) != value:
+                    setattr(record, key, value)
+                    changed["any"] = True
+            record.chain_synced_at = now
+            return record
+
+        record = self.backend.update(fund, mutate)
+        if changed:
+            self._emit(FundEvent(EV_TALLY, fund, proposal=record))
+        return record
+
+    def apply_chain_card(self, fund: str, card: dict[str, Any]) -> int:
+        """Apply a tx-builder `GET funds/<vault>/tg-card` read (its `data`). Returns proposals updated.
+
+        Matches proposals by on-chain id. Reads `againstBps`, `voteEnd`,
+        `reviewEnd` and, when the read exposes it, the guardian Approve
+        coverage (`guardianCoverage` / `approveCoverage` / `coverage`), plus
+        the governor's `cooldownPeriod` and `vetoThresholdBps`.
+        """
+        data = card.get("data", card) if isinstance(card, dict) else {}
+        props = data.get("proposals") or {}
+        rows: list[dict[str, Any]] = []
+        for key in ("open", "recent"):
+            rows.extend(r for r in (props.get(key) or []) if isinstance(r, dict))
+        if isinstance(data.get("activeProposal"), dict):
+            rows.append(data["activeProposal"])
+        gov = data.get("governor") if isinstance(data.get("governor"), dict) else {}
+        if gov:
+            def fund_mutate(state: FundState) -> None:
+                if str(gov.get("cooldownPeriod") or "").isdigit():
+                    state.fund.cooldown_period = int(gov["cooldownPeriod"])
+                if str(gov.get("vetoThresholdBps") or "").isdigit():
+                    state.fund.veto_threshold_bps = int(gov["vetoThresholdBps"])
+
+            self.backend.update(fund, fund_mutate)
+        state = self.backend.load(fund)
+        updated = 0
+        seen: set[int] = set()
+        for row in rows:
+            try:
+                onchain = int(str(row.get("id")))
+            except (TypeError, ValueError):
+                continue
+            if onchain in seen:
+                continue
+            seen.add(onchain)
+            record = next((p for p in state.proposals if p.onchain_id == onchain), None)
+            if record is None:
+                continue
+            coverage = next((row[k] for k in ("guardianCoverage", "approveCoverage", "coverage") if row.get(k) not in (None, "")), None)
+            self.set_chain_state(
+                fund,
+                record.id,
+                against_bps=_opt_int(row.get("againstBps")),
+                voting_ends_at=_opt_float(row.get("voteEnd")),
+                review_ends_at=_opt_float(row.get("reviewEnd")),
+                guardian_coverage=None if coverage is None else (coverage if isinstance(coverage, str) else str(coverage)),
+            )
+            updated += 1
+        return updated
 
     def set_card_message(self, fund: str, proposal_id: str, card_message_id: str) -> ProposalRecord:
         """The Telegram lane records which message is the proposal's card."""
@@ -445,8 +694,10 @@ class FundService:
         """
         now = self.clock()
         side = side.strip().lower()
-        if side not in ("back", "object"):
-            raise RuleViolation(rules.deny("bad_side", "side must be back or object"))
+        if side not in ("back", "object", "clear"):
+            raise RuleViolation(rules.deny("bad_side", "side must be back, object or clear"))
+        if side == "clear" and voter_kind == "agent":
+            raise RuleViolation(rules.deny("bad_side", "agents review with back or object"))
 
         def mutate(state: FundState) -> ProposalRecord:
             record = state.proposal(proposal_id)
@@ -464,16 +715,20 @@ class FundService:
                 tid = member.telegram_id or member.address
                 record.backers = [x for x in record.backers if x != tid]
                 record.objectors = [x for x in record.objectors if x != tid]
-                (record.backers if side == "back" else record.objectors).append(tid)
+                if side != "clear":
+                    (record.backers if side == "back" else record.objectors).append(tid)
             record.updated_at = now
             return record
 
-        return self.backend.update(fund, mutate)
+        record = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_VOTE, fund, proposal=record, data={"voter": voter, "side": side, "voter_kind": voter_kind}))
+        return record
 
     def record_settle(
         self, fund: str, actor: str, proposal_id: str, *, pnl: int, pnl_bps: int = 0, tx_hash: str = ""
     ) -> SettleReceipt:
         now = self.clock()
+        old: dict[str, str] = {}
 
         def mutate(state: FundState) -> SettleReceipt:
             record = state.proposal(proposal_id)
@@ -481,8 +736,10 @@ class FundService:
                 raise RuleViolation(rules.deny("unknown_proposal", f"no proposal {proposal_id}"))
             _require_proposer_or_host(state, actor, record)
             require(rules.check_transition(record.status, "settled"))
+            old["status"] = record.status
             record.status = "settled"
             record.updated_at = now
+            _start_cooldown(state, now)
             receipt = SettleReceipt(
                 proposal_id=record.id,
                 agent=record.proposer_agent,
@@ -496,9 +753,45 @@ class FundService:
                 settled_at=now,
             )
             state.receipts.append(receipt)
-            return receipt
+            return receipt, record
 
-        return self.backend.update(fund, mutate)
+        receipt, record = self.backend.update(fund, mutate)
+        self._emit(FundEvent(EV_SETTLED, fund, proposal=record, receipt=receipt, old_status=old.get("status", "")))
+        return receipt
+
+    def leaderboard(self, fund: str) -> list[dict[str, Any]]:
+        """Members ranked by the P&L of their settled ideas: [{tg_id, pnl_bps, ideas, wins}]."""
+        state = self.backend.load(fund)
+        rows: dict[str, dict[str, Any]] = {}
+        for r in state.receipts:
+            if not r.idea_by:
+                continue
+            row = rows.setdefault(r.idea_by, {"tg_id": r.idea_by, "pnl_bps": 0, "ideas": 0, "wins": 0})
+            row["pnl_bps"] += int(r.pnl_bps)
+            row["ideas"] += 1
+            row["wins"] += 1 if int(r.pnl) > 0 else 0
+        return sorted(rows.values(), key=lambda x: (-x["pnl_bps"], -x["ideas"], str(x["tg_id"])))
+
+
+def _start_cooldown(state: FundState, now: float) -> None:
+    """The governor blocks a new propose for `cooldown_period` after a veto or a settle."""
+    until = now + max(0, int(state.fund.cooldown_period))
+    if state.fund.cooldown_until is None or until > state.fund.cooldown_until:
+        state.fund.cooldown_until = until
+
+
+def _opt_int(value: Any) -> int | None:
+    try:
+        return None if value in (None, "") else int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(value: Any) -> float | None:
+    try:
+        return None if value in (None, "", "0", 0) else float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _call(leg: Leg) -> dict[str, str]:
@@ -546,4 +839,12 @@ def _bond_section(
     return out
 
 
-__all__ = ["DraftResult", "FundNotFound", "FundService", "FundServiceError", "RuleViolation"]
+__all__ = [
+    "DraftResult",
+    "FundEvent",
+    "FundNotFound",
+    "FundService",
+    "FundServiceError",
+    "RuleViolation",
+    "pitch_topic",
+]

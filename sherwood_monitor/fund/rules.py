@@ -9,7 +9,10 @@ through the shared fund state. These checks are the whole protocol:
 - every agent bonds its own WOOD: bond = 1% of coverage, approve quote + 5%,
   never unlimited, top up a WOOD shortfall first, re-quote on >5% drift;
 - the host removes an agent with one action; the host cannot be removed;
-- optimistic veto: only Against counts; vetoed once Against >= 20% of supply.
+- optimistic veto: only Against counts; vetoed once Against >= 20% of supply;
+- the governor's cooldown: no new proposal for 1 h after a veto or a settle;
+- PortfolioStrategy proposes only on a USD-pegged asset (USDG), and the guardian
+  review refuses an agent fee near the 20% cap, so the fund keeps it <= 15%.
 
 Every check takes `now` explicitly and returns a `Verdict`; `require()` turns a
 failed verdict into a `RuleViolation` for callers that prefer exceptions.
@@ -22,9 +25,11 @@ from typing import Iterable
 
 from .models import (
     CLAIM_TTL_SECONDS,
+    MAX_AGENT_FEE_BPS,
     MAX_OPEN_PER_AGENT,
     MAX_OPEN_PER_FUND,
     OPEN_STATUSES,
+    PROPOSABLE_ASSETS,
     Agent,
     BondPolicy,
     Claim,
@@ -151,6 +156,50 @@ def check_caller_is_host(state: FundState, caller_telegram_id: str | None) -> Ve
     return ALLOW
 
 
+# -- fund-level gates (fork run 2026-11-05) -----------------------------------------------
+def check_cooldown(state: FundState, now: float) -> Verdict:
+    """The governor reverts CooldownNotElapsed for 1 h after a veto or a settle."""
+    until = state.fund.cooldown_until
+    if until is not None and now < until:
+        return deny(
+            "cooldown",
+            f"the governor's cooldown after the last veto/settle runs until {_hhmm(until)} UTC; "
+            "no new proposal before then (CooldownNotElapsed)",
+        )
+    return ALLOW
+
+
+def check_proposable_asset(state: FundState) -> Verdict:
+    asset = (state.fund.asset or "").upper()
+    if asset not in PROPOSABLE_ASSETS:
+        return deny(
+            "asset_not_usd_pegged",
+            f"{asset} funds cannot propose: PortfolioStrategy needs a USD-pegged asset "
+            "(AssetNotUsdPegged; the bond quote reverts FeedNotConfigured). Use a USDG fund.",
+        )
+    return ALLOW
+
+
+def check_agent_fee(fee_bps: int | None) -> Verdict:
+    if fee_bps is None:
+        return ALLOW
+    if not isinstance(fee_bps, int) or fee_bps < 0:
+        return deny("bad_agent_fee", "agent fee must be a non-negative integer number of bps")
+    if fee_bps > MAX_AGENT_FEE_BPS:
+        return deny(
+            "agent_fee_too_high",
+            f"agent fee {fee_bps} bps is above {MAX_AGENT_FEE_BPS} bps: the guardian review blocks "
+            "Approve near the 20% cap (EXCESSIVE_PERFORMANCE_FEE), so execute would never pass",
+        )
+    return ALLOW
+
+
+def _hhmm(ts: float) -> str:
+    import time as _time
+
+    return _time.strftime("%H:%M", _time.gmtime(ts))
+
+
 # -- claims ------------------------------------------------------------------------------
 def check_claim(
     state: FundState,
@@ -161,7 +210,7 @@ def check_claim(
     max_open: int = MAX_OPEN_PER_FUND,
     max_open_per_agent: int = MAX_OPEN_PER_AGENT,
 ) -> Verdict:
-    v = check_agent_can_act(state, agent)
+    v = first_failure([check_agent_can_act(state, agent), check_proposable_asset(state), check_cooldown(state, now)])
     if not v.ok:
         return v
     key = normalize_topic(topic)
@@ -267,7 +316,12 @@ def check_draft(
     max_open_per_agent: int = MAX_OPEN_PER_AGENT,
 ) -> Verdict:
     """Everything that must hold before a draft is recorded or calldata is built."""
-    v = check_agent_can_act(state, agent)
+    v = first_failure([
+        check_agent_can_act(state, agent),
+        check_proposable_asset(state),
+        check_agent_fee(state.fund.agent_fee_bps),
+        check_cooldown(state, now),
+    ])
     if not v.ok:
         return v
     if len(open_proposals_of(state, agent)) >= max_open_per_agent:
@@ -329,11 +383,15 @@ def is_vetoed(against_shares: int, total_supply: int, threshold_bps: int) -> boo
 
 
 # -- lifecycle ---------------------------------------------------------------------------
+# voting -> review (guardian review window) -> approved (guardian Approve with
+# enough coverage) -> executed. A guardian block in review reads as vetoed.
 TRANSITIONS: dict[str, frozenset[str]] = {
     "draft": frozenset({"proposed", "cancelled"}),
-    "proposed": frozenset({"voting", "passed", "vetoed", "cancelled"}),
-    "voting": frozenset({"passed", "vetoed", "cancelled"}),
-    "passed": frozenset({"executed", "cancelled"}),
+    "proposed": frozenset({"voting", "passed", "review", "vetoed", "cancelled"}),
+    "voting": frozenset({"passed", "review", "vetoed", "cancelled"}),
+    "passed": frozenset({"review", "approved", "executed", "cancelled"}),
+    "review": frozenset({"approved", "vetoed", "cancelled"}),
+    "approved": frozenset({"executed", "cancelled"}),
     "executed": frozenset({"settled"}),
 }
 
