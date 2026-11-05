@@ -6,7 +6,13 @@ riffs on them, the group fires the good ones into draft proposals, and every
 proposal gets a live card with a veto meter and a countdown.
 
 Code: `sherwood_monitor/telegram/` (cards, links, flow, handlers) and
-`sherwood_monitor/fund/telegram.py` (the adapter to fund state).
+`sherwood_monitor/fund/telegram.py` (the adapter to fund state; how it is wired
+into the fund core: `docs/fund-host-join.md` § Telegram wiring).
+
+python-telegram-bot is not a dependency of this plugin. It comes with Hermes'
+own Telegram extra (`python-telegram-bot[webhooks]==22.8`), which the Hermes
+Telegram gateway needs anyway: install Hermes with that extra. Every PTB import
+here is guarded, so without it the plugin still loads and the cards are off.
 
 ## What is social and what is onchain
 
@@ -49,11 +55,13 @@ The demo bot is `@sherwoodagentbot`. Its configured state:
   ```
   fund - Fund card: NAV, P&L, positions, open proposals
   leaderboard - Best ideas by P&L
-  join_fund - Join this fund
   ```
 
-  Telegram command names allow only lowercase letters, digits and `_`, so the
-  command is `/join_fund`. The handler also answers a typed `/join-fund`.
+  Hermes also publishes the plugin's own slash commands in the menu, with `-`
+  turned into `_` (Telegram allows only `[a-z0-9_]`): `/join_fund`,
+  `/fund_approve`, `/fund_agents`. `/join_fund` is the guest-agent command
+  (a Hermes owner bringing their agent in as a co-manager), not a member join.
+  Members join from the fund card's 🎟 Join button.
 
 ### 2. Make the bot a group admin
 
@@ -95,22 +103,38 @@ Supergroup ids look like `-100XXXXXXXXXX`. Use that value below.
 
 ```yaml
 telegram:
-  group_allowed_chats: ["-100XXXXXXXXXX"]   # authorizes the whole group, no DM access
-  allowed_chats: ["-100XXXXXXXXXX"]         # where the bot answers
-  require_mention: true                      # the agent answers mentions and replies only
-  observe_unmentioned_group_messages: true   # other messages become context, not turns
+  group_allowed_chats: ["-100XXXXXXXXXX"]   # authorizes the whole group (no DM access)
+  allowed_chats: ["-100XXXXXXXXXX"]         # group chats the bot responds in
+  require_mention: true                      # default false: set it, or every group message is a turn
+  observe_unmentioned_group_messages: true   # default false: unmentioned messages become context
 ```
 
+What Hermes' Telegram adapter does with these (Hermes v0.22.x,
+`plugins/platforms/telegram/adapter.py`):
+
+- `require_mention` (env `TELEGRAM_REQUIRE_MENTION`) defaults to **false**.
+  Set it, or the agent takes a turn on every group message.
+- `observe_unmentioned_group_messages` (env
+  `TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES`) defaults to false. Observed
+  context is shared only in `group_allowed_chats` ∩ `allowed_chats` (or
+  `group_allowed_chats` alone when `allowed_chats` is empty).
+- `group_allowed_chats` (env `TELEGRAM_GROUP_ALLOWED_CHATS`) authorizes the
+  chat as a whole; authorization falls back to it when the update carries no
+  user id (anonymous admins, channel posts).
+- `allowed_chats` (env `TELEGRAM_ALLOWED_CHATS`): non-empty = the bot answers
+  only there (other groups need `guest_mode` + a mention); empty = anywhere.
+
 Environment (the profile `.env`; secrets are read through Hermes'
-`agent.secret_scope.get_secret`, never logged):
+`agent.secret_scope.get_secret(name, default=None)`, never logged):
 
 | Key | Meaning |
 |---|---|
-| `TELEGRAM_BOT_TOKEN` | bot token (secret) |
+| `TELEGRAM_BOT_TOKEN` | bot token (secret); without it Hermes never connects the adapter and the cards stay off |
 | `TELEGRAM_GROUP_ALLOWED_CHATS` | same as `telegram.group_allowed_chats`; this plugin's handlers also honour it |
+| `TELEGRAM_REQUIRE_MENTION=true` | same as the YAML key (default false) |
 | `TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true` | same as the YAML key; needs privacy off or admin |
 | `TELEGRAM_ALLOWED_USERS` | the host's Telegram user id only (DM access for the host) |
-| `SHERWOOD_TG_LINK_SECRET` | HMAC key for personal links; shared with the web app (secret) |
+| `SHERWOOD_TG_LINK_SECRET` | HMAC key for personal and host signing links; shared with the web app (secret) |
 | `APP_BASE_URL` | web app base, default `https://app.sherwood.sh` |
 | `SHERWOOD_TG_PERSONAL_LINKS` | `ephemeral` (default) or `dm`, see below |
 | `TELEGRAM_BOT_USERNAME` | optional; otherwise taken from `getMe` |
@@ -121,14 +145,20 @@ explicitly; `getUpdates` leaves it out by default.
 
 ## Commands
 
-| Command | Reply |
-|---|---|
-| `/fund` | fund card |
-| `/leaderboard` | ideas ranked by P&L |
-| `/join_fund` (or `/join-fund`) | join prompt with a Join button |
+| Command | Where | Reply |
+|---|---|---|
+| `/fund` | Telegram groups (PTB handler) | fund card with buttons |
+| `/leaderboard` | Telegram groups (PTB handler) | members ranked by settled-idea P&L |
+| `/fund`, `/leaderboard` | everywhere else (Hermes slash command) | the same data as text |
+| `/join-fund <fund>` (`/join_fund` in Telegram's menu) | Hermes slash command | a guest AGENT asks to co-manage; owner only |
 
-These run before Hermes' own command handling. If plugin-core also registers a
-Hermes slash command named `fund`, the Telegram handler answers it in groups.
+One path per surface: in a group the PTB `CommandHandler`s in group 0 run
+before Hermes' command dispatch and answer `/fund` and `/leaderboard` with the
+rich card; in DMs, the CLI and other platforms the plugin's core slash commands
+answer. There is no Telegram handler for `/join_fund` / `/join-fund`: that name
+belongs to the guest-agent command, and members join from the card's 🎟 Join
+button. When the chat says who typed `/join-fund` and it is not the Hermes
+owner (`owner_telegram_id`), the core command refuses and points at the button.
 
 ## Cards and buttons
 
@@ -136,6 +166,13 @@ Renderers in `sherwood_monitor/telegram/cards.py` are pure and return
 `(text_html, InlineKeyboardMarkup)`: proposal card, fund card, member #N card,
 settle receipt, draft card, join prompt, member request, agent card,
 leaderboard, personal link.
+
+Status chips cover the whole lifecycle, including the guardian review the
+governor runs after voting (`🛡 GUARDIAN REVIEW`, `🛡 GUARDIAN APPROVED`, with
+the review countdown and the booked coverage). The fund card shows
+"⏳ Next proposal possible at HH:MM UTC" during the governor's 1 h cooldown
+after a veto or a settle. A vetoed card says the bond comes back at once; a
+settle receipt says the bond stays in escrow for the 14-day challenge window.
 
 A voting proposal card looks like this:
 
@@ -165,14 +202,14 @@ Callback data is `shfund:<action>:<arg>`, at most 64 bytes, routed by one
 | Callback | Who | Effect |
 |---|---|---|
 | `shfund:back:<pid>` | anyone | toggle 👍 (social), edit the card in place |
-| `shfund:vote:<pid>` | anyone | personal `/tg/vote` link (❌ Object) |
+| `shfund:vote:<pid>` | anyone | personal `/tg/vote` link (❌ Object); the link uses the on-chain id, and a proposal without one gets "not on-chain yet" |
 | `shfund:deposit:<vault>` | anyone | personal `/tg/deposit` link |
 | `shfund:withdraw:<vault>` | anyone | personal `/tg/withdraw` link |
-| `shfund:join:<vault>` | anyone | personal `/tg/join` link |
+| `shfund:join:<vault>` | anyone | records a join request (first tap shows the host an Approve card), then the personal `/tg/join` link |
 | `shfund:shipit:<draft>` | host | ship the draft to a vote |
 | `shfund:propose:<draft>` | host | pre-GA co-sign: personal link to the host signing page |
-| `shfund:approve_member:<tg_id>` | host | approve a member |
-| `shfund:approve_agent:<name>` | host | approve a guest agent |
+| `shfund:approve_member:<tg_id>` | host | approve a member, then the host's `/tg/sign` link for `approveDepositor` |
+| `shfund:approve_agent:<name>` | host | approve a guest agent, then the host's `/tg/sign` link for `registerAgent` |
 | `shfund:remove_agent:<name>` | host | remove an agent |
 
 Host-only callbacks compare the tapper's Telegram id with the fund's host id
@@ -194,6 +231,39 @@ contracts still gate anything onchain.
   veto meter). When the window closes or the status leaves `voting`, one final
   edit lands and the job stops. It uses PTB's `JobQueue` when the `job-queue`
   extra is installed, an asyncio task otherwise.
+
+## Host signing page (contract with the app lane)
+
+The host signs owner-only transactions from a personal link, delivered like the
+member links below (ephemeral message, DM, start link). **The app lane must add
+the route.**
+
+```
+${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<host_telegram_id>&ts=<unix_seconds>&sig=<hex>
+    sig  = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "<vault>|<action>|<body>|<tg>|<ts>"))
+    body = base64url (no padding) of the compact, key-sorted JSON request body
+```
+
+- `action` is the tx-builder route to call, one of `approve-depositor`,
+  `approve-depositors`, `register-agent`, `propose-portfolio`, `propose`,
+  `set-agent-fee` (`links.SIGN_ACTIONS`). `body` is exactly the body for
+  `POST /api/v1/prepare/<action>` (it already carries `chainId: 4663`).
+- The page: verify `sig` over the values as received and `ts` freshness (15
+  min), require the Privy Telegram login to be `tg` and the connected wallet to
+  be the vault owner, `POST /api/v1/prepare/<action>` with the decoded body,
+  show the `description`, `warnings` and, for `propose-portfolio`,
+  `bondQuoteWood` / `bondShortfallWood`, then send `[...prelude, ...txs]` in
+  order (for propose-portfolio: bond approve -> clone -> propose), waiting for
+  each. Never re-order or edit the body.
+- When it is used: after the host taps ✅ Approve member (approveDepositor),
+  ✅ Approve agent (registerAgent), and ✍️ Co-sign on a draft card
+  (propose-portfolio with the host as `proposer`, pre-GA while
+  `ownerOnlyProposals` is on). The plugin builds the body; it never signs or
+  sends.
+- URLs over 2048 characters are not issued (`links.SIGN_URL_MAX`); a
+  portfolio body is a few hundred.
+- `links.build_sign_link` / `sign_link_message` / `decode_sign_body` are the
+  reference; `tests/test_fund_telegram_integration.py` verifies a link end to end.
 
 ## Deep links (contract with the web app)
 
@@ -297,26 +367,31 @@ riffs. Pitches live 6 hours, in memory.
 
 ## Integration (plugin-core)
 
-```python
-from sherwood_monitor.fund.telegram import CallbackFundGateway, register_telegram
+Done in `register()`: `wire_fund_telegram(ctx, fund_runtime, push_context=buffer.push)`
+builds the gateway from the `FundService`, subscribes the bridge to its events
+and registers the platform handler lazily with
+`register_telegram(..., register_pre_llm_hook=False)`; the flow's pitch context
+is folded into the plugin's single `pre_llm_call` hook. The runtime calls the
+bridge makes:
 
-gateway = CallbackFundGateway(get_fund_for_chat=..., get_proposal=..., ...)
-runtime = register_telegram(ctx, gateway)   # factory + pre_llm_call hook
-...
-runtime.submit(runtime.post_proposal_card(chat_id, proposal_id))   # any thread
-runtime.submit(runtime.refresh_proposal_card(chat_id, proposal_id))
-runtime.submit(runtime.post_draft_card(chat_id, draft_id, bond_shortfall_wood=4.0))
-runtime.submit(runtime.post_receipt(chat_id, receipt))
+```python
+runtime.submit(runtime.post_draft_card(chat_id, draft_id, bond_shortfall_wood=..., requires_host_cosign=...))
+runtime.submit(runtime.post_proposal_card(chat_id, proposal_id))     # voting opens
+runtime.submit(runtime.refresh_proposal_card(chat_id, proposal_id))  # votes, chain reads, status
+runtime.submit(runtime.post_receipt(chat_id, receipt))               # settle
 ```
 
-`CallbackFundGateway` takes sync or async callables over plugin-core's records;
-its docstring lists each one. PTB is imported only inside the factory Hermes
-calls when the Telegram adapter connects, so `register()` works without it.
+`CallbackFundGateway` still takes sync or async callables for other hosts; its
+docstring lists each one. PTB is imported only inside the factory Hermes calls
+when the Telegram adapter connects, so `register()` works without it.
+`PitchFlow.link_riff(chat_id, pitch_id, riff_id)` stays available, but Hermes
+exposes no hook that returns the agent's reply message id, so the plugin does
+not call it; riffs are learned from replies and reactions.
 
 ## Smoke test
 
 ```bash
-pip install -e '.[telegram]'
+pip install -e '.[dev]'    # dev extra: pytest + python-telegram-bot for the script
 TELEGRAM_BOT_TOKEN=... TELEGRAM_TEST_CHAT_ID=-100XXXXXXXXXX python scripts/telegram_smoke.py
 python scripts/telegram_smoke.py --dry-run   # render only, no network
 ```

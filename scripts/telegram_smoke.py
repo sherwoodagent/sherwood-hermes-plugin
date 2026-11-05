@@ -8,8 +8,8 @@ countdown), posts a fund card and a settle receipt, prints the message ids and
 the bot's group capabilities, and exits. ``--dry-run`` renders the same cards
 to stdout without touching the network. The token is never printed.
 
-Needs ``pip install 'python-telegram-bot>=21,<23'`` (or this repo's
-``[telegram]`` extra). Sample addresses are placeholders, so the View buttons
+Needs ``pip install 'python-telegram-bot>=22,<23'`` (or this repo's ``[dev]``
+extra; inside Hermes, its Telegram extra provides it). Sample addresses are placeholders, so the View buttons
 open a fund page that does not exist.
 """
 from __future__ import annotations

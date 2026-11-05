@@ -12,8 +12,10 @@ telegram:
   allowed_chats:
     - "-100XXXXXXXXXX"
   # The agent takes a turn only on @mentions and replies to the bot.
+  # Hermes defaults this to false (every group message would be a turn).
   require_mention: true
-  # Everything else in the group becomes context, not a turn.
+  # Everything else in the group becomes context, not a turn (default false).
+  # Shared only in group_allowed_chats ∩ allowed_chats.
   # Needs BotFather privacy mode off (configured) or the bot as group admin.
   observe_unmentioned_group_messages: true
 
@@ -22,8 +24,9 @@ telegram:
 #
 #   TELEGRAM_BOT_TOKEN=<from BotFather>                 # secret
 #   TELEGRAM_GROUP_ALLOWED_CHATS=-100XXXXXXXXXX
+#   TELEGRAM_REQUIRE_MENTION=true
 #   TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 #   TELEGRAM_ALLOWED_USERS=<host telegram user id>      # host only
-#   SHERWOOD_TG_LINK_SECRET=<shared with the web app>   # secret, HMAC key for /tg links
+#   SHERWOOD_TG_LINK_SECRET=<shared with the web app>   # secret, HMAC key for /tg and /tg/sign links
 #   APP_BASE_URL=https://app.sherwood.sh                # default
 #   SHERWOOD_TG_PERSONAL_LINKS=ephemeral                # or: dm

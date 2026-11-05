@@ -238,6 +238,14 @@ def test_join_fund_command_for_a_guest(host, tmp_path, monkeypatch):
     assert guest.call_tool("fund_claim_topic", {"topic": "NVDA"})["ok"]
 
 
+def test_join_fund_is_owner_only_when_the_chat_says_who_typed_it(tmp_path, monkeypatch):
+    """On Telegram /join-fund appears as /join_fund in the group menu: a member typing it gets the Join hint."""
+    guest_cfg = {"agent_name": "beta", "agent_identity_id": "202", "agent_address": GUEST_ADDR, "owner_telegram_id": "555"}
+    guest = boot(tmp_path, monkeypatch, guest_cfg)
+    member = guest.run_command("join-fund", "alpha-fund", source=SimpleNamespace(user_id="77", chat_id="-100500"))
+    assert "only this Hermes's owner" in member and "🎟 Join" in member
+
+
 def test_join_fund_needs_identity_settings(tmp_path, monkeypatch):
     ctx = boot(tmp_path, monkeypatch, {"agent_name": "beta"})
     out = ctx.run_command("join-fund", "alpha-fund")

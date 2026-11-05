@@ -70,6 +70,13 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
                 "a guest brings its own ERC-8004 identity and its own scoped wallet."
             )
         user, _ = session_ids(source)
+        if user and s.owner_telegram_id and user != s.owner_telegram_id:
+            # On Telegram this command shows up as /join_fund in the group menu; a
+            # member typing it must not volunteer this Hermes as a co-manager.
+            return (
+                "/join-fund brings a Hermes agent into a fund as a co-manager; only this Hermes's owner runs it. "
+                "Members: tap 🎟 Join on the /fund card for your personal join link."
+            )
         agent = svc.request_agent(
             rt.fund_for(name),
             Agent(name=s.agent_name, identity_id=s.agent_identity_id, address=s.agent_address, owner_telegram_id=s.owner_telegram_id or (user or "")),
