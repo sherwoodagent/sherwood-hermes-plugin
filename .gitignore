@@ -7,3 +7,8 @@ build/
 dist/
 .coverage
 htmlcov/
+
+# local secrets (bot token, Privy keys); never committed
+.env
+.env.*
+!.env.example
