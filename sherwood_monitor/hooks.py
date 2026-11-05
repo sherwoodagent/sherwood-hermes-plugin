@@ -10,6 +10,7 @@ import shlex
 from typing import Any, Awaitable, Callable
 
 from .config import Config
+from .childenv import child_env
 from .event_buffer import EventBuffer
 from .memory import MemoryWriter, build_record
 from .risk import ProposeParams, evaluate_propose
@@ -27,6 +28,7 @@ async def _catchup_one(sherwood_bin: str, subdomain: str) -> dict | None:
             subdomain,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_env(),
         )
         stdout, _stderr = await proc.communicate()
         rc = await proc.wait()

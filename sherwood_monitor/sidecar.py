@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from .key_derivation import DEFAULT_SALT, address_from_private_key, derive_sidecar_key
+from .childenv import child_env
 
 _log = logging.getLogger(__name__)
 
@@ -106,6 +107,8 @@ class Sidecar:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self._sidecar_dir),
+            # No plugin secrets in node's env: it gets only the derived key, over stdin.
+            env=child_env(),
         )
 
         self._reader_task = asyncio.create_task(
@@ -305,11 +308,13 @@ class Sidecar:
             [self._npm_bin, "ci"],
             cwd=str(self._sidecar_dir),
             check=True,
+            env=child_env(),
         )
         subprocess.run(
             [self._npm_bin, "run", "build"],
             cwd=str(self._sidecar_dir),
             check=True,
+            env=child_env(),
         )
 
     async def _resolve(self, subdomain: str) -> str:

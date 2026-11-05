@@ -21,6 +21,8 @@ import asyncio
 import json
 import logging
 
+from .childenv import child_env
+
 _log = logging.getLogger(__name__)
 
 
@@ -39,6 +41,7 @@ async def fetch_vault_info(sherwood_bin: str, subdomain: str) -> dict | None:
             "--json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=child_env(),
         )
         stdout, _stderr = await proc.communicate()
         if proc.returncode != 0:

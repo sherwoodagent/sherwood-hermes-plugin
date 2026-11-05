@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .childenv import child_env
+
 if TYPE_CHECKING:
     from .sidecar import Sidecar
 
@@ -49,6 +51,7 @@ def check_cli_installed(
             capture_output=True,
             text=True,
             timeout=5,
+            env=child_env(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False, None
@@ -98,6 +101,7 @@ def run_preflight(
     sherwood_bin: str,
     sidecar_dir: Path | None = None,
     home: Path | None = None,
+    xmtp_configured: bool = True,
 ) -> PreflightResult:
     """Run all preflight checks and collect warnings.
 
@@ -108,6 +112,9 @@ def run_preflight(
 
     ``home`` is accepted for call-site compatibility and unused: nothing here
     reads files under the user's home.
+
+    ``xmtp_configured`` False (no SHERWOOD_PRIVATE_KEY): the sidecar is never
+    started, so the sidecar warnings are not shown; ``sidecar_built`` is still set.
     """
     del home
     warnings: list[str] = []
@@ -127,13 +134,14 @@ def run_preflight(
     # Synchronous sidecar-built check (no running sidecar needed)
     if sidecar_dir is None:
         sidecar_built = False
-        warnings.append(
-            "XMTP sidecar directory not configured. "
-            "Set sidecar_dir to enable XMTP streams."
-        )
+        if xmtp_configured:
+            warnings.append(
+                "XMTP sidecar directory not configured. "
+                "Set sidecar_dir to enable XMTP streams."
+            )
     else:
         sidecar_built = check_sidecar_built(sidecar_dir)
-        if not sidecar_built:
+        if not sidecar_built and xmtp_configured:
             warnings.append(
                 f"XMTP sidecar not built. Run: cd {sidecar_dir} && npm ci && npm run build"
             )

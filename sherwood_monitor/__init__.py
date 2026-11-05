@@ -13,7 +13,7 @@ from .cli import register_cli
 from .config import load_config
 from .event_buffer import EventBuffer
 from .fund import make_fund_guard, register_fund
-from .fund.secrets import SHERWOOD_PRIVATE_KEY, get_secret
+from .fund.secrets import SHERWOOD_AGENT_ADDRESS, SHERWOOD_PRIVATE_KEY, get_secret
 from .key_derivation import normalize_private_key
 from .hooks import (
     make_post_tool_call_hook,
@@ -85,11 +85,30 @@ def register(ctx: Any) -> None:
 
     buffer = EventBuffer()
 
+    # The monitor wallet (declared secrets only; never the Sherwood CLI's config).
+    private_key = _monitor_private_key()
+
     # Preflight: warn if CLI missing/misconfigured, but continue registering.
-    # Also checks synchronously whether the sidecar is built.
-    pre = run_preflight(cfg.sherwood_bin, sidecar_dir=sidecar_dir, home=home)
+    # Also checks synchronously whether the sidecar is built; that warning is
+    # shown only when XMTP is configured (SHERWOOD_PRIVATE_KEY set).
+    pre = run_preflight(
+        cfg.sherwood_bin, sidecar_dir=sidecar_dir, home=home, xmtp_configured=private_key is not None
+    )
     for warn in pre.warnings:
         buffer.push(f"<sherwood-monitor-warning>\n{warn}\n</sherwood-monitor-warning>")
+
+    # Upgrades from 0.6.0 are not prompted for new requires_env entries, and
+    # 0.7.0 no longer reads the CLI's config: say once that the gas watchdog
+    # (and XMTP) are off until the monitor wallet is set.
+    if cfg.funds and private_key is None and not get_secret(SHERWOOD_AGENT_ADDRESS):
+        buffer.push(
+            "<sherwood-monitor-warning>\n"
+            f"The gas watchdog is off: set {SHERWOOD_AGENT_ADDRESS} (the monitor wallet's 0x address) "
+            f"in the Hermes profile .env, or {SHERWOOD_PRIVATE_KEY} to also enable XMTP for funds whose "
+            "XMTP group is in Base's ENS record. Since 0.7.0 the plugin does not read the Sherwood "
+            "CLI's ~/.sherwood/config.json. Never paste a key into chat."
+            "\n</sherwood-monitor-warning>"
+        )
 
     # ------------------------------------------------------------------
     # Sidecar setup — all three paths converge on effective_post_fn
@@ -104,9 +123,8 @@ def register(ctx: Any) -> None:
 
     effective_post_fn = _noop_post
 
-    private_key = _monitor_private_key()
     if private_key is None:
-        # XMTP is optional: one log line (in _monitor_private_key), no chat warning.
+        # XMTP is optional: one log line (in _monitor_private_key); no sidecar warning.
         pass
     elif not pre.sidecar_built:
         # Warning already injected by run_preflight; skip spawn, keep _noop_post
@@ -176,6 +194,11 @@ def register(ctx: Any) -> None:
                     lines.append(f"  sherwood chat {sub} add {sidecar_address}")
                 lines.append("")
                 lines.append("Run these as the fund creator.")
+                lines.append(
+                    "XMTP streaming works only for funds whose XMTP group id is in their ENS "
+                    "record on Base. Robinhood Chain funds have no such record, so adding the "
+                    "sidecar will not help there; their on-chain events still arrive."
+                )
                 buffer.push(
                     "<sherwood-monitor-warning>\n"
                     + "\n".join(lines)
