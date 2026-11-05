@@ -110,7 +110,7 @@ Hermes surfaces it uses, and everything rule 13 asks to disclose. Use:
 - **What it does:** the catalog `description` first sentence, plus a link to
   the README at the pinned commit.
 - **Surfaces:** `register_tool` (16 tools in toolsets `sherwood-monitor` and
-  `sherwood-fund`), `register_hook` (`on_session_start`, `on_session_end`,
+  `sherwood-fund`), `register_hook` (`on_session_start`, `on_session_finalize`,
   `pre_tool_call`, `post_tool_call`, `pre_llm_call`), `register_command`
   (`/fund`, `/join-fund`, `/fund-approve`, `/fund-agents`, `/leaderboard`),
   `register_skill` (4 skills), `register_cli_command` (`hermes sherwood`),
@@ -130,7 +130,7 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   events only. The entry, README and disclosure say so, and the sidecar is
   optional (it starts only with `SHERWOOD_PRIVATE_KEY`).
 - **Cron wrappers.** `hermes sherwood install-cron` writes four small
-  wrapper scripts to `$HERMES_HOME/scripts/` (Hermes runs cron scripts only
+  `.py` wrapper scripts to `$HERMES_HOME/scripts/` (Hermes runs cron scripts only
   from there) and registers them with `hermes cron create`; it is disclosed.
   Its test runs the real `hermes` binary in a scratch `HERMES_HOME`.
 

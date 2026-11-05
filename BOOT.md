@@ -4,8 +4,11 @@ For each fund in `~/.hermes/plugins/sherwood-monitor/config.yaml`:
 
 1. Call `sherwood_monitor_status()` and report each fund's state
    (`pid`, `uptime_seconds`, `events_seen`, `last_event_at`).
-2. If `auto_start` is true and a fund has no live supervisor,
-   call `sherwood_monitor_start(subdomain)`.
+2. Streams run for the life of this Hermes process. With `auto_start: true`
+   they start at the first turn by themselves; if a fund still has no live
+   supervisor, call `sherwood_monitor_start(subdomain)`. Ending a turn or
+   `/new` does not stop them; Hermes shutdown does. Events between turns
+   arrive as `<sherwood-event>` blocks on your next turn.
 3. If `on_session_start` injected any `<sherwood-catchup>` blocks,
    summarize them briefly for the user (new proposals, settlements,
    risk alerts) so they know the state of their funds at session start.
@@ -53,8 +56,9 @@ What the plugin registers (v0.7.0): 16 tools, 5 hooks, 5 slash commands,
   `fund_remove_agent`, `fund_record_settle`, `fund_set_proposal_status`,
   and `fund_record_vote` for someone else's vote) refuse anyone but the
   fund's host and ask a human to approve each call.
-- **Hooks:** `on_session_start` (catch-up), `on_session_end` (stop
-  supervisors and the XMTP sidecar), `pre_tool_call` (risk checks on
+- **Hooks:** `on_session_start` (catch-up, then make sure the streams run),
+  `on_session_finalize` (stops the streams and the XMTP sidecar only when
+  Hermes shuts down, `reason="shutdown"`; `atexit` is the fallback), `pre_tool_call` (risk checks on
   `sherwood proposal create` / `strategy propose`, the fund rules and the
   host check), `post_tool_call` (settlement memory), `pre_llm_call` (one
   hook: queued events plus the Telegram pitch context).
@@ -91,7 +95,7 @@ say so to the operator.
 ## Cron setup (one-time)
 
 Run `hermes sherwood install-cron` from the shell. It writes one wrapper
-per watchdog to `$HERMES_HOME/scripts/sherwood-monitor-<mode>.sh` (Hermes
+per watchdog to `$HERMES_HOME/scripts/sherwood-monitor-<mode>.py` (Hermes
 runs cron scripts only from there, with no arguments) and registers, or
 updates, five crons:
 
@@ -117,4 +121,5 @@ shell command instead.
 `install-cron` is idempotent: output JSON lists which entries were
 `installed`, `updated` (already registered, brought back to this
 definition), `skipped` (disabled in config), or returned an `error`. Re-run
-it after Hermes moves or updates, so the wrappers point at the right Python.
+it if the plugin moves; the `.py` wrappers run on Hermes' current dependency
+environment, so Hermes updates need nothing.

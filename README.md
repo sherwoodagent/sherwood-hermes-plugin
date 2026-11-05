@@ -155,8 +155,10 @@ Start Hermes:
 hermes
 ```
 
-The plugin auto-starts monitors for each configured fund and injects
-a catch-up summary. From chat:
+At the start of each session the plugin injects a catch-up summary for
+every configured fund, and with `auto_start: true` it starts each fund's
+stream at the first turn (see [How the streams live](#how-the-streams-live)).
+From chat:
 
 - "start monitoring gamma-fund" → LLM calls `sherwood_monitor_start("gamma-fund")`
 - "what's the status of my monitors?" → LLM calls `sherwood_monitor_status()`
@@ -176,6 +178,28 @@ hermes sherwood tail alpha-fund
 hermes sherwood install-cron        # register (or update) the five crons; idempotent
 hermes sherwood fund-bind alpha-fund --host-telegram-id 123  # operator only: change a fund's vault/governor/chat/host
 ```
+
+### How the streams live
+
+- **For the life of the Hermes process.** Each fund's
+  `sherwood session check --stream --no-xmtp` runs on the plugin's own event
+  loop (a daemon thread), so it keeps running between turns and across
+  sessions of one Hermes process (CLI or gateway). Hermes 0.22 fires
+  `on_session_end` after every turn and `on_session_finalize` on `/new`; the
+  plugin stops nothing there.
+- **Start.** With `auto_start: true`, at the first turn of the process (the
+  first `pre_llm_call` or `on_session_start`), not at plugin load: plugins
+  also load for every `hermes` CLI command, which must not spawn streams. Or
+  on demand with `sherwood_monitor_start`.
+- **Between turns.** Events the streams route are buffered (the last 200) and
+  the next turn's `pre_llm_call` injects them as `<sherwood-event>` blocks.
+- **Catch-up.** `on_session_start` runs a one-shot `sherwood session check`
+  per fund, which reports what changed since the CLI's last check (for
+  example while Hermes was down).
+- **Stop.** At Hermes shutdown: `on_session_finalize` with
+  `reason="shutdown"` (CLI quit, gateway shutdown), with `atexit` as the
+  fallback. Streams do not survive a Hermes restart; the next process starts
+  them again and catches up.
 
 ## Group-chat fund (Telegram)
 
@@ -398,7 +422,16 @@ Watchdog state lives at `~/.hermes/plugins/sherwood-monitor/watchdog_state.json`
 (separate from `cron_cursor.json` so the digest's cursor doesn't share a lock
 with the alert-suppression bookkeeping). The supervisor writes
 `stream_status.json` next to it (on start, exit, stop, and at most every 30 s
-on events) for the stream watchdog, which runs in a separate process.
+on events) for the stream watchdog, which runs in a separate process. At
+boot the plugin blanks a status file left by a Hermes that was killed without
+stopping its streams, so the watchdog does not report a dead Hermes forever.
+
+**Where plugin data lives.** Config and state are under
+`~/.hermes/plugins/sherwood-monitor/` (the user's home, `Path.home()`), not
+under `$HERMES_HOME`: Hermes profiles share them, and a container whose cron
+children get a different `HOME` (Hermes uses `$HERMES_HOME/home` there) gives
+the watchdogs a different, empty config, so they stay silent. The cron
+wrappers themselves go to `$HERMES_HOME/scripts/`.
 
 ### Register the crons
 
@@ -409,20 +442,24 @@ hermes sherwood install-cron
 What it does, because Hermes runs cron scripts only from
 `$HERMES_HOME/scripts/` and passes them no arguments:
 
-1. Writes one wrapper per watchdog to `$HERMES_HOME/scripts/sherwood-monitor-<mode>.sh`
-   (`digest`, `aum`, `gas`, `stream`). Each one fixes its mode and runs the
-   plugin's `scripts/watchdog.sh` by absolute path with the Python (and
-   import path) Hermes loaded the plugin with.
+1. Writes one Python wrapper per watchdog to
+   `$HERMES_HOME/scripts/sherwood-monitor-<mode>.py` (`digest`, `aum`, `gas`,
+   `stream`): `from sherwood_monitor.cli_watchdog import main;
+   raise SystemExit(main(["<mode>"]))`. Hermes runs a cron's `.py` script on
+   its currently selected dependency environment, where the plugin and its
+   dependencies are installed, so nothing about the interpreter is baked in
+   and the wrappers survive Hermes updates.
 2. Creates each missing cron with `hermes cron create <schedule> ...`
-   (`--no-agent --script sherwood-monitor-<mode>.sh` for the watchdogs; the
+   (`--no-agent --script sherwood-monitor-<mode>.py` for the watchdogs; the
    reasoning cron's prompt is positional).
 3. Brings crons that already exist back to this definition with
    `hermes cron edit <id> ...`, so re-running it is safe and also repairs
    jobs left by 0.6.0.
 
 It prints JSON with `installed` / `updated` / `skipped` / `errors`, and changes
-nothing if `hermes cron list --all` fails. Re-run it after moving or updating
-Hermes so the wrappers point at the right Python. Alerts are delivered
+nothing if `hermes cron list --all` fails. Re-run it if the plugin moves
+(each wrapper also adds the plugin directory to `sys.path` as a fallback).
+Alerts are delivered
 `local` by default; route them with `hermes cron edit <id> --deliver telegram`.
 
 Hermes doesn't expose a plugin-side cron-registration API, so the plugin
@@ -529,12 +566,15 @@ who signs what and the known limitations, is in
   Base RPC `https://mainnet.base.org` (override `SIDECAR_BASE_RPC`) to read
   each fund's group id from the Durin L2Registry, and the XMTP network. No
   telemetry.
-- **Shell commands and background processes.** One long-running
-  `sherwood session check --stream --no-xmtp` subprocess per monitored fund
+- **Shell commands and background processes.** One
+  `sherwood session check --stream --no-xmtp` subprocess per monitored fund,
+  running for the life of the Hermes process (started at the first turn with
+  `auto_start`, or by `sherwood_monitor_start`; stopped at Hermes shutdown),
+  on a plugin-owned event loop thread,
   and one-shot `sherwood` reads (`session check`, `vault info`, `--version`);
   the spawned `sherwood` CLI reads its own `~/.sherwood/config.json`. `hermes
   cron list/create/edit` from `hermes sherwood install-cron`, which also
-  writes four wrapper scripts to `$HERMES_HOME/scripts/`. A long-running Node
+  writes four `.py` wrapper scripts to `$HERMES_HOME/scripts/`. A long-running Node
   process for the XMTP sidecar (only with `SHERWOOD_PRIVATE_KEY`). Children
   get the environment without `SHERWOOD_PRIVATE_KEY`, `TELEGRAM_BOT_TOKEN`
   and `SHERWOOD_TG_*`. (0.6.0's stream watchdog also ran `hermes sherwood

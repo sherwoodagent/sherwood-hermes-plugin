@@ -51,10 +51,18 @@ How registration works on Hermes 0.22 (do not regress it; `tests/test_cli.py`
 runs the real `hermes` binary in a scratch `HERMES_HOME` when one is on PATH):
 `hermes cron create <schedule> [<prompt>]` takes both positionally; Hermes runs
 cron scripts only from `$HERMES_HOME/scripts/` and passes them no arguments, so
-`install-cron` writes one `sherwood-monitor-<mode>.sh` wrapper per watchdog
+`install-cron` writes one `sherwood-monitor-<mode>.py` wrapper per watchdog
 there and edits existing jobs by id instead of creating duplicates. The stream
 watchdog reads `stream_status.json`, written by the in-process Supervisor; a
 fresh `hermes sherwood status` process cannot see the running streams.
+
+Stream lifetime (review #29 P5): Hermes 0.22 fires `on_session_end` after EVERY
+turn and `on_session_finalize` on `/new` too. Never stop streams there. They run
+on the plugin's own loop (`sherwood_monitor/bgloop.py`) for the life of the
+process; teardown is `on_session_finalize` with `reason == "shutdown"` plus
+`atexit`. Hermes' own tool loops do not run between turns (CLI) or are closed
+after each call (gateway), so nothing long-lived may be scheduled on them.
+`tests/test_lifecycle.py` pins this.
 
 Install command: Hermes has no `owner/repo@tag` syntax. Docs say
 `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha>`

@@ -54,10 +54,11 @@ Off chain:
   HMAC key (`SHERWOOD_TG_LINK_SECRET`). The signature proves the bot issued
   the link to that Telegram user. It does not authorize money.
 - Monitoring: a `sherwood session check --stream --no-xmtp` subprocess per
-  monitored fund (the CLI reads its own `~/.sherwood/config.json`), an
+  monitored fund, running for the life of the Hermes process on a
+  plugin-owned event loop and stopped at Hermes shutdown (the CLI reads its own `~/.sherwood/config.json`), an
   optional XMTP sidecar (a local Node process, only with
   `SHERWOOD_PRIVATE_KEY`), and the crons. `hermes sherwood install-cron`
-  runs `hermes cron list/create/edit` and writes four wrapper scripts to
+  runs `hermes cron list/create/edit` and writes four `.py` wrapper scripts to
   `$HERMES_HOME/scripts/`. The stream watchdog reads a status file the
   supervisor writes; it no longer runs `hermes sherwood status`.
 
