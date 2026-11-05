@@ -70,8 +70,9 @@ def approve_directive(tool_name: str, fund: str, args: dict[str, Any]) -> dict[s
     """Hermes' human-approval shape for a pre_tool_call hook (v0.22.x, fail-closed)."""
     keys = ("member", "agent", "proposal_id", "status", "pnl", "host_telegram_id", "telegram_chat_id", "vault", "voter", "side")
     detail = ", ".join(f"{k}={args[k]}" for k in keys if args.get(k) not in (None, ""))
+    # No rule_key: Hermes then keys an "[a]lways" answer on tool + a hash of this message (which names
+    # the member / agent / proposal), so "always" covers that exact action, never the whole tool.
     return {
         "action": "approve",
         "message": f"Sherwood fund {fund or '?'}: {tool_name}" + (f" ({detail})" if detail else "") + " acts with the host's authority.",
-        "rule_key": f"sherwood-fund:{tool_name}",
     }

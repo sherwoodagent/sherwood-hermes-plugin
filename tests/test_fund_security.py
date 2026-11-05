@@ -111,7 +111,8 @@ def test_pre_tool_call_asks_the_human_or_blocks(as_caller):
     hook = make_pre_tool_call_hook(state_fetcher=MagicMock(), fund_guard=make_fund_guard(rt))
     # Operator surface (CLI / cron / no session): Hermes' approval gate.
     out = asyncio.run(hook(tool_name="fund_approve_member", args={"member": "77"}))
-    assert out["action"] == "approve" and "fund_approve_member" in out["message"] and out["rule_key"]
+    assert out["action"] == "approve" and "fund_approve_member" in out["message"] and "member=77" in out["message"]
+    assert "rule_key" not in out  # an [a]lways answer covers this exact action only
     # A group member's turn: blocked before any prompt.
     as_caller("telegram", ATTACKER, "-100500")
     out = asyncio.run(hook(tool_name="fund_setup", args={"fund": "alpha-fund", "host_telegram_id": ATTACKER}))
