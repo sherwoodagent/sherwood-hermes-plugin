@@ -1,0 +1,29 @@
+# Hermes gateway: Telegram settings for a Sherwood fund group.
+# Merge into the Hermes profile config. Replace -100XXXXXXXXXX with the group
+# id printed by `python scripts/telegram_chat_id.py`.
+# See docs/telegram.md for what each key does.
+
+telegram:
+  # Authorizes every member of the group for the shared group session,
+  # without giving them DM access to the bot.
+  group_allowed_chats:
+    - "-100XXXXXXXXXX"
+  # Where the bot answers (same id).
+  allowed_chats:
+    - "-100XXXXXXXXXX"
+  # The agent takes a turn only on @mentions and replies to the bot.
+  require_mention: true
+  # Everything else in the group becomes context, not a turn.
+  # Needs BotFather privacy mode off (configured) or the bot as group admin.
+  observe_unmentioned_group_messages: true
+
+# Equivalent / additional environment keys for the profile .env.
+# Secrets are read with agent.secret_scope.get_secret and never logged.
+#
+#   TELEGRAM_BOT_TOKEN=<from BotFather>                 # secret
+#   TELEGRAM_GROUP_ALLOWED_CHATS=-100XXXXXXXXXX
+#   TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
+#   TELEGRAM_ALLOWED_USERS=<host telegram user id>      # host only
+#   SHERWOOD_TG_LINK_SECRET=<shared with the web app>   # secret, HMAC key for /tg links
+#   APP_BASE_URL=https://app.sherwood.sh                # default
+#   SHERWOOD_TG_PERSONAL_LINKS=ephemeral                # or: dm
