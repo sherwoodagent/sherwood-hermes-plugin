@@ -230,6 +230,14 @@ def fund_bind(fund_rt: Any, args: Any) -> int:
     if fund_rt is None:
         print(json.dumps({"ok": False, "error": "fund features are not loaded"}))
         return 1
+    from .session import current_caller
+
+    caller = current_caller()
+    if caller.messaging:
+        # Run by the agent from a chat turn: the terminal child inherits HERMES_SESSION_*.
+        # Defense in depth only (env can be stripped); the boundary is the toolset.
+        print(json.dumps({"ok": False, "error": "fund-bind is for the operator's own shell, not a chat turn"}))
+        return 3
     values = {flag.replace("-", "_"): getattr(args, flag.replace("-", "_"), None) for flag in FUND_BIND_FLAGS}
     values = {k: str(v).strip() for k, v in values.items() if v not in (None, "")}
     if not values:

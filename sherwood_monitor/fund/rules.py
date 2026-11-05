@@ -142,10 +142,8 @@ def check_host_action(state: FundState, actor: str) -> Verdict:
     return ALLOW
 
 
-HOST_ID_UNSET = (
-    "this fund has no host Telegram id, so nobody may do that from chat. The operator sets it: "
-    "`hermes sherwood fund-bind <fund> --host-telegram-id <id>`"
-)
+# Chat/model-facing: never names the rebind command, the state dir or config keys.
+HOST_ID_UNSET = "this fund has no host on record, so nobody may do that from chat; ask the operator to set the fund's host"
 
 
 def check_caller_is_host(state: FundState, caller_telegram_id: str | None) -> Verdict:

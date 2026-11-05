@@ -220,6 +220,40 @@ FundService ──events──▶ FundTelegramBridge ──submit()──▶ Tel
 co-sign, proposed/voting (one card), back, Against via the chain read, guardian
 review, settle, receipt, cooldown, leaderboard.
 
+## Deployment boundary (required)
+
+The plugin checks who started each turn, but it cannot make a chat-driven agent
+safe if the agent holds general-purpose tools. For a fund group:
+
+- **No terminal, file or code tools in the group's toolset.** Set
+  `platform_toolsets.telegram` to a toolset without `terminal`, `write_file`,
+  `patch` or `execute_code` (the default `hermes-telegram` toolset includes
+  them). An agent that has them in the group can rewrite fund state or the
+  plugin config whatever the plugin does. The plugin's `pre_tool_call` guard
+  refuses, in chat turns, terminal / file / code calls whose arguments name the
+  rebind command, the fund state directory or a `config.yaml`, and
+  `hermes sherwood fund-bind` refuses when it inherits a chat turn's
+  `HERMES_SESSION_*` env: both are best effort (a determined model can
+  obfuscate a command or strip env).
+- **`plugins.isolation: in_process`** (Hermes' default). Under
+  `isolation: host` the plugin's hooks and tools run in a child process whose
+  session ContextVars are empty, so every turn looks like the operator surface:
+  nothing is sender-checked (everything goes to the approval prompt), and the
+  Telegram handler and CLI command are not registered.
+- **Forum topics:** sessions in a topic are shared. With
+  `busy_input_mode: steer`, another member's text lands inside the host's
+  running turn, which carries the host's identity. Use `interrupt`.
+- **Approval buttons:** any allowlisted member of the chat can tap the buttons
+  on an approval prompt (Hermes checks only the allowlist), "Always" included.
+  Run host approvals in a private chat with the bot or from the operator CLI,
+  and never answer "Always" to a fund prompt (each prompt's allowlist key is
+  per action, so an "Always" covers only that exact action, but it still skips
+  the human next time).
+- Rebinding a fund (vault, governor, chat, host) is the operator's job, from
+  their own shell: `hermes sherwood fund-bind <fund> [--vault 0x..]
+  [--governor 0x..] [--telegram-chat-id -100..] [--host-telegram-id 123]`.
+  Tool and chat error messages never name this command.
+
 ## Host authority (review of #28)
 
 Group members talk to the agent, so the plugin assumes anything typed in the
@@ -232,11 +266,12 @@ group can steer it:
   must be the fund host (`host_telegram_id`, or `owner_telegram_id` before the
   fund exists); other chat platforms are refused; an unset id means nobody.
   The `pre_tool_call` guard blocks non-hosts and otherwise returns Hermes'
-  approval shape (`{"action": "approve", ...}`), so a human confirms each call.
+  approval shape (`{"action": "approve", "rule_key": "<tool>:<hash of the
+  action>"}`), so a human confirms each call and an "Always" covers only that
+  exact action (Hermes uses `rule_key or tool_name` as the allowlist key).
 - **Fund identity** (`vault`, `governor`, `telegram_chat_id`,
   `host_telegram_id`) is set once by `fund_setup`; only the operator changes
-  it: `hermes sherwood fund-bind <fund> [--vault 0x..] [--governor 0x..]
-  [--telegram-chat-id -100..] [--host-telegram-id 123]`.
+  it, with `hermes sherwood fund-bind` (see "Deployment boundary").
 - **Slash commands** fail closed: a known caller with no host id on record (or
   `/join-fund` with no `owner_telegram_id`) is refused with how to set it.
 - **Order:** the host check runs before the app's member-wallet lookup and its

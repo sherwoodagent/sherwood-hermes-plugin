@@ -16,6 +16,8 @@ approval prompt.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from ..session import Caller
@@ -32,11 +34,9 @@ HOST_TOOLS = frozenset({
     "fund_set_proposal_status",
 })
 
-HOST_UNSET = (
-    "the fund has no host Telegram id, so nobody may do this from chat. The operator sets it: "
-    "`hermes sherwood fund-bind <fund> --host-telegram-id <id>` (or fund.owner_telegram_id in "
-    "~/.hermes/plugins/sherwood-monitor/config.yaml before the fund exists)"
-)
+# Model- and chat-facing: never name the rebind command, the state dir or config keys (the
+# operator docs do). A model that reads "run X to fix this" is one prompt away from running X.
+HOST_UNSET = "the fund has no host on record, so nobody may do this from chat; ask the operator to set the fund's host"
 
 
 def expected_host(state: FundState | None, owner_telegram_id: str = "") -> str:
@@ -66,13 +66,31 @@ def check_member_vote_caller(state: FundState | None, caller: Caller, voter: str
     return check_caller(state, caller, owner_telegram_id)
 
 
+APPROVAL_KEYS = (
+    "member", "address", "agent", "proposal_id", "status", "onchain_id", "pnl", "pnl_bps", "tx_hash",
+    "host_telegram_id", "telegram_chat_id", "vault", "governor", "max_capital", "max_drawdown_bps",
+    "agent_fee_bps", "voting_period", "asset", "voter", "side", "voter_kind",
+)
+
+
+def approval_rule_key(tool_name: str, fund: str, args: dict[str, Any]) -> str:
+    """One allowlist key per exact action: ``<tool>:<sha256(fund + canonical args)[:12]>``.
+
+    Hermes' gate is called with ``rule_key or tool_name`` (hermes_cli/plugins.py), so a directive
+    without a key would let one "[a]lways" allowlist the whole tool for good, cron and CLI included.
+    With this key an "always" covers only the same action on the same fund.
+    """
+    keyed = {k: str(args[k]) for k in APPROVAL_KEYS if args.get(k) not in (None, "")}
+    canonical = json.dumps({"fund": str(fund or ""), "args": keyed}, sort_keys=True, separators=(",", ":"))
+    return f"{tool_name}:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:12]}"
+
+
 def approve_directive(tool_name: str, fund: str, args: dict[str, Any]) -> dict[str, Any]:
     """Hermes' human-approval shape for a pre_tool_call hook (v0.22.x, fail-closed)."""
-    keys = ("member", "agent", "proposal_id", "status", "pnl", "host_telegram_id", "telegram_chat_id", "vault", "voter", "side")
-    detail = ", ".join(f"{k}={args[k]}" for k in keys if args.get(k) not in (None, ""))
-    # No rule_key: Hermes then keys an "[a]lways" answer on tool + a hash of this message (which names
-    # the member / agent / proposal), so "always" covers that exact action, never the whole tool.
+    detail = ", ".join(f"{k}={args[k]}" for k in APPROVAL_KEYS if args.get(k) not in (None, ""))
     return {
         "action": "approve",
-        "message": f"Sherwood fund {fund or '?'}: {tool_name}" + (f" ({detail})" if detail else "") + " acts with the host's authority.",
+        "message": f"Sherwood fund {fund or '?'}: {tool_name}" + (f" ({detail})" if detail else "")
+        + " acts with the host's authority. Approve once; never answer Always.",
+        "rule_key": approval_rule_key(tool_name, fund, args),
     }

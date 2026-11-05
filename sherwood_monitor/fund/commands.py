@@ -64,17 +64,12 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
             return "Usage: /join-fund <fund>"
         name = raw.split()[0]
         s = rt.settings
-        missing = [k for k, v in (("agent_name", s.agent_name), ("agent_identity_id", s.agent_identity_id), ("agent_address", s.agent_address)) if not v]
-        if missing:
-            return (
-                "Set " + ", ".join(f"fund.{k}" for k in missing) + " in ~/.hermes/plugins/sherwood-monitor/config.yaml first: "
-                "a guest brings its own ERC-8004 identity and its own scoped wallet."
-            )
         user, _ = session_ids(source)
+        # Chat-facing refusals never name config keys or files (operator docs do).
         if user and not s.owner_telegram_id:
             return (
-                "Not done: this Hermes has no owner Telegram id, so nobody may run /join-fund from chat. "
-                "The operator sets fund.owner_telegram_id in ~/.hermes/plugins/sherwood-monitor/config.yaml."
+                "Not done: this Hermes has no owner on record, so nobody may run /join-fund from chat. "
+                "Ask the operator to set this Hermes's owner."
             )
         if user and user != s.owner_telegram_id:
             # On Telegram this command shows up as /join_fund in the group menu; a
@@ -82,6 +77,14 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
             return (
                 "/join-fund brings a Hermes agent into a fund as a co-manager; only this Hermes's owner runs it. "
                 "Members: tap 🎟 Join on the /fund card for your personal join link."
+            )
+        missing = [k for k, v in (("agent_name", s.agent_name), ("agent_identity_id", s.agent_identity_id), ("agent_address", s.agent_address)) if not v]
+        if missing and user:
+            return "Not done: this Hermes has no fund identity yet (ERC-8004 id and its own wallet). Ask the operator to configure it."
+        if missing:
+            return (
+                "Set " + ", ".join(f"fund.{k}" for k in missing) + " in the plugin config first: "
+                "a guest brings its own ERC-8004 identity and its own scoped wallet."
             )
         agent = svc.request_agent(
             rt.fund_for(name),

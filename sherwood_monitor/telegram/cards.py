@@ -27,7 +27,7 @@ from typing import Iterable, Mapping, Sequence
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from .links import RECOMMENDED_LINK_TTL_S, fund_page_url
+from .links import fund_page_url, link_ttl_s
 from .types import (
     FundView,
     LeaderRow,
@@ -531,10 +531,11 @@ def sign_link_details(url: str) -> list[str]:
 def render_personal_link(kind: str, url: str, fund_name: str) -> tuple[str, InlineKeyboardMarkup]:
     """The per-user message holding a signed URL button."""
     noun, label = LINK_LABELS.get(kind, (kind, "Open in browser"))
-    minutes = RECOMMENDED_LINK_TTL_S // 60
+    ttl = link_ttl_s(kind)
+    expires = f"{ttl // 3600} hours" if ttl >= 3600 else f"{ttl // 60} minutes"
     text = (
         f"🔐 Your personal {esc(noun)} link for <b>{esc(fund_name)}</b>.\n"
-        f"It is tied to your Telegram account and expires in {minutes} minutes. "
+        f"It is tied to your Telegram account and expires in {expires}. "
         "Your wallet signs in the browser."
     )
     if kind == "sign":

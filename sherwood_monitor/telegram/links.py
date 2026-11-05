@@ -13,8 +13,9 @@ for that route only (a join link can never be replayed as a withdraw link):
     ${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<id>&ts=<unix_s>&sig=<hex>
         sig = hex(hmac_sha256(SHERWOOD_TG_LINK_SECRET, "sign|<vault>|<action>|<body>|<tg>|<ts>"))
 
-Links are issued fresh on every tap; the app rejects ``ts`` older than 15
-minutes (``RECOMMENDED_LINK_TTL_S``).
+Links are issued fresh on every tap. The app accepts ``ts`` up to 15 minutes old
+for join and sign links, 24 hours for deposit / withdraw / vote, and up to 5
+minutes in the future (``LINK_TTL_S``, ``LINK_FUTURE_SKEW_S``).
 
     ${APP_BASE_URL}/tg/fund/<vault>          (public, unsigned)
 
@@ -41,7 +42,16 @@ VOTE_LINK_KIND = "vote"
 LINK_KINDS = FUND_LINK_KINDS + (VOTE_LINK_KIND,)
 
 # Recommended max age the app should accept for ``ts`` (documented, not enforced here).
-RECOMMENDED_LINK_TTL_S = 15 * 60
+# What the app accepts (sherwood-app src/lib/tg-link.ts): join 15 min, deposit / withdraw / vote 24 h,
+# host sign links 15 min, and 5 min of clock skew into the future.
+LINK_TTL_S = {"join": 15 * 60, "deposit": 24 * 3600, "withdraw": 24 * 3600, "vote": 24 * 3600, "sign": 15 * 60}
+LINK_FUTURE_SKEW_S = 5 * 60
+RECOMMENDED_LINK_TTL_S = LINK_TTL_S["join"]  # the shortest, kept for callers that pass no kind
+
+
+def link_ttl_s(kind: str) -> int:
+    """How long the app accepts a link of this kind (host co-sign links are sign links)."""
+    return LINK_TTL_S.get("sign" if kind == "propose" else kind, RECOMMENDED_LINK_TTL_S)
 
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _PROPOSAL_ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,78}$")
@@ -214,10 +224,11 @@ def verify_link_signature(
     ts: int,
     now: float | None = None,
     max_age_s: int = RECOMMENDED_LINK_TTL_S,
+    future_skew_s: int = LINK_FUTURE_SKEW_S,
 ) -> bool:
     """Reference verifier (what the app lane should do): constant-time compare + freshness."""
     current = time.time() if now is None else now
-    if int(ts) > current + 60 or current - int(ts) > max_age_s:
+    if int(ts) > current + future_skew_s or current - int(ts) > max_age_s:
         return False
     expected = sign_link(secret, message)
     return hmac.compare_digest(expected, (sig or "").strip().lower())

@@ -111,6 +111,21 @@ hermes sherwood install-cron        # one-time: register the 15-min autonomous-d
 hermes sherwood fund-bind alpha-fund --host-telegram-id 123  # operator only: change a fund's vault/governor/chat/host
 ```
 
+### Group-chat fund: deployment boundary
+
+If you run a fund in a Telegram group (docs/fund-host-join.md, "Deployment
+boundary"):
+
+- Give the group a toolset **without** `terminal`, `write_file`, `patch` or
+  `execute_code` (`platform_toolsets.telegram`); the default `hermes-telegram`
+  toolset includes them.
+- Keep `plugins.isolation: in_process` (the default); under `host` nothing is
+  sender-checked.
+- In forum topics use `busy_input_mode: interrupt`, not `steer`.
+- Any allowlisted member can tap approval buttons: approve host actions in a
+  private chat with the bot or from the CLI, and never answer "Always".
+- Only the operator rebinds a fund, from their own shell: `hermes sherwood fund-bind`.
+
 ## What the plugin does
 
 | Event | Plugin behavior |

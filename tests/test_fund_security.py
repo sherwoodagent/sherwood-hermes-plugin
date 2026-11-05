@@ -112,7 +112,12 @@ def test_pre_tool_call_asks_the_human_or_blocks(as_caller):
     # Operator surface (CLI / cron / no session): Hermes' approval gate.
     out = asyncio.run(hook(tool_name="fund_approve_member", args={"member": "77"}))
     assert out["action"] == "approve" and "fund_approve_member" in out["message"] and "member=77" in out["message"]
-    assert "rule_key" not in out  # an [a]lways answer covers this exact action only
+    # Hermes calls its gate with `rule_key or tool_name`: the key must be per action, or one "Always"
+    # allowlists the whole tool for good (verify-28 probe6/probe10).
+    other = asyncio.run(hook(tool_name="fund_approve_member", args={"member": "78"}))
+    again = asyncio.run(hook(tool_name="fund_approve_member", args={"member": "77"}))
+    assert out["rule_key"].startswith("fund_approve_member:") and out["rule_key"] != other["rule_key"]
+    assert out["rule_key"] == again["rule_key"]
     # A group member's turn: blocked before any prompt.
     as_caller("telegram", ATTACKER, "-100500")
     out = asyncio.run(hook(tool_name="fund_setup", args={"fund": "alpha-fund", "host_telegram_id": ATTACKER}))
@@ -131,7 +136,8 @@ def test_fund_setup_cannot_rewrite_host_chat_or_vault():
     for key, value in (("host_telegram_id", "666"), ("telegram_chat_id", "-100999"), ("vault", "0x" + "99" * 20),
                        ("governor", "0x" + "98" * 20)):
         out = call(tools, "fund_setup", {"fund": "alpha-fund", key: value})
-        assert out["ok"] is False and out["code"] == "locked" and "hermes sherwood fund-bind" in out["error"], key
+        assert out["ok"] is False and out["code"] == "locked" and "operator" in out["error"], key
+        assert "fund-bind" not in out["error"] and "config" not in out["error"]  # never hand the model the bypass
     f = be.load("alpha-fund").fund
     assert (f.host_telegram_id, f.telegram_chat_id) == (HOST_TG, "-100500")
     # Same value is fine; limits still update.
@@ -156,11 +162,11 @@ def test_slash_commands_fail_closed_when_ids_are_unset():
     be.update("alpha-fund", lambda st: st.agents.append(guest_agent("delta", "0x" + "88" * 20, registered=False)))
     cmds = make_fund_commands(rt)
     out = cmds["fund-approve"]("delta", source={"user_id": ATTACKER, "chat_id": "-100500"})
-    assert out.startswith("Not done:") and "fund-bind" in out
+    assert out.startswith("Not done:") and "operator" in out and "fund-bind" not in out
     assert not be.load("alpha-fund").agent("delta").approved
     rt2 = FundRuntime(rt.service, FundSettings(agent_name="zeta", agent_identity_id="9", agent_address="0x" + "aa" * 20), None)
     out = make_fund_commands(rt2)["join-fund"]("alpha-fund", source={"user_id": ATTACKER, "chat_id": "-100500"})
-    assert out.startswith("Not done:") and "owner_telegram_id" in out
+    assert out.startswith("Not done:") and "operator" in out and "config" not in out
 
 
 # -- F4: authorize before the app lookup -----------------------------------------------------------------
@@ -249,3 +255,81 @@ def test_gateway_runs_sync_callables_off_the_event_loop():
 
     loop_thread = asyncio.run(main())
     assert seen and seen[0] != loop_thread
+
+
+# -- verify-28 #1: "always" covers one exact action, under Hermes' own call ----------------------------
+def test_approval_rule_keys_are_per_action():
+    from sherwood_monitor.fund.authz import approval_rule_key, approve_directive
+
+    a = approve_directive("fund_approve_member", "alpha-fund", {"member": "77"})
+    b = approve_directive("fund_approve_member", "alpha-fund", {"member": "78"})
+    c = approve_directive("fund_approve_member", "beta-fund", {"member": "77"})
+    assert len({a["rule_key"], b["rule_key"], c["rule_key"]}) == 3
+    assert a["rule_key"] == approval_rule_key("fund_approve_member", "alpha-fund", {"member": "77", "fund": "x"})
+    assert "never answer Always" in a["message"]
+
+
+# -- verify-28 #2: the operator rebind path is not reachable from a chat turn -----------------------------
+@pytest.mark.parametrize("tool,args", [
+    ("terminal", {"command": "hermes sherwood fund-bind alpha-fund --host-telegram-id 555"}),
+    ("terminal", {"command": "sed -i '' s/900/555/ ~/.hermes/plugins/sherwood-monitor/funds/alpha-fund.json"}),
+    ("write_file", {"path": "/Users/x/.hermes/plugins/sherwood-monitor/config.yaml", "content": "owner: 555"}),
+    ("patch", {"path": "~/.hermes/config.yaml", "old_string": "a", "new_string": "b"}),
+    ("execute_code", {"code": "open('/tmp/state/alpha-fund.json','w')"}),
+])
+def test_chat_turn_cannot_reach_the_rebind_path(as_caller, tool, args, tmp_path):
+    be = LocalJsonBackend(tmp_path / "state")
+    st = mkstate()
+    be.create(st)
+    rt = FundRuntime(FundService(be, clock=Clock()), FundSettings(agent_name="alpha", fund_state_dir="/tmp/state"), None)
+    hook = make_pre_tool_call_hook(state_fetcher=MagicMock(), fund_guard=make_fund_guard(rt))
+    as_caller("telegram", ATTACKER, "-100500")
+    out = asyncio.run(hook(tool_name=tool, args=args))
+    assert out["action"] == "block" and "operator" in out["message"] and "fund-bind" not in out["message"]
+    # The operator's own CLI turn is not touched (the guard is for chat turns).
+    as_caller()
+    assert asyncio.run(hook(tool_name=tool, args=args)) is None
+
+
+def test_harmless_terminal_use_in_chat_is_untouched(as_caller):
+    rt, _, _ = make_rt()
+    hook = make_pre_tool_call_hook(state_fetcher=MagicMock(), fund_guard=make_fund_guard(rt))
+    as_caller("telegram", ATTACKER, "-100500")
+    assert asyncio.run(hook(tool_name="terminal", args={"command": "sherwood vault info alpha-fund"})) is None
+
+
+def test_fund_bind_refuses_when_run_from_a_chat_turn(as_caller, capsys):
+    rt, be, _ = make_rt()
+    as_caller("telegram", ATTACKER, "-100500")  # what the terminal child inherits (HERMES_SESSION_*)
+    args = Namespace(fund="alpha-fund", vault=None, governor=None, telegram_chat_id=None, host_telegram_id="555")
+    assert fund_bind(rt, args) == 3
+    assert be.load("alpha-fund").fund.host_telegram_id == HOST_TG
+    assert "operator" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_session_falls_back_to_the_inherited_env(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "555")
+    caller = session.current_caller()
+    assert caller.messaging and caller.telegram_user == "555"
+
+
+def test_guard_errors_carry_no_local_paths(as_caller):
+    from sherwood_monitor.fund.store import FundStoreError
+
+    rt, _, _ = make_rt()
+
+    def boom(*a, **k):
+        raise FundStoreError("locked: /Users/carlos/.hermes/plugins/sherwood-monitor/funds/alpha-fund.json.lock")
+
+    rt.service.load = boom
+    out = make_fund_guard(rt)("fund_approve_member", {"fund": "alpha-fund", "member": "77"})
+    assert "/Users" not in out and "<path>" in out
+
+
+def test_watchdog_never_logs_an_rpc_key():
+    from sherwood_monitor.cli_watchdog import _redact_url
+
+    assert _redact_url("https://base-mainnet.g.alchemy.com/v2/SECRETKEY123") == "https://base-mainnet.g.alchemy.com/<redacted>"
+    assert _redact_url("https://rpc.example/?apikey=SECRET") == "https://rpc.example/<redacted>"
+    assert _redact_url("https://rpc.mainnet.chain.robinhood.com") == "https://rpc.mainnet.chain.robinhood.com"

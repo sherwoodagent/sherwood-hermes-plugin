@@ -10,13 +10,55 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from pathlib import Path
+
 from ..session import current_caller
 from . import authz, rules
 from .runtime import FundRuntime
-from .store import FundNotFound
+from .store import FundNotFound, default_state_dir, scrub_paths
 from .tools import GUARD_ERRORS, parse_draft_args
 
 GUARDED_TOOLS = frozenset({"fund_draft_proposal"}) | authz.HOST_TOOLS | {"fund_record_vote"}
+
+# Best effort, chat turns only: a terminal / file / code tool whose arguments name the operator's
+# rebind command, the fund state files or a config.yaml is refused. A determined model can obfuscate
+# a command, so the real boundary is the deployment: a fund group's toolset must not include
+# terminal, file or code tools (docs/fund-host-join.md, "Deployment boundary").
+REBIND_MARKERS = (
+    "fund-bind", "fund_bind", "config.yaml", "sherwood-monitor/funds", "sherwood-monitor\\funds",
+    "plugins/sherwood-monitor",
+)
+REBIND_BLOCK = (
+    "fund action blocked: commands and files that change fund bindings, fund state or plugin config "
+    "are never run from chat. Ask the operator."
+)
+
+
+def _strings(obj: Any, depth: int = 0):
+    if depth > 6:
+        return
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _strings(v, depth + 1)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _strings(v, depth + 1)
+
+
+def rebind_markers(rt: FundRuntime) -> tuple[str, ...]:
+    """Static markers plus every spelling of the directory this process keeps fund state in."""
+    dirs = {rt.settings.fund_state_dir or str(default_state_dir())}
+    root = getattr(rt.service.backend, "_root", None) or getattr(rt.service.backend, "root", None)
+    if root:
+        dirs.add(str(root))
+    extra: list[str] = []
+    for d in dirs:
+        for p in (d, str(Path(d).expanduser()), str(Path(d).expanduser().resolve())):
+            if p and p.rstrip("/"):
+                extra.append(p.rstrip("/").lower())
+    return tuple(m.lower() for m in REBIND_MARKERS) + tuple(dict.fromkeys(extra))
 
 FundGuard = Callable[[str, dict[str, Any]], "str | dict | None"]
 
@@ -30,6 +72,19 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
       (`{"action": "approve"}`) asks the human before the tool runs.
     """
 
+    markers = rebind_markers(rt)
+
+    def rebind_block(tool_name: str, args: dict[str, Any]) -> str | None:
+        if tool_name.startswith(("fund_", "sherwood_monitor_")):
+            return None
+        if not current_caller().messaging:
+            return None  # the operator's own CLI/TUI turn
+        for text in _strings(args or {}):
+            low = text.lower()
+            if any(m in low for m in markers):
+                return REBIND_BLOCK
+        return None
+
     def host_directive(tool_name: str, args: dict[str, Any]) -> str | dict | None:
         try:
             fund = rt.fund_for((args or {}).get("fund"))
@@ -40,7 +95,7 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         except FundNotFound:
             state = None
         except GUARD_ERRORS as exc:
-            return f"fund action blocked: cannot read fund state ({exc})"
+            return f"fund action blocked: cannot read fund state ({scrub_paths(exc)})"
         caller = current_caller()
         if tool_name == "fund_record_vote":
             kind = str((args or {}).get("voter_kind") or ("member" if (args or {}).get("voter") else "agent"))
@@ -57,6 +112,9 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         return authz.approve_directive(tool_name, fund, args or {})
 
     def guard(tool_name: str, args: dict[str, Any]) -> str | dict | None:
+        blocked = rebind_block(tool_name, args)
+        if blocked:
+            return blocked
         if tool_name not in GUARDED_TOOLS:
             return None
         if tool_name != "fund_draft_proposal":

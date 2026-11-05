@@ -13,6 +13,7 @@ same chat.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,15 +26,21 @@ NON_MESSAGING = frozenset({
 
 
 def _session_env(name: str) -> str:
-    """One Hermes session var ("" outside Hermes). Tests patch this."""
+    """One Hermes session var. Tests patch this.
+
+    Inside Hermes: the session ContextVar (``get_session_env`` falls back to the
+    process env itself). Elsewhere: the process env, which is how a terminal child
+    (e.g. ``hermes sherwood fund-bind`` run by the agent) inherits the chat turn's
+    ``HERMES_SESSION_*`` (tools/environments/local.py).
+    """
     try:
         from gateway.session_context import get_session_env  # type: ignore[import-not-found]
     except Exception:
-        return ""
+        return os.environ.get(name, "") or ""
     try:
         return str(get_session_env(name, "") or "")
     except Exception:
-        return ""
+        return os.environ.get(name, "") or ""
 
 
 @dataclass(frozen=True)

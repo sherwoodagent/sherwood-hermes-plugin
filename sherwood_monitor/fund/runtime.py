@@ -22,8 +22,8 @@ class FundRuntime:
         name = self.settings.agent_name.strip()
         if not name:
             raise FundServiceError(
-                "this Hermes has no fund agent name: set `fund.agent_name` (plus agent_identity_id "
-                "and agent_address) in ~/.hermes/plugins/sherwood-monitor/config.yaml"
+                "this Hermes has no fund agent name configured; ask the operator to set up its fund identity "
+                "(agent name, ERC-8004 id, wallet)"
             )
         return name
 

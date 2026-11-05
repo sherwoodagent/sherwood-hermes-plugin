@@ -180,7 +180,9 @@ def make_pre_tool_call_hook(state_fetcher: StateFetcher, fund_guard: ToolGuard |
                 reason = fund_guard(tool_name, payload)
             except Exception as exc:  # the guard must never crash the turn
                 _log.warning("fund guard failed for %s: %s", tool_name, exc)
-                reason = f"fund guard error: {exc}"
+                from .fund.store import scrub_paths
+
+                reason = f"fund guard error: {scrub_paths(exc)}"
             if isinstance(reason, dict):
                 return reason
             if reason:

@@ -207,7 +207,7 @@ def test_member_and_agent_approval_tools(host, tmp_path):
 def test_tools_without_agent_name_explain_setup(tmp_path, monkeypatch):
     ctx = boot(tmp_path, monkeypatch)
     out = ctx.call_tool("fund_claim_topic", {"fund": "alpha-fund", "topic": "x"})
-    assert out["ok"] is False and "agent_name" in out["error"]
+    assert out["ok"] is False and "agent name" in out["error"] and "config.yaml" not in out["error"]
 
 
 # -- slash commands ----------------------------------------------------------------------------

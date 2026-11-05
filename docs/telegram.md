@@ -309,16 +309,18 @@ Rules both sides follow (`sherwood_monitor/telegram/links.py`):
 - **Every signed message starts with the link kind** (`join`, `deposit`,
   `withdraw`, `vote`, `sign`), and the verifier builds the message from the
   route it serves. A join link's signature is not valid on `/tg/withdraw`.
-- Links are issued fresh on every tap; join (and every other) link expires
-  after 15 minutes on the app side.
+- Links are issued fresh on every tap. The app accepts a link for 15 minutes
+  (join, sign) or 24 hours (deposit, withdraw, vote) after `ts`, and up to 5
+  minutes of clock skew into the future (`links.LINK_TTL_S`,
+  `LINK_FUTURE_SKEW_S`); the bot's message states the matching expiry.
 
 - Addresses are lowercase `0x` + 40 hex, in the signed string and in the URL.
 - `tg` is the decimal Telegram user id; `ts` is integer unix seconds.
 - The `:` in `proposal=` is written literally. A parser that sees `%3A`
   decodes it to the same value. Sign over the decoded query values.
 - `sig` is 64 lowercase hex chars. Verify with a constant-time compare, and
-  reject `ts` older than 15 minutes or more than 60 s in the future
-  (`verify_link_signature` is the reference).
+  reject `ts` older than the kind's TTL above or more than 5 minutes in the
+  future (`verify_link_signature` is the reference).
 - The signature proves the bot issued the link to that Telegram user. It does
   not authorize money: the wallet signs in the browser.
 

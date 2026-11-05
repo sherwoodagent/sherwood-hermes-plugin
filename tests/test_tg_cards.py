@@ -298,7 +298,7 @@ def test_leaderboard_golden():
 
 def test_personal_link_is_a_url_button():
     text, markup = render_personal_link("vote", "https://app.sherwood.sh/tg/vote?x=1", "Robin <Fund>")
-    assert "personal vote link for <b>Robin &lt;Fund&gt;</b>" in text and "15 minutes" in text
+    assert "personal vote link for <b>Robin &lt;Fund&gt;</b>" in text and "24 hours" in text  # the app's vote TTL
     assert kb(markup) == [[{"text": "❌ Cast Against in browser", "url": "https://app.sherwood.sh/tg/vote?x=1"}]]
 
 

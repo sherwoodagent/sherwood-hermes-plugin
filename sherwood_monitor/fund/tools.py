@@ -344,8 +344,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                     if key in fields_ and current and fields_[key].lower() != current.lower():
                         raise rules.RuleViolation(rules.deny(
                             "locked",
-                            f"{key} is already set ({current}); only the operator changes it: "
-                            f"`hermes sherwood fund-bind {st.fund.name} --{key.replace('_', '-')} <value>`",
+                            f"{key} is already set ({current}); it cannot be changed from here. "
+                            "If it must change, ask the operator to rebind the fund.",
                         ))
                 for k, v in {**fields_, **limits_for(st.fund)}.items():
                     setattr(st.fund, k, v)
