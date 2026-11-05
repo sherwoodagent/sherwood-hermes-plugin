@@ -1,0 +1,8 @@
+{
+  "name": "sherwood-fork-cli",
+  "private": true,
+  "description": "FORK-ONLY pinned Sherwood CLI for scripts/fork (installed by install-cli.sh with npm ci --ignore-scripts)",
+  "dependencies": {
+    "@sherwoodagent/cli": "file:tarball/cli-0.102.0.tgz"
+  }
+}
