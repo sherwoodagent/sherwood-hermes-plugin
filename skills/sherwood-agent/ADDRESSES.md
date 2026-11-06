@@ -28,8 +28,8 @@ heartbeat, 26h staleness bound; stock feeds pause over weekends). Explorer:
 | TierRegistry | `0x4614f058920941A0a9a852e62485fbDE692D75E1` |
 | StrategyFactory | `0xb06788F027268a9A06c3AD41a88559530D2E54b1` |
 | UniswapSwapAdapter | `0x54E6A7af53143556973493fDeC9d7837A77c67eF` |
-| WOOD/USD feed (WoodV3TwapFeed, 1h V3 TWAP x Chainlink ETH/USD; the ledger reads it since 2026-10-13) | `0x2D56Caf436917Daca28313EaF975926096198776` |
-| WoodPoolFeed (run-1 two-pool snapshot feed, retired 2026-10-13; nothing reads it) | `0xE031f1a5e8dBb5BAE98607BEC44c9fE91B608E09` |
+| WOOD/USD feed (WoodV3TwapFeed, 1h V3 TWAP x Chainlink ETH/USD; the ledger reads it since 2026-10-13; book key `WOOD_USD_TWAP_FEED`) | `0x2D56Caf436917Daca28313EaF975926096198776` |
+| WoodPoolFeed (run-1 two-pool snapshot feed, retired 2026-10-13; nothing reads it; book key `WOOD_USD_FEED`, despite the name) | `0xE031f1a5e8dBb5BAE98607BEC44c9fE91B608E09` |
 | Create3Factory | `0x231972653B1e4fc772fcF064F3FD2357d9Df371D` |
 
 There is no singleton `SyndicateGovernor`: each vault gets its own `BeaconProxy`,
@@ -47,7 +47,7 @@ until the Safe handoff.
 |----------|---------|
 | ExposureLedger | `0x99D789E7C8E65dB5597dCa692F082B47BE30AB33` |
 | ProposerBondEscrow | `0x7d25058c891d3AC5C8bc8Da6aA937DFeE648B5cF` |
-| ChallengeGame | `0x7046FececcA6c0f5E66Cc998099593ae71A1bbee` (filings paused through the beta) |
+| ChallengeGame | `0x7046FececcA6c0f5E66Cc998099593ae71A1bbee` (filings paused until the juror reserve is 30 days old) |
 | TokenCourt | `0xC30bA62727be65fd867385Ce27Ff7C78bd66A897` |
 
 The same addresses resolve live from any vault's governor: `governor.exposureLedger()`,
@@ -61,10 +61,39 @@ The same addresses resolve live from any vault's governor: `governor.exposureLed
 | MorphoSupplyStrategy | `0x5B55E1Da361573CB0788e750038567D2569BE41d` |
 | ConcentratedLiquidityStrategy | `0xcba9C84F2d382729D1519c5F7f4a9AAaC075f8B5` |
 
-`LaunchpadStrategy`, its Sushi / StonkBrokers launch adapters and `LighterPerpStrategy`
-come from `sherwood-strategies`, are unaudited, and are **not deployed on Robinhood
-Chain**; `sherwood strategy list` shows them under "Not available". See
+### Launchpad (from `sherwood-strategies`, unaudited)
+
+The template was redeployed on 2026-10-22 at block 95,339,932 with the `DeadlineInPast` fix
+(`sherwood-strategies` #14: a clone refuses a non-zero deadline that is not in the future, at
+init and in `updateParams`). It is approved on the StrategyFactory
+`0xb06788F027268a9A06c3AD41a88559530D2E54b1`. The Sushi adapter is unchanged from the first
+deployment (2026-10-20, blocks 93,737,582 to 93,737,603). Source: `deployments/4663.json` in
+`sherwood-strategies` and the factory's `approvedTemplate`. Both contracts are verified on
+Sourcify (exact match).
+
+The first template, `0xbc4fDF5949caa74c730bed632E368cEa4ea5832D` (2026-10-20), is no longer
+approved: no new clones come from it, and a clone that already exists keeps working.
+
+| Contract | Address |
+|----------|---------|
+| LaunchpadStrategy (template) | `0x1F8221c4176B8B017A6Ef699947BB4A33730Df32` |
+| SushiLaunchAdapter (implementation; each launch uses its own ERC-1167 clone) | `0x52901614748ACFDC083D305Aa5301E484d4B15F8` |
+| Sushi Launchpad V2 (venue proxy) | `0xF1716eBf85836ffE2985db9A50dd29e5814caBe9` |
+
+The adapter and the Sushi Launchpad V2 proxy are granted as TierRegistry counterparties.
+The template is class-certified on the TierRegistry since 2026-10-27 (tier 0, 3,500 bps, for
+`execute()` and `settle()`), so a launch prices at 35% of its `--asset-in`.
+The StonkBrokers launch adapter is **not deployed on Robinhood Chain**, so only
+`--venue sushi` works here. These contracts are unaudited. See
 [Strategies from `sherwood-strategies` are unaudited](SKILL.md#strategies-from-sherwood-strategies-are-unaudited).
+
+`LighterPerpStrategy` also comes from `sherwood-strategies` and is unaudited. It is deployed on
+Robinhood Chain (2026-10-20) and left uncertified, so proposals price at tier 2:
+
+| Item | Address |
+|------|---------|
+| LighterPerpStrategy (template) | `0x62f85891b1914c48eA35eA9f81EA49BB31C2e5Cd` |
+| zkLighter proxy (venue; TierRegistry counterparty) | `0x94bAB9693Ba2f6358507eFfcbd372b0660AFfF9d` |
 
 ## WOOD and where to buy it
 
@@ -76,11 +105,13 @@ Chain**; `sherwood strategy list` shows them under "Not available". See
 | WOOD/WETH Uniswap V3 pool | `0xF6831AaF374B353757F0dE6B3DD2a74697671C69` |
 | WOOD/WETH Uniswap V3 factory | `0xE51960f1B45f1C9FB6D166E6a884F866fC70433B` |
 
-The CLI has no command that buys WOOD. Swap WETH for WOOD through the Uniswap
-SwapRouter below (or the V2 pair directly); both pools are shallow, so quote first and
-size the trade in tranches. How much WOOD a creator needs: [Fund the wallet](SKILL.md#fund-the-wallet-eth-and-wood).
-The protocol prices WOOD from the WOOD/WETH V3 pool's 1h TWAP (times Chainlink
-ETH/USD), capped by the owner and haircut 50%; that haircut price sizes the proposer bond.
+The CLI has no command that buys WOOD. With the MetaMask Agent Wallet, swap USDG for WOOD
+with `mm swap` (quote first). Otherwise swap WETH for WOOD through the Uniswap SwapRouter
+below (or the V2 pair directly). The pools are shallow, so quote first, size the trade in
+tranches and expect price impact: 10,000 WOOD cost about $33 on the mainnet test, roughly
+the market price then. The lower price the ExposureLedger uses for bonds is a 50% haircut of
+market, not a buy price. How much WOOD a creator needs: [Fund the wallet](SKILL.md#fund-the-wallet-eth-and-wood).
+The CLI quotes the proposer bond in WOOD; use that number.
 
 ## Tokens
 

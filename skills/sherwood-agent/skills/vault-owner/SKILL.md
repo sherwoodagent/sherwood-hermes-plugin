@@ -2,21 +2,21 @@
 name: vault-owner
 model: sonnet
 description: Instructs an AI agent acting as the owner of a Sherwood vault on Robinhood Chain (4663) — seeds the post-create caps, reviews its own proposal before sending it, monitors governance and live strategies, vetoes or emergency-cancels a bad proposal, sets vault and governor parameters, pauses, rescues, and recovers a stuck Executed proposal through unstick or the bonded emergency unwind (emergencySettleWithCalls → finalizeEmergencySettle). Triggers on vault owner duties, post-create checklist, proposal monitoring, veto, emergency cancel, settlement tracking, stuck proposal, pause, set-agent-fee, min buffer, max capital, tier-2 cap, depositor whitelist, rotate owner, or emergency owner powers. Not for staking WOOD or casting Approve/Block review votes (the `guardian` skill).
-allowed-tools: Read Glob Grep Bash(forge:*) Bash(cast:*) Bash(npx:*) Bash(curl:*) Bash(jq:*) Bash(sherwood:*) WebFetch WebSearch AskUserQuestion
+allowed-tools: Read Glob Grep Bash(sherwood *) Bash(cast call *) Bash(cast calldata *) Bash(cast 4byte *) Bash(cast 4byte-decode *) WebFetch WebSearch AskUserQuestion
 license: MIT
-compatibility: Node 22+ with @sherwoodagent/cli@0.93.2 (default chain robinhood-mainnet, 4663), Foundry (cast) for the direct contract calls, network access to a Robinhood Chain RPC.
+compatibility: Node 22+ with @sherwoodagent/cli 0.96.0 or later (default chain robinhood-mainnet, 4663), Foundry (cast) for the direct contract calls, network access to a Robinhood Chain RPC.
 metadata:
   author: sherwood
-  version: '0.4.0'
+  version: '0.5.3'
 ---
 
 # Vault Owner (Sherwood on Robinhood Chain, 4663)
 
 You are the **owner** of a Sherwood vault. Your duty is protecting the capital depositors put in it.
 
-Sherwood v1 is live on Robinhood Chain mainnet (chain id 4663). Vault creation has been open since run 2 on 2026-10-13 (ExposureLedger, ProposerBondEscrow, ChallengeGame, TokenCourt); the private beta for waitlisted creators runs from 2026-10-14 with general access planned for about 2026-11-11. At launch the factory runs **`ownerOnlyProposals = true`** and **`depositsRestricted = true`**: you are the only proposer on your vault, and only addresses you whitelisted can deposit. So the first job is reviewing **your own** proposal before you send it (§1); watching other agents' proposals (§2) matters only once the flag lifts.
+Sherwood v1 is live on Robinhood Chain mainnet (chain id 4663). Vault creation has been open since run 2 on 2026-10-13 (ExposureLedger, ProposerBondEscrow, ChallengeGame, TokenCourt), invite-only: waitlisted creators are sponsored ([why](https://docs.sherwood.sh/explanations/launch-posture)). At launch the factory runs **`ownerOnlyProposals = true`** and **`depositsRestricted = true`**: you are the only proposer on your vault, and only addresses you whitelisted can deposit. So the first job is reviewing **your own** proposal before you send it (§1); watching other agents' proposals (§2) matters only once the flag lifts.
 
-Governance is optimistic: a proposal passes unless Against votes reach the veto threshold during the 24 h vote, then it sits 24 h in guardian review, then it has 24 h to be executed. **Silence equals approval.**
+Governance is optimistic: a proposal passes unless Against votes reach the veto threshold during the vote (24 h by default; you can set it down to 30 min), then it sits in guardian review (30 min on 4663, protocol-set), then it has the execution window (24 h by default) to be executed. **Silence equals approval.**
 
 > **Not the staked-reviewer skill.** Staking WOOD and voting Approve/Block on calldata is a different, slashable job: the **`guardian`** skill (`skills/guardian/SKILL.md`). Do not stake review WOOD or cast review votes from here.
 
@@ -30,7 +30,7 @@ Governance is optimistic: a proposal passes unless Against votes reach the veto 
   export GOVERNOR_ADDRESS=$(cast call $SYNDICATE_FACTORY "governorOf(address)(address)" $VAULT_ADDRESS --rpc-url $RPC_URL)
   sherwood governor info --vault $VAULT_ADDRESS     # prints the same address and the live parameters
   ```
-- The Sherwood CLI, `@sherwoodagent/cli@0.93.2` or later (Node 22+). It defaults to Robinhood Chain; no `--chain` flag is needed. Foundry (`forge`, `cast`).
+- The Sherwood CLI, `@sherwoodagent/cli` 0.96.0 or later (Node 22+). It defaults to Robinhood Chain; no `--chain` flag is needed. Foundry (`forge`, `cast`).
 
 ### Addresses
 
@@ -47,17 +47,15 @@ Source of truth: `chains/4663.json` in `sherwoodagent/sherwood-protocol` (`v1-de
 | USDG | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` |
 | Portfolio / Morpho Supply / Concentrated Liquidity templates | `0xAA5872009c527cCb80343E41C52840CEdb095eb0` / `0x5B55E1Da361573CB0788e750038567D2569BE41d` / `0xcba9C84F2d382729D1519c5F7f4a9AAaC075f8B5` |
 
-ExposureLedger, ProposerBondEscrow, ChallengeGame and TokenCourt are deployed in run 2; their addresses are published in ADDRESSES.md after the ceremony. Resolve the ledger live: `cast call $GOVERNOR_ADDRESS "exposureLedger()(address)"`. Launchpad and Lighter templates are not deployed on 4663.
+Run 2 (2026-10-13): ExposureLedger `0x99D789E7C8E65dB5597dCa692F082B47BE30AB33`, ProposerBondEscrow `0x7d25058c891d3AC5C8bc8Da6aA937DFeE648B5cF`, ChallengeGame `0x7046FececcA6c0f5E66Cc998099593ae71A1bbee`, TokenCourt `0xC30bA62727be65fd867385Ce27Ff7C78bd66A897` (all in [ADDRESSES.md](../../ADDRESSES.md)). Cross-check the ledger live: `cast call $GOVERNOR_ADDRESS "exposureLedger()(address)"`. Launchpad and Lighter templates are not deployed on 4663.
 
 ---
 
 ## 0. Right after `vault create` — the cohort caps
 
-Three owner setters, in this order, **before the first propose**. The governor setters are frozen while any proposal is open, Drafts included (`ParamsFrozenDuringProposal`), so they only fit between proposals.
+Two owner setters **before the first propose**; the third cap stays at its default. The governor setters are frozen while any proposal is open, Drafts included (`ParamsFrozenDuringProposal`), so they only fit between proposals.
 
 ```bash
-# Per-call cap on tier-2 (uncertified) calls: 2% of totalAssets per call at propose (Tier2CallCapExceedsCeiling(i))
-sherwood governor set-tier2-call-cap --vault $VAULT_ADDRESS --bps 200
 # Ceiling on --max-capital: 80% of totalAssets, checked at propose and again at execute
 sherwood governor set-max-capital --vault $VAULT_ADDRESS --bps 8000
 # Idle float the vault must keep after every governor batch: 5% (max 5000 = 50%, BufferTooHigh)
@@ -67,7 +65,7 @@ sherwood vault set-min-buffer --vault $VAULT_ADDRESS --bps 500
 
 `setMinBufferBps` is a vault setter with no proposal gate, so it *can* be raised mid-proposal. **Never do that**: the buffer is enforced after each batch (`BufferBreached`), and a raise while a proposal is Executed can make its settlement revert. Lower it, if ever, only between proposals.
 
-While the Portfolio class is uncertified (SHE-235 pending), every Portfolio call is tier 2, so the 200 bps ceiling caps each call at 2% of the vault's assets. Certification at 2,000 bps lifts the class out of tier 2.
+Every core template on 4663 is uncertified (tier 2), and `strategy propose` puts the whole `--amount` on one strategy call, so a proposal needs `--amount ≤ totalAssets × tier2CallCapBps / 10,000`. Leave the tier-2 cap (`governor set-tier2-call-cap`) at its default (unset reads 10,000) until the strategy is certified. Do not use the 200 bps that signed `vault create` printed before CLI 0.96.2: it refuses any proposal above 2% of the vault, and the CLI does not pre-check it, so you find out from an on-chain revert after the clone is paid for. Why: [Tiers and coverage](https://docs.sherwood.sh/explanations/tiers-and-coverage).
 
 Then whitelist depositors (`depositsRestricted` is on, so `--open-deposits` has no effect until it lifts):
 
@@ -79,7 +77,7 @@ cast call $VAULT_ADDRESS "isApprovedDepositor(address)(bool)" 0xLP --rpc-url $RP
 
 "Only your own vault" is enforced only by this whitelist: anyone you approve can deposit, and nobody you did not approve can. Depositors need no WOOD.
 
-Your owner stake (`sherwood guardian prepare-owner-stake 10000` before create; `requiredOwnerBond` is 10,000 WOOD at launch) stays bound to the vault. Requesting its unstake makes `ownerBondLive` false, and propose and execute then revert `OwnerBondNotLive`. Keep it bound while you operate.
+Your owner stake is optional. `StakedWood.minOwnerStake()` is 0 on Robinhood Chain, so a vault can exist with no WOOD bonded, and propose, execute, settle and `unstick` all work without one (`ownerBondLive` is keyed on the owner, not the amount). A bond buys one thing: your emergency settle with new calldata, which needs `ownerStake(vault) >= requiredOwnerBond(vault)`, never below 1,000 WOOD. Post it with `sherwood guardian prepare-owner-stake 1000` (or more) before `vault create`; the prepared amount binds at create and there is no top-up later. Once bound, keep it bound while you operate: requesting its unstake makes `ownerBondLive` false, and propose and execute then revert `OwnerBondNotLive`. Guardians can burn it only by blocking your emergency settle ([why](https://docs.sherwood.sh/explanations/owner-stake)); there is no CLI command for the exit (`cast` only).
 
 ---
 
@@ -89,15 +87,15 @@ At launch you are the proposer. `sherwood strategy propose` / `proposal create` 
 
 1. **Provenance.** Core templates only (Portfolio, Morpho Supply, Concentrated Liquidity). `sherwood strategy list` shows what is deployed on 4663. Anything from `sherwood-strategies`, or hand-written, is unaudited: see [Strategies from `sherwood-strategies` are unaudited](../../SKILL.md#strategies-from-sherwood-strategies-are-unaudited).
 2. **Simulate the call files** before proposing: `sherwood proposal simulate --vault $VAULT_ADDRESS --execute-calls execute.json --settle-calls settle.json`. Read the risk codes (§2).
-3. **The bond.** Quote it live; the CLI prints it. It is 1% of required coverage in USD, converted at the **haircut** WOOD price (50% haircut at launch), so an uncertified Portfolio bond is about 4% of deployed capital in WOOD at spot, about 0.8% once the class is certified. Never treat a fixed WOOD figure as the requirement. It comes back on any terminal state: `sherwood proposal reclaim-bond --vault $VAULT_ADDRESS --id <id>` (after a Settled proposal, only once the 14-day challenge window has closed; `ChallengeWindowOpen` until then).
-4. **Caps.** `--max-capital` ≤ 80% of `totalAssets()` (§0); each tier-2 call cap ≤ 2% of `totalAssets()`; Σ caps ≤ `--max-capital` (`CallCapsExceedMaxCapital`). Required coverage is capped at $1M per proposal (`CoveredTvlCapExceeded`); while uncertified that is about 2× the deployed capital.
+3. **The bond.** Quote it live; the CLI prints it. It is 1% of required coverage at the ledger's half-price WOOD, quoted in WOOD by the CLI (with the 5% buffer it approves and your free WOOD), so plan on about 2% of deployed capital in WOOD at market for an uncertified template. Never treat a fixed WOOD figure as the requirement ([why](https://docs.sherwood.sh/explanations/proposer-bond)). It comes back on any terminal state: `sherwood proposal reclaim-bond --vault $VAULT_ADDRESS --id <id>` (after a Settled proposal, only once the 14-day challenge window has closed; `ChallengeWindowOpen` until then).
+4. **Caps.** `--max-capital` ≤ `totalAssets() × maxCapitalBps` (§0); each tier-2 call cap ≤ `totalAssets() × tier2CallCapBps` (with `strategy propose`, that is the whole `--amount`); Σ caps ≤ `--max-capital` (`CallCapsExceedMaxCapital`). Required coverage is capped at $1M per proposal (`CoveredTvlCapExceeded`); for a `strategy propose` proposal it is about 1× `--amount` (settle calls carry a 0 cap).
 5. **Duration** 1 h – 30 d. Cooldown 1 h after the last proposal ended (`CooldownNotElapsed`).
-6. **The weekend feed gap.** Chainlink stock feeds on 4663 gap 52–55 h every weekend against the Portfolio template's 26 h `MAX_PUSH_PRICE_AGE`. A Portfolio holding stock tokens **cannot execute, settle or rebalance from about Saturday 18:40 to Monday 00:00 UTC** (`StalePrice`). With the default 24 h vote + 24 h review + 24 h execution window, an execution window that falls inside the gap expires the proposal. Propose so that both the execution window and the end of the strategy land on weekdays.
+6. **The weekend feed gap.** Chainlink stock feeds on 4663 gap 52–55 h every weekend against the Portfolio template's 26 h `MAX_PUSH_PRICE_AGE`. A Portfolio holding stock tokens **cannot execute, settle or rebalance from about Saturday 18:40 to Monday 00:00 UTC** (`StalePrice`). With the default 24 h vote + 30 min review + 24 h execution window, the execution window runs from propose + 24.5 h to propose + 48.5 h, so propose by about **Thursday 18:00 UTC** (or from Saturday 23:30 UTC, when the window opens after the gap ends); an execution window that falls inside the gap expires the proposal. With a 30 min test vote the window is propose + 1 h to propose + 25 h: propose by about Friday 17:30 UTC. Propose so that both the execution window and the end of the strategy land on weekdays.
 7. **Splits.** Do not hold a stock slot across an announced split; the feed basis changes under the position.
 8. **Unstamped redeems from the last proposal.** A redeem queued while a proposal was open is stamped only when that proposal **settles**. If it ended Cancelled, Rejected or Expired, the request is never stamped: `claim` reverts `NotSettled` forever, its shares stay in the queue and lower every LP's `maxRedeem`, and the only exit is the request owner's `sherwood queue cancel --vault $VAULT_ADDRESS --id <requestId>`. Before you propose again, check `sherwood queue list --vault $VAULT_ADDRESS` and have each LP cancel and re-request (or redeem instantly while nothing is open). A queued **deposit** under such a proposal is still claimable at the live price once nothing is open.
 9. **Confirm with the user** (vault, strategy, amounts, duration, bond) and wait for an explicit yes.
 
-Once sent, you can still `sherwood proposal cancel --vault $VAULT_ADDRESS --id <id>` as proposer in Draft, Pending (until `voteEnd`), GuardianReview (until the review ends or block quorum is reached) and Approved. Each cancel keeps LP redemptions locked for the time already spent and restarts the 1 h cooldown.
+Once sent, you can still `sherwood proposal cancel --vault $VAULT_ADDRESS --id <id>` as proposer in Draft, Pending (until `voteEnd`), GuardianReview (until the review ends or block quorum is reached) and Approved. Each cancel keeps LP redemptions locked for the time already spent and restarts the governor cooldown (1 h by default). `sherwood proposal cancel` prints when it ends; proposing earlier reverts `CooldownNotElapsed`, and the CLI's propose preflight names the time.
 
 ---
 
@@ -203,7 +201,7 @@ For each Executed proposal:
 ### Governor (owner only, frozen while any proposal is open — Drafts count)
 
 ```bash
-sherwood governor set-voting-period    --vault $VAULT_ADDRESS --seconds <n>   # 1 h – 3 d (default 24 h)
+sherwood governor set-voting-period    --vault $VAULT_ADDRESS --seconds <n>   # 30 min – 3 d (default 24 h); testing: 1800. Floor = live MIN_VOTING_PERIOD() (1800); CLI help before 0.96.2 said 1 h
 sherwood governor set-execution-window --vault $VAULT_ADDRESS --seconds <n>   # 1 h – 7 d (default 24 h)
 sherwood governor set-veto-threshold   --vault $VAULT_ADDRESS --bps <n>       # 2000 – 8000 (default 2000)
 sherwood governor set-max-fee          --vault $VAULT_ADDRESS --bps <n>       # ≤ 2500 (default 2000)
@@ -216,6 +214,13 @@ sherwood governor set-tier2-call-cap --vault $VAULT_ADDRESS --bps <bps>     # 1 
 ```
 
 Each applies instantly and emits `ParameterChangeFinalized`. `set-mgmt-split` / `set-perf-split` are protocol-owner only (ProtocolConfig); as vault owner you receive 10% of the performance fee by the launch split.
+
+**Who sets the timeline.** Every vault is created with a 24 h voting period and a 24 h execution window; both live in your vault's own governor and only you can change them. The guardian review period is one value in the GuardianRegistry for every vault, set by the protocol owner (30 min on 4663 since 2026-10-14; `minReviewPeriod` floor 30 min), so no owner setter reaches it. A proposal's `voteEnd` and `reviewEnd` are fixed when it is created: a change applies to the next proposal, and `ParamsFrozenDuringProposal` refuses the setter until the open one resolves or is cancelled. Read both before you plan a cycle:
+
+```bash
+sherwood governor info --vault $VAULT_ADDRESS                        # voting period, execution window
+cast call 0xD8F9E7446E6d6c02198AAaF674A0C5e3d5D1BF72 "reviewPeriod()(uint256)" --rpc-url $RPC_URL   # seconds, registry-wide
+```
 
 ---
 
@@ -234,7 +239,7 @@ There is no owner transaction that immediately runs arbitrary calls. Owner-suppl
 | Function | What it does | Owner bond | Guardian review |
 |---|---|---|---|
 | `unstick(id)` | Replays the **already-voted** settlement calls with the same caps and zero egress budget. Past duration only. Same `StrategyNotSettled` check as settle | Not required | No |
-| `emergencySettleWithCalls(id, calls)` | Commits **new** unwind calldata and opens a registry emergency review for `reviewPeriod` (24 h). Calls do **not** run in this tx | `ownerStake(vault) >= requiredOwnerBond(vault)` (10,000 WOOD at launch), read **after** the review opens so a prior blocked round slashes first; else `OwnerBondInsufficient` | Yes |
+| `emergencySettleWithCalls(id, calls)` | Commits **new** unwind calldata and opens a registry emergency review for `reviewPeriod` (30 min on 4663). Calls do **not** run in this tx | `ownerStake(vault) >= requiredOwnerBond(vault)` (never below 1,000 WOOD; with no bond posted before create this path is closed), read **after** the review opens so a prior blocked round slashes first; else `OwnerBondInsufficient` | Yes |
 | `cancelEmergencySettle(id)` | Recalls the open window (`EmergencyNotProposed` if none) | — | Closes it |
 | `finalizeEmergencySettle(id)` | After `reviewPeriod`: reverts `EmergencySettleBlocked` if guardians blocked, else runs the committed calls uncapped with zero net egress and finishes settlement. **Exempt from `StrategyNotSettled`** | Stake must be nonzero | Resolves |
 
@@ -244,7 +249,7 @@ A guardian block of the emergency review burns the **whole** owner bond (`slashO
 REG=$(cast call $GOVERNOR_ADDRESS "guardianRegistry()(address)" --rpc-url $RPC_URL)
 cast call $REG "ownerStake(address)(uint256)"        $VAULT_ADDRESS --rpc-url $RPC_URL
 cast call $REG "requiredOwnerBond(address)(uint256)" $VAULT_ADDRESS --rpc-url $RPC_URL
-cast call $REG "reviewPeriod()(uint256)"                             --rpc-url $RPC_URL   # 86400
+cast call $REG "reviewPeriod()(uint256)"                             --rpc-url $RPC_URL   # 1800 (30 min) on 4663
 ```
 
 ### Playbook
@@ -299,7 +304,7 @@ A proposal that is terminal but still counted open (`propose` reverts `VaultHasO
 | Interval | Check |
 |---|---|
 | Hourly | Executed strategies: `totalAssets()` vs snapshot, time to duration, weekend gap ahead, settle as soon as allowed |
-| Every 15 min, once `ownerOnlyProposals` lifts | New Pending proposals: show, simulate, decide (§2). The vote closes 24 h after propose |
+| Every 15 min, once `ownerOnlyProposals` lifts | New Pending proposals: show, simulate, decide (§2). The vote closes one voting period after propose (24 h default) |
 | Before every propose | §1 checklist; `queue list` for unstamped redeems; governor params still as seeded |
 | Daily | `sherwood proposal list --vault $VAULT_ADDRESS`, `sherwood vault info --vault $VAULT_ADDRESS`, `sherwood governor info --vault $VAULT_ADDRESS`, owner stake still live (`ownerBondLive`) |
 
@@ -317,13 +322,13 @@ Read the state with `getProposalState(id)`; `state` is a mid-struct `uint8` in `
 
 | Parameter | Min | Max | Default |
 |---|---|---|---|
-| Voting period | 1 h | 3 d | 24 h |
+| Voting period | 30 min | 3 d | 24 h |
 | Execution window | 1 h | 7 d | 24 h |
 | Veto threshold | 2000 bps | 8000 bps | 2000 |
 | Max performance fee | — | 2500 bps | 2000 |
 | Strategy duration | 1 h | 30 d | 1 h – 30 d |
 | Cooldown | 1 h | 30 d | 1 h |
-| Review period (registry) | 6 h | 3 d | 24 h |
+| Review period (registry) | 30 min | 3 d | 30 min on 4663 (protocol-set) |
 
 Errors you will meet as owner: `ParamsFrozenDuringProposal` (setter while a proposal is open), `OwnerBondNotLive` (owner unstake requested or bond burned), `OwnerBondInsufficient`, `EmergencySettleBlocked`, `StrategyNotSettled`, `SettlePriceBelowFloor`, `RedemptionsLocked` (rescue while open), `RescueRecipientNotStrategy`, `AgentFeeTooHigh`, `BufferTooHigh` / `BufferBreached`, `MaxCapitalExceedsCeiling` / `MaxCapitalCeilingRegressed`, `Tier2CallCapExceedsCeiling(i)`, `NotSettled` (an LP claiming an unstamped redeem). Full table: [ERRORS.md](../../ERRORS.md).
 

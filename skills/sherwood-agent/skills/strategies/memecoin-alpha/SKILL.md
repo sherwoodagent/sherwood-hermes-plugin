@@ -2,11 +2,11 @@
 name: memecoin-alpha
 model: sonnet
 description: Signal-driven memecoin trading on Base via Uniswap Trading API — buy, sell, swap tokens, scan for opportunities, monitor positions, auto-exit on signals. Uses Messari/Nansen research, Venice inference for sentiment. NOT available on Robinhood Chain (4663), where Sherwood is live — the Base-only `sherwood trade` commands exit with an error there; retained for reference only. Triggers on trade, swap, buy, sell, memecoin, scan, monitor, uniswap, position, P&L.
-allowed-tools: Read Glob Grep Bash(sherwood:*) Bash(npm:*) Bash(npx:*) WebFetch WebSearch AskUserQuestion
+allowed-tools: Read Glob Grep Bash(sherwood *) WebFetch WebSearch AskUserQuestion
 license: MIT
 metadata:
   author: sherwood
-  version: '0.1.2'
+  version: '0.1.4'
 ---
 
 # Memecoin Alpha Strategy
@@ -123,7 +123,7 @@ sherwood trade scan --token 0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed
 sherwood trade scan --yes
 
 # Post results to syndicate chat
-sherwood trade scan --syndicate alpha
+sherwood trade scan --fund alpha
 ```
 
 Output: table with token, composite score, action, confidence, per-signal breakdown.
@@ -138,7 +138,7 @@ sherwood trade buy \
   --stop-loss 10 \
   --trailing-stop 20 \
   --deadline 24 \
-  --syndicate alpha
+  --fund alpha
 ```
 
 | Flag | Default | Description |
@@ -149,7 +149,7 @@ sherwood trade buy \
 | `--stop-loss` | 10 | Stop loss percentage |
 | `--trailing-stop` | 0 | Trailing stop from high-water (0 = disabled) |
 | `--deadline` | 0 | Force exit after N hours (0 = none) |
-| `--syndicate` | — | Post TRADE_EXECUTED to chat |
+| `--fund` | — | Post TRADE_EXECUTED to chat |
 
 ### Sell a token
 
@@ -173,7 +173,7 @@ Shows: token, entry price, current price, quantity, cost basis, current value, u
 
 ```bash
 # Check every 5 minutes, auto-sell on exit triggers
-sherwood trade monitor --interval 300 --syndicate alpha
+sherwood trade monitor --interval 300 --fund alpha
 ```
 
 The monitor:
@@ -190,13 +190,13 @@ A fully autonomous agent loop:
 
 ```bash
 # 1. Scan for opportunities
-sherwood trade scan --yes --syndicate alpha
+sherwood trade scan --yes --fund alpha
 
 # 2. If BUY signal found, execute
-sherwood trade buy --token <addr> --amount 50 --stop-loss 10 --trailing-stop 20 --deadline 48 --syndicate alpha
+sherwood trade buy --token <addr> --amount 50 --stop-loss 10 --trailing-stop 20 --deadline 48 --fund alpha
 
 # 3. Monitor and auto-exit
-sherwood trade monitor --interval 300 --syndicate alpha
+sherwood trade monitor --interval 300 --fund alpha
 ```
 
 The agent can combine this with research commands for deeper due diligence:

@@ -1,20 +1,20 @@
 ---
 name: network-guardian
 description: Operate as a staked Sherwood network guardian on Robinhood Chain (4663) — open a proposal's guardian review, gather the full calldata/coverage/target-standing intake, and cast Approve or Block on GuardianRegistry.voteOnProposal(governor, proposalId, support, lockWood) (4 arguments; the 4th is the WOOD you declare as coverage) — or abstain, which emits nothing on-chain. A clean simulation is never sufficient to Approve; contradictory evidence is a Block, missing evidence is an abstain. Long-form reference for the `guardian` skill, which owns the guardian-review triggers; load this when that skill points here (openReview keeping, vote weight and quorum, late-vote lockout, coverage underwriting detail, what Approve commits you to). NOT for vault-owner duties (veto, unstick, emergency settle) — that is the `vault-owner` skill.
-allowed-tools: Read Glob Grep Bash(forge:*) Bash(cast:*) Bash(npx:*) Bash(curl:*) Bash(jq:*) Bash(sherwood:*) WebFetch AskUserQuestion
+allowed-tools: Read Glob Grep Bash(sherwood *) Bash(cast call *) Bash(cast calldata *) Bash(cast chain-id *) WebFetch AskUserQuestion
 license: MIT
-compatibility: Node 22+ with @sherwoodagent/cli@0.93.2 (default chain robinhood-mainnet, 4663), Foundry (cast) for direct contract calls, network access to a Robinhood Chain RPC.
+compatibility: Node 22+ with @sherwoodagent/cli 0.102.0 or later (default chain robinhood-mainnet, 4663), Foundry (cast) for direct contract calls, network access to a Robinhood Chain RPC.
 metadata:
   author: sherwood
-  version: '0.6.0'
+  version: '0.8.0'
 ---
 
 # Network Guardian (Sherwood on Robinhood Chain, 4663)
 
 Sherwood v1 is live on Robinhood Chain mainnet (4663). Run 2 (ExposureLedger, ProposerBondEscrow,
 ChallengeGame, TokenCourt) landed on 2026-10-13 and opened vault creation; challenge filings stay
-paused through the private beta (unpause about 2026-11-07), so during the beta the guardian review is
-the only check between a voted proposal and execution.
+paused until the juror reserve is 30 days old, so until then the guardian review is the only check
+between a voted proposal and execution.
 
 You are a **staked network guardian**. You hold WOOD in `StakedWood` (sWOOD) and you
 vote Approve or Block on already-voted proposal calldata in `GuardianRegistry`.
@@ -48,7 +48,7 @@ Launch values from `script/robinhood-mainnet/RobinhoodParams.sol` on `v1-deploy`
 | Minimum guardian stake | 10,000 WOOD (quote WOOD live) | `StakedWood.minGuardianStake` |
 | Unstake cooldown | 7 d, always ≥ `reviewPeriod`; the claim reverts `CoverageStillOpen` while any approve lock is open | `StakedWood.coolDownPeriod` |
 | Review vote weight | your **raw** stake at the propose-time snapshot (`getPastStake`); no age weighting on reviews (the 25%→100% 30-day ramp applies to court jurors only) | `GuardianRegistry.voteOnProposal` |
-| Review window | 24 h (6 h floor, 3 d max) | `GuardianRegistry.reviewPeriod` |
+| Review window | 30 min on 4663 since 2026-10-14 (30 min floor `minReviewPeriod`, 3 d max) | `GuardianRegistry.reviewPeriod` |
 | Block quorum | 30% of the total stake snapshotted at **propose** (`getPastTotalVotes(snapshotAt)`), bounds 10%–100% | `GuardianRegistry.blockQuorumBps` |
 | Late-vote lockout | final **10%** of the review window — first votes *and* vote changes | `LATE_VOTE_LOCKOUT_BPS` |
 | Approver cap | 100 approvers per proposal (`NewSideFull`); blockers uncapped | `MAX_APPROVERS_PER_PROPOSAL` |
@@ -68,7 +68,8 @@ Consequences you must plan around:
   cast call $STAKED_WOOD "getPastStake(address,uint256)(uint256)" $ME $T --rpc-url $RPC_URL
   cast call $STAKED_WOOD "getPastTotalVotes(uint256)(uint256)"        $T --rpc-url $RPC_URL
   ```
-- **The last 10% of the window is dead.** On a 24 h window that is the final ~2.4 h.
+- **The last 10% of the window is dead.** On today's 30 min window that is the final 3 min
+  (read `reviewPeriod()` live; it is registry-wide and can change).
   Have a verdict in by 90% of elapsed window, or you cannot vote at all.
 - **Severity is not yours to set.** Block votes carry no proposed slash. The ramp is
   computed at `resolveReview` from block-side decisiveness alone.
@@ -82,24 +83,39 @@ Consequences you must plan around:
 Deployed addresses differ per chain. **Do not copy an address table into a plan.** Resolve at
 call time, in this order:
 
-1. **Source of truth:** `chains/4663.json` in `sherwoodagent/sherwood-protocol` (`v1-deploy`),
-   mirrored in [ADDRESSES.md](../../ADDRESSES.md).
+1. **Source of truth:** `chains/4663.json` in `sherwoodagent/sherwood-protocol` on the
+   **`v1-deploy`** branch, mirrored in [ADDRESSES.md](../../ADDRESSES.md). The protocol's `main`
+   branch book is stale (no GuardianRegistry, StakedWood or SyndicateFactory for 4663); never
+   read it. Run-1 values: GuardianRegistry `0xD8F9E7446E6d6c02198AAaF674A0C5e3d5D1BF72`,
+   StakedWood `0xdDf2B4C52B9575e0e6D03a3A57D75D06a4a9e203`, WOOD
+   `0xF8BC08092C06dB6148114DCf82AF881F1085f92b`, SyndicateFactory
+   `0x619af1488F32B4797f6faDa3C3a8De72a5B693E0`. Run 2: ExposureLedger
+   `0x99D789E7C8E65dB5597dCa692F082B47BE30AB33`.
+2. **Resolve and verify before you trust it.** Read the book, then check it against the
+   GuardianRegistry pinned in this skill release, a second source (`api.sherwood.sh/chains`)
+   and the contracts' own pointers on chain (registry ↔ sWOOD ↔ factory ↔ ledger). Every
+   line must print `ok`:
    ```bash
-   curl -sSL https://raw.githubusercontent.com/sherwoodagent/sherwood-protocol/v1-deploy/chains/4663.json \
-     | jq '{GUARDIAN_REGISTRY, STAKED_WOOD, WOOD_TOKEN, SYNDICATE_FACTORY}'
+   PINNED_GUARDIAN_REGISTRY=0xD8F9E7446E6d6c02198AAaF674A0C5e3d5D1BF72   # trust anchor, pinned in this skill release
+   BOOK=$(curl -fsSL https://raw.githubusercontent.com/sherwoodagent/sherwood-protocol/v1-deploy/chains/4663.json)
+   API=$(curl -fsSL https://api.sherwood.sh/chains | jq -c '.data.chains[] | select(.chainId == 4663) | .sherwood')
+   export REGISTRY=$(jq -r .GUARDIAN_REGISTRY <<<"$BOOK") STAKED_WOOD=$(jq -r .STAKED_WOOD <<<"$BOOK") \
+     SYNDICATE_FACTORY=$(jq -r .SYNDICATE_FACTORY <<<"$BOOK") EXPOSURE_LEDGER=$(jq -r .EXPOSURE_LEDGER <<<"$BOOK")
+   same() { [ "$(tr A-F a-f <<<"$1")" = "$(tr A-F a-f <<<"$2")" ] && echo "ok   $3" || echo "STOP $3 ($1 != $2)"; }
+   same "$(cast chain-id --rpc-url $RPC_URL)" 4663 "RPC is chain 4663"
+   same "$REGISTRY" "$PINNED_GUARDIAN_REGISTRY" "book GuardianRegistry = pinned"
+   same "$(jq -r .guardianRegistry <<<"$API")" "$REGISTRY" "api.sherwood.sh GuardianRegistry = book"
+   same "$(jq -r .stakedWood <<<"$API")" "$STAKED_WOOD" "api.sherwood.sh StakedWood = book"
+   same "$(jq -r .factory <<<"$API")" "$SYNDICATE_FACTORY" "api.sherwood.sh SyndicateFactory = book"
+   same "$(jq -r .exposureLedger <<<"$API")" "$EXPOSURE_LEDGER" "api.sherwood.sh ExposureLedger = book"
+   same "$(cast call $REGISTRY 'swood()(address)' --rpc-url $RPC_URL)" "$STAKED_WOOD" "registry.swood() = StakedWood"
+   same "$(cast call $STAKED_WOOD 'registry()(address)' --rpc-url $RPC_URL)" "$REGISTRY" "StakedWood.registry() = registry"
+   same "$(cast call $STAKED_WOOD 'factory()(address)' --rpc-url $RPC_URL)" "$SYNDICATE_FACTORY" "StakedWood.factory() = factory"
+   same "$(cast call $SYNDICATE_FACTORY 'guardianRegistry()(address)' --rpc-url $RPC_URL)" "$REGISTRY" "factory.guardianRegistry() = registry"
+   same "$(cast call $REGISTRY 'exposureLedger()(address)' --rpc-url $RPC_URL)" "$EXPOSURE_LEDGER" "registry.exposureLedger() = ExposureLedger"
    ```
-   Run-1 values: GuardianRegistry `0xD8F9E7446E6d6c02198AAaF674A0C5e3d5D1BF72`, StakedWood
-   `0xdDf2B4C52B9575e0e6D03a3A57D75D06a4a9e203`, WOOD `0xF8BC08092C06dB6148114DCf82AF881F1085f92b`,
-   SyndicateFactory `0x619af1488F32B4797f6faDa3C3a8De72a5B693E0`. The ExposureLedger is deployed in
-   run 2 and published in ADDRESSES.md after the ceremony; resolve it live with
-   `cast call $REGISTRY "exposureLedger()(address)"`.
-2. **Cross-check on chain before you trust it** — the registry and sWOOD point at each
-   other, so a stale entry is detectable:
-   ```bash
-   cast call $REGISTRY "swood()(address)"       --rpc-url $RPC_URL   # == $STAKED_WOOD
-   cast call $STAKED_WOOD "registry()(address)" --rpc-url $RPC_URL   # == $REGISTRY
-   ```
-   If either leg disagrees, stop — you are on the wrong deployment. Do not vote.
+   Any `STOP`: the RPC is not 4663, a source was changed, or you are on the wrong
+   deployment. Do not open a review or vote; tell the user which line failed.
 3. **The governor is per-vault.** There is no singleton. Always
    `factory.governorOf(vault)` (`sherwood governor info --vault <addr>` prints it).
 
@@ -115,8 +131,10 @@ governor registerReview (at propose; snapshotAt = propose time − 1 s)
              └─ resolveReview(governor, id) PERMISSIONLESS — from reviewEnd
 ```
 
-At the launch defaults, `voteEnd = propose + 24 h`, `reviewEnd = voteEnd + 24 h`,
-`executeBy = reviewEnd + 24 h`.
+`voteEnd = propose + votingPeriod` (owner-set per vault: 24 h default, 30 min floor),
+`reviewEnd = voteEnd + reviewPeriod` (30 min on 4663), `executeBy = reviewEnd + executionWindow`
+(24 h default). The last 10% of the review (3 min on a 30 min window) is locked out, so a fleet
+must open and vote within ~27 min of `voteEnd`.
 
 **Opening is your job.** `outcomeOf` returns `Cleared` for a review that was never
 opened, whatever the calldata was. If nobody calls `openReview`, a proposal walks
@@ -173,7 +191,7 @@ Collect **all** of 1–6. Anything you could not obtain is a Block, not a delay.
 Every proposal names a strategy, and a strategy is one of three kinds. Find out which before anything else:
 
 ```bash
-sherwood proposal show <proposalId> --vault <vault>   # CLI 0.93.2: prints the strategy's provenance
+sherwood proposal show <proposalId> --vault <vault>   # CLI 0.96.0: prints the strategy's provenance
 ```
 
 1. **Cloned from a core-protocol template** (Portfolio, Morpho Supply, Concentrated Liquidity, from the protocol's `src/strategies`). Review it as below.
@@ -184,12 +202,18 @@ sherwood proposal show <proposalId> --vault <vault>   # CLI 0.93.2: prints the s
 
    Tell your user the strategy is unaudited and used at their own risk before you approve. If you cannot do all three before the lockout, **abstain**.
 
-   No `sherwood-strategies` template is deployed on 4663 at launch; a clone claiming to be one is a warning on its own.
-3. **Not cloned from any template: hand-written.** `StrategyFactory.registerStrategy` is permissionless and `propose` only requires a registered strategy, so a proposal can point at code that is in no repository. This is unverified code and **the highest-risk case: Block** unless you have read and verified its full source yourself — and even then, only Approve what you would underwrite with your own stake.
+   On 4663 the `sherwood-strategies` templates deployed are `LaunchpadStrategy` (`0x1F8221c4176B8B017A6Ef699947BB4A33730Df32`, redeployed 2026-10-22, Sushi venue only) and `LighterPerpStrategy` (see [ADDRESSES.md](../../ADDRESSES.md)). The first Launchpad template, `0xbc4fDF5949caa74c730bed632E368cEa4ea5832D`, is no longer approved: a clone of it is legitimate only if it was created before 2026-10-22. A clone claiming to be any other template is a warning on its own.
+3. **Not cloned from any template: hand-written (custom).** `StrategyFactory.registerStrategy` is permissionless and `propose` only requires a registered strategy, so a proposal can point at code that is in no repository. Judge it by the hardening result, not by where it came from. `sherwood guardian review` (CLI 0.102.0 or later; codes in the `guardian` skill) clears a hand-written strategy only when all of these hold, and then returns **APPROVE `STRATEGY_CUSTOM`**:
+   - it is registered (`StrategyFactory.isRegisteredStrategy`);
+   - its source is verified on Blockscout;
+   - every contract it reaches passes the hardening checks (no critical anywhere in the walk);
+   - the settle calls call it, and its `vault()` returns this vault.
 
-If provenance cannot be read, treat the strategy as hand-written.
+   `STRATEGY_CUSTOM` is a warning to you, not a pass: it records that the strategy is hand-written, and the vote carries it as its code and reason. Read the verified source yourself: what `execute` does with the vault's funds, and how `settle` turns the position back into the vault's deposit asset. The review checks that much only statically (bound to this vault and settled by this proposal), not that `settle()` actually returns the asset. Tell your user the strategy is hand-written, and Approve only what you would underwrite with your own stake. If the review Blocks it (`UNVERIFIED_CONTRACT`, `STRATEGY_SETTLE_NO_ASSET`, or any other critical), Block.
 
-The guardian agent (`sherwood-guardian`) applies the same rule: a hand-written strategy is critical (`STRATEGY_WITHOUT_PROVENANCE`, Block) and a clone of a non-core template is a warning (`UNAUDITED_TEMPLATE`, never an unattended Approve).
+If provenance cannot be read, the review cannot clear the strategy and Blocks it: do the same.
+
+The fleet's guardian agent (`sherwood-guardian`) adopts this rule when it vendors the CLI review. Until then it Blocks every hand-written strategy (`STRATEGY_WITHOUT_PROVENANCE`). A clone of a non-core template is a warning there (`UNAUDITED_TEMPLATE`, never an unattended Approve).
 
 ### Flags from the 2026-10-08 audit
 
@@ -206,10 +230,12 @@ The guardian agent (`sherwood-guardian`) applies the same rule: a hand-written s
 
 - Execute or settle calls cannot be decoded; metadata is missing, unreachable, or
   contradicts the decoded calldata.
-- A target is an unlabeled EOA, or a contract that is neither on this chain's known
-  set nor a verified clone of a known template (`vault()` resolves to **this** vault).
-- The strategy was not cloned from any template (hand-written), or its provenance
-  cannot be read.
+- A target is an unlabeled EOA, or an unverified contract that is neither on this
+  chain's known set nor a verified clone of a known template (`vault()` resolves to
+  **this** vault). An unlabeled target the review found verified and clean is a
+  warning: abstain unless you have read its source.
+- The strategy is hand-written and `sherwood guardian review` does not clear it (no
+  `STRATEGY_CUSTOM`), or its provenance cannot be read.
 - Any `transfer` / `transferFrom` / `approve` to an address the description does not
   explain.
 - Outflow with no return path on settle; settle empty, noop, or missing `minOut` /
@@ -245,9 +271,12 @@ Neither Approve nor Block is ever the safe default — abstain is.
 ### Approve only if every one of these holds
 
 - The description matches the decoded calls — protocol, assets, direction, approximate size.
-- Every target is labeled for **this** chain, or is a template clone verified on **this** chain.
-- The strategy comes from a core-protocol template, or from a `sherwood-strategies`
-  template you verified and told your user is unaudited.
+- Every target is labeled for **this** chain, or is a template clone verified on **this** chain,
+  or is the proposal's own hand-written strategy the review cleared.
+- The strategy comes from a core-protocol template, from a `sherwood-strategies`
+  template you verified and told your user is unaudited, or is hand-written and
+  cleared by `sherwood guardian review` (`STRATEGY_CUSTOM`), with its verified source
+  read and its hand-written status told to your user.
 - Execute deploys into known venues; settle returns the vault's deposit asset; slippage
   bounds are present and sane.
 - Simulation succeeds **and** the value trace agrees with the mandate — no extra recipients.
@@ -286,11 +315,12 @@ and against this strategy's extractable value, and holds it for 23–53 days.
 - **Do not treat a coverage shortfall as a reason to Block.** A shortfall is the
   protocol sizing the proposal to its underwriting, working as designed. Block on the
   calldata, not on the book.
-- **After the beta**, a challenge can be filed within 14 days of the strategy's end. A
+- **Once filings resume**, a challenge can be filed within 14 days of the strategy's end. A
   silence conviction (nobody counter-bonds within 7 days) or a Guilty verdict slashes and
   **burns** every approver's lock, forfeits the proposer bond (20% to the challenger, the rest
   burned) and returns the challenger's bond minus 5%; a counter-bond pool is burned on Guilty.
-  During the beta filings are paused, so none of this can reach you yet.
+  Filings are paused for now, so none of this can reach you yet
+  ([why](https://docs.sherwood.sh/explanations/challenge-window)).
 
 Two views worth reading before you approve:
 
@@ -345,16 +375,18 @@ nobody opened resolves **not-blocked**, so opening is part of blocking:
 sherwood proposal open-reviews --vault $VAULT
 #    or: cast send $REGISTRY "openReview(address,uint256)" $GOVERNOR 7 --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 
-# 2. Block proposal 7 on this vault's governor (lockWood = 0 on a Block).
-sherwood proposal review-vote --vault $VAULT --id 7 --support block --lock-wood 0
+# 2. Block proposal 7 on this vault's governor (lockWood = 0 on a Block). --reason is required.
+sherwood proposal review-vote --vault $VAULT --id 7 --support block --lock-wood 0 --reason "<why>"
 #    Approve with a declared lock, in decimal WOOD:
-sherwood proposal review-vote --vault $VAULT --id 7 --support approve --lock-wood 2500
+sherwood proposal review-vote --vault $VAULT --id 7 --support approve --lock-wood 2500 --reason "<why>"
 #    or: cast send $REGISTRY "voteOnProposal(address,uint256,uint8,uint256)" $GOVERNOR 7 2 0 --rpc-url $RPC_URL --private-key $PRIVATE_KEY
 ```
 
 The signed CLI refuses if the review is not opened, prints the proposal's state and the
-strategy's provenance, then sends; `--calldata-only` emits the encoded call for an external
-signer. Encoding the old three-argument form produces a reverting call — that selector does
+strategy's provenance, runs `sherwood guardian review` (refusing an Approve it does not
+clear; see the `guardian` skill for its codes), then sends and records your reason with the
+vote; `--calldata-only` emits the encoded call for an external signer and prints the
+`guardian verdict submit` command that records the reason once your wallet broadcasts it. Encoding the old three-argument form produces a reverting call — that selector does
 not exist.
 
 Preconditions, each of which reverts if unmet: the governor is authorized in the
@@ -369,7 +401,9 @@ full approver side reverts `NewSideFull`. Blockers are not capped.
 
 ## Heartbeat
 
-Poll on an hours-scale cadence — the window is 24 h and the last 10% is dead.
+Poll every few minutes. The review window is 30 min on 4663 (`reviewPeriod()`, read it live), the
+last 3 min are dead, and a review nobody opens resolves Cleared: an hourly poll misses a whole
+review. Watch each proposal's `voteEnd` and open the review the moment it passes.
 
 1. List proposals per vault; open any whose `voteEnd` has passed and whose review is
    not `opened` (`proposal open-reviews`).
