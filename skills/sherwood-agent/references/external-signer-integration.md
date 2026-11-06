@@ -26,12 +26,12 @@ sherwood --calldata-only identity mint --name "Hermes Agent"
 
 Output shape: `{ txs: [{ to, data, value, chainId }], preconditions, description }`. Broadcast `txs` in order; wait for confirmation (`status: 1`) between them; if one reverts, stop. Use each tx's `chainId` (4663 for every Sherwood call). Show the user any tx that pays, approves, stakes or deposits, and broadcast it only after they say yes.
 
-Commands that normally read your address from the configured key need it explicitly: `vault create --creator`, `vault deposit --receiver`, `vault redeem --owner --shares`, `vault add --wallet --agent-id`, `strategy propose --proposer --metadata-uri`, `sources login --address`, `chat --join-cohort --address`, `research … --address`.
+Commands that normally read your address from the configured key need it explicitly: `vault create --creator`, `vault deposit --receiver`, `vault redeem --owner --shares`, `vault add --wallet --agent-id`, `strategy propose --proposer --metadata-uri`, `chat --join-cohort --address`, `research … --address`.
 
 ### MetaMask Agent Wallet
 
 ```bash
-npm i -g @metamask/agent-wallet@latest
+npm i -g @metamask/agent-wallet@7.3.0
 mm login          # prints a device code; a human approves it once
 mm chains list    # needs mm login; check that it shows 4663 (Robinhood Chain); if it does not, use Privy
 ```
@@ -52,7 +52,7 @@ Sign without sending:
 
 | Need | Used by | MetaMask |
 |---|---|---|
-| personal_sign (EIP-191) | `sources login`, `chat --join-cohort` | `mm wallet sign-message --message '<text>' --chain-id 4663 [--wait]` |
+| personal_sign (EIP-191) | `chat --join-cohort` | `mm wallet sign-message --message '<text>' --chain-id 4663 [--wait]` |
 | EIP-712 typed data | `research` (x402) | `mm wallet sign-typed-data --chain-id 8453 --payload '<typed_data JSON>' [--intent '…'] [--wait]` |
 
 Verbs and flags read from `mm wallet --help` (`@metamask/agent-wallet`, bin `mm`). x402 pays USDC on Base, hence `--chain-id 8453`.
@@ -66,7 +66,7 @@ Try the direct path first. If Privy's chain registry carries Robinhood Chain, `e
 ### 1. Provision the wallet (one-time, needs a human)
 
 ```bash
-P="pnpm --package=@privy-io/agent-wallet-cli dlx privy-agent-wallet"
+P="pnpm --package=@privy-io/agent-wallet-cli@0.3.10 dlx privy-agent-wallet"
 $P login          # prints a device code; a human approves it at agents.privy.io
 $P list-wallets   # prints the provisioned ETH address
 ```
@@ -128,18 +128,7 @@ $P rpc --json '{"method":"eth_signTypedData_v4","params":{"typed_data":<typed_da
 
 ## Sign-only two-steps
 
-Three CLI commands need a signature but no transaction. Each prints what to sign, then takes `--signature`.
-
-### Data feeds: `sources login` (weekly)
-
-```bash
-sherwood sources login --address <wallet> --json   # → message (expires in 10 min)
-#   personal_sign the exact message: MetaMask mm wallet sign-message --message '<message>' --chain-id 4663, Privy personal_sign
-sherwood sources login --signature 0x…             # → 1 h token + 7-day refresh token
-sherwood sources status                            # api, address, expires_at, valid, refresh_expires_at, auto_refresh, pending_challenge
-```
-
-The access token lasts 1 hour; the CLI refreshes it on its own for 7 days, sign-only wallets included (refresh needs no signature). Re-run both steps once a week: when `sherwood sources status` shows `auto_refresh: false`, or a feed fails with `Sources login expired…` or `401`. A configured key re-logs in by itself. `403` = the wallet is not approved on the waitlist (on refresh: no longer approved): tell the vault owner, and never retry with another wallet. `sherwood sources logout` clears both tokens.
+Two CLI commands need a signature but no transaction. Each prints what to sign, then takes `--signature`.
 
 ### Cohort chat: `chat --join-cohort`
 
