@@ -1,7 +1,7 @@
-# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.0)
+# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.1)
 
 This is the disclosure for the Nous Hermes hackathon entry and for the Hermes
-plugin catalog (rule 13). It describes what the plugin does at v0.8.0, who
+plugin catalog (rule 13). It describes what the plugin does at v0.8.1, who
 signs what, what it reads, and what does not work yet.
 
 ## What it is
@@ -119,7 +119,8 @@ unsigned calldata; it holds no keys and no funds.
   redeem, set-agent-fee and others), the fund-card read
   `GET funds/<vault>/tg-card` (live cards refresh every 60 s; reads are
   throttled to at most one per 30 s per fund; `fund_pending_commands` reads
-  it once before it hands out a propose command), and `/sources/prices`.
+  it once before it hands out a propose command; `/fund` reads it once when
+  the throttle allows, for the card's NAV and P&L), and `/sources/prices`.
 - **app.sherwood.sh:** `GET /api/tg/link` to find the wallet a member linked
   (bearer `SHERWOOD_TG_API_TOKEN`, https on allowlisted hosts only, no
   redirects), and a readiness check on share images before posting them.
@@ -270,9 +271,10 @@ change is logged as a warning.
   30-minute hold and the chain check limit that; they do not replace the
   record). Run the commands only in an operator-started one-shot or a cron
   set to `approve`.
-- **The open-deposits read runs only during a live proposal.** The plugin
-  reads the fund card only while a proposal is on chain, so before the first
-  one the `open_deposits` setting decides how the Join button behaves.
+- **The open-deposits read needs a chain read.** The 60 s card refresh reads
+  the fund card only while a proposal is on chain; since 0.8.1 `/fund` also
+  reads it once when the 30 s throttle allows. Until a read answers, the
+  `open_deposits` setting decides how the Join button behaves.
 - **Telegram limits.** 🔥 reactions reach the bot only when it is a group
   admin; ephemeral link messages are not guaranteed to reach an offline
   client (the bot falls back to a DM, then a start link). Pitches live 6
