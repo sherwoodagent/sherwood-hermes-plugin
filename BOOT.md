@@ -44,13 +44,18 @@ cannot propose, a cooldown). If no fund is configured, say nothing about
 funds.
 
 With `proposal_signer: agent` (the open protocol) the host is your own
-wallet, the one the signed `sherwood` CLI holds; the plugin never signs. When
-this session has the terminal tool (a cron run, `hermes -z`, the operator's
-CLI), call `fund_pending_commands`, run each `command` it lists with the
-signed CLI, then record what landed as its `then` says
-(`fund_set_proposal_status ... proposed` with `onchain_id` and `tx_hash`, or
-`fund_approve_agent` with `tx_hash`). In the group chat you have no terminal:
-never try to run them there; say the host agent runs them outside the chat.
+wallet, the one the `sherwood` CLI holds; the CLI signs, the plugin never
+does. Never run pending commands on boot, and not just because a session
+has a terminal. Run them only in a `hermes -z` one-shot the operator
+started for that purpose, or a cron the operator configured with
+`approvals.cron_mode: approve`. There: call `fund_pending_commands`, run each
+listed `command` verbatim, then record what landed at once as its `then`
+says (`fund_set_proposal_status ... proposed` with `onchain_id` and
+`tx_hash`, or `fund_approve_agent` with `tx_hash`). A cron in deny mode must
+not run them: it cannot record the result, and an unrecorded propose comes
+back. Respect `held_back`, `chain_hold`, `expired` and `cli_warning`. In the
+group chat you have no terminal: never try; say the proposing agent runs its
+command outside the chat.
 
 What the plugin registers (v0.8.0): 17 tools, 5 hooks, 5 slash commands,
 4 skills, 6 `hermes sherwood` subcommands and one Telegram platform handler.
@@ -105,7 +110,10 @@ deployment boundary in the README ("Group-chat fund"): no terminal, file or
 code tools in the group's toolset, `plugins.isolation: in_process`,
 `busy_input_mode: interrupt` in forum topics, and host approvals in a
 private chat, never "Always". If the group toolset still has `terminal`,
-say so to the operator.
+say so to the operator. With `proposal_signer: agent` the operator also
+needs the Sherwood CLI 0.103.0 or later on this machine (older releases
+target another network or lack the bond escrow on the propose path);
+`fund_pending_commands` says so in `cli_warning` when it is older.
 
 ## Cron setup (one-time)
 

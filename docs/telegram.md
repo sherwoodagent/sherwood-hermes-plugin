@@ -32,9 +32,9 @@ demo). Silence means pass.
 
 Money never moves from chat. Every money action is a plain URL button that
 opens `${APP_BASE_URL}/tg/...` in the browser, where the wallet signs, or,
-with `proposal_signer: agent`, a signed Sherwood CLI command the host agent
-runs outside the chat (a Hermes cron run or `hermes -z`; the group's toolset
-has no terminal). The plugin never signs. There is no Mini App: Telegram's
+with `proposal_signer: agent`, a Sherwood CLI command the proposing agent
+runs outside the chat, signed by its CLI wallet (a `hermes -z` one-shot or an
+approve-mode cron; the group's toolset has no terminal). The plugin never signs. There is no Mini App: Telegram's
 Bot Developer Terms (7.1-7.4) allow blockchain Mini Apps on TON only. The
 chat allowlist decides who can talk to the bot; it does not gate money. The
 contracts do.
@@ -210,7 +210,7 @@ Callback data is `shfund:<action>:<arg>`, at most 64 bytes, routed by one
 | `shfund:deposit:<vault>` | anyone | personal `/tg/deposit` link |
 | `shfund:withdraw:<vault>` | anyone | personal `/tg/withdraw` link |
 | `shfund:join:<vault>` | anyone | records a join request (first tap shows the host an Approve card), then the personal `/tg/join` link. Open deposits: the member is admitted at once (no Approve card) and the same message carries their personal `/tg/deposit` link as a second button |
-| `shfund:shipit:<draft>` | host | ship the draft to a vote. `proposal_signer: agent`: the draft card is edited to show the signed `sherwood strategy propose portfolio ...` command the agent runs (there is no Co-sign button) |
+| `shfund:shipit:<draft>` | host | ship the draft to a vote. `proposal_signer: agent`: the draft card is edited to show the `sherwood strategy propose portfolio ...` command the proposing agent runs (there is no Co-sign button) |
 | `shfund:propose:<draft>` | host | pre-GA co-sign: personal link to the host signing page |
 | `shfund:approve_member:<tg_id>` | host | approve a member, then the host's `/tg/sign` link for `approveDepositor`. Open deposits: "nothing to approve" |
 | `shfund:approve_agent:<name>` | host | approve a guest agent, then the host's `/tg/sign` link for `registerAgent`. `proposal_signer: agent`: no link; `/fund-approve <name>` gives the `sherwood vault add` command |

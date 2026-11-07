@@ -33,9 +33,10 @@ description: >-
   member funds. It builds unsigned transactions through the prepare API at
   api.sherwood.sh and posts HMAC-signed links to app.sherwood.sh, where the
   host's and members' own wallets sign. With proposal_signer: agent the host
-  is the agent's own wallet: the plugin hands the agent the exact signed
-  `sherwood` CLI command, and the agent runs it outside the plugin, signing
-  with the key the CLI holds (the plugin never reads it). Network calls: api.sherwood.sh (prepare,
+  is the agent's own wallet: the plugin hands the agent the exact `sherwood`
+  CLI command, which the agent's wallet signs: the agent runs it outside the
+  plugin and the CLI signs with the key it holds (the plugin never reads
+  it). Network calls: api.sherwood.sh (prepare,
   fund-card and price reads), app.sherwood.sh (member-wallet lookup with
   SHERWOOD_TG_API_TOKEN, share-image checks), the Telegram Bot API through
   Hermes' adapter, and one Robinhood Chain RPC (`gas_rpc_url`, default the
