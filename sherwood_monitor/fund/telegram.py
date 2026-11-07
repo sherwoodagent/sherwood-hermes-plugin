@@ -192,6 +192,9 @@ def fund_to_view(fund: Any, proposals: Iterable[Any] | None = None) -> FundView:
         nav_symbol=str(_get(fund, "nav_symbol", "asset_symbol", default="USDC")),
         cooldown_until=_int_or_none(_get(fund, "cooldown_until")),
         deposits_open=_get(fund, "deposits_open", default=False) is True,
+        nav_as_of=_int_or_none(_get(fund, "nav_as_of")),
+        nav_stale=_get(fund, "nav_stale", default=False) is True,
+        shares_outstanding=_get(fund, "shares_outstanding", default=False) is True,
     )
 
 
@@ -225,6 +228,8 @@ class CallbackFundGateway:
 
     get_fund_for_chat: Callable[[int], Any]
     get_fund_by_vault: Callable[[str], Any] | None = None
+    # (chat_id) -> the fund for the fund card: a throttled chain read first. None = get_fund_for_chat.
+    get_fund_card_for_chat: Callable[[int], Any] | None = None
     get_proposal: Callable[[Any, str], Any] | None = None
     toggle_backer_fn: Callable[[Any, str, int], Any] | None = None
     set_card_message_id_fn: Callable[[Any, str, int], Any] | None = None
@@ -256,6 +261,11 @@ class CallbackFundGateway:
 
     async def fund_for_chat(self, chat_id: int) -> FundView | None:
         return await self._view(await self._fund_record(chat_id))
+
+    async def fund_card_for_chat(self, chat_id: int) -> FundView | None:
+        """The fund for the fund card: like fund_for_chat, after a chain read when one is due."""
+        fn = self.get_fund_card_for_chat or self.get_fund_for_chat
+        return await self._view(await _run(fn, int(chat_id)))
 
     async def fund_by_vault(self, vault: str) -> FundView | None:
         if self.get_fund_by_vault is None:
@@ -479,8 +489,20 @@ def proposal_dict(state: FundState, record: ProposalRecord) -> dict[str, Any]:
     }
 
 
-def fund_dict(state: FundState) -> dict[str, Any]:
-    """A fund shaped for :func:`fund_to_view` (approved members, active agents, open proposals)."""
+# A NAV snapshot older than this shows as last known on the fund card even when the last read
+# did not fail (a read that answered without a NAV block, or no chain reads in this process).
+NAV_STALE_AFTER_S = 300.0
+
+
+def fund_dict(state: FundState, *, now: float | None = None, chain_failed: bool = False) -> dict[str, Any]:
+    """A fund shaped for :func:`fund_to_view` (approved members, active agents, open proposals, NAV).
+
+    NAV and P&L come from ``state.nav``, the last tg-card read (P&L is share-price based:
+    ``(sharePrice - 1)`` in bps). The fund card's own read passes ``now`` and whether the
+    read due before it failed: the snapshot is then flagged stale (shown as last known);
+    every other caller gets it unflagged. ``positions`` is never set: the read has no
+    positions list (``fund_to_view`` still parses one if it is ever added here).
+    """
     f = state.fund
     members = [
         {"tg_id": m.telegram_id, "number": m.deposit_no or 0, "username": m.username or None, "joined_at": m.joined_at}
@@ -499,6 +521,22 @@ def fund_dict(state: FundState) -> dict[str, Any]:
         "cooldown_until": f.cooldown_until,
         "open_proposals": [proposal_dict(state, p) for p in state.open_proposals() if p.status != "draft"],
         "deposits_open": f.open_deposits,
+        **_nav_fields(state, now=now, chain_failed=chain_failed),
+    }
+
+
+def _nav_fields(state: FundState, *, now: float | None, chain_failed: bool) -> dict[str, Any]:
+    snap = state.nav
+    if snap is None:
+        # Never read: NAV is unknown, not 0, once a read has been tried and failed.
+        return {"nav": 0.0, "pnl_bps": 0, "nav_as_of": None, "nav_stale": bool(chain_failed)}
+    old = now is not None and now - snap.read_at > NAV_STALE_AFTER_S
+    return {
+        "nav": float(snap.nav),
+        "pnl_bps": snap.pnl_bps,
+        "nav_as_of": int(snap.taken_at) or None,
+        "nav_stale": bool(chain_failed or old),
+        "shares_outstanding": snap.shares_outstanding,
     }
 
 
@@ -572,7 +610,7 @@ def _find_price(payload: Any, symbol: str) -> float | None:
 
 
 class ChainSync:
-    """Throttled tg-card reads: the chain is the source for Against %, review and cooldown."""
+    """Throttled tg-card reads: the chain is the source for Against %, review, cooldown and NAV."""
 
     def __init__(self, service: Any, client: TxBuilderClient, *, interval_s: float = 30.0,
                  backoff_s: float = 600.0, clock: Callable[[], float] = time.time) -> None:
@@ -582,9 +620,14 @@ class ChainSync:
         self.backoff_s = backoff_s
         self.clock = clock
         self._next: dict[str, float] = {}
+        self._ok: dict[str, bool] = {}
 
     def due(self, fund: str) -> bool:
         return self.clock() >= self._next.get(fund, 0.0)
+
+    def last_ok(self, fund: str) -> bool:
+        """Whether this process's last read for ``fund`` was read and applied (True before any read)."""
+        return self._ok.get(fund, True)
 
     def sync(self, fund: str, vault: str) -> int:
         """One read, applied. Returns proposals updated; 0 (and a backoff) on any failure."""
@@ -595,13 +638,17 @@ class ChainSync:
             card = self.client.fund_card(vault)
         except TxBuilderError as exc:
             self._next[fund] = self.clock() + (self.backoff_s if exc.status == 404 else self.interval_s)
+            self._ok[fund] = False
             _log.debug("tg-card read for %s failed: %s", fund, exc)
             return 0
         try:
-            return self.service.apply_chain_card(fund, card)
+            updated = self.service.apply_chain_card(fund, card)
         except (FundStoreError, RuleViolation, ValueError) as exc:
+            self._ok[fund] = False
             _log.warning("tg-card apply for %s failed: %s", fund, exc)
             return 0
+        self._ok[fund] = True
+        return updated
 
 
 class FundTelegramBridge:
@@ -684,6 +731,30 @@ class FundTelegramBridge:
     def get_fund_by_vault(self, vault: str) -> dict[str, Any] | None:
         st = self.state_for_vault(vault)
         return None if st is None else fund_dict(st)
+
+    def get_fund_card_for_chat(self, chat_id: int) -> dict[str, Any] | None:
+        """The fund for the fund card (``/fund``): one tg-card read first when the 30 s throttle allows.
+
+        Runs in a worker thread (``_run``). Only the fund card calls it: authorization, the
+        pitch flow and the other cards use ``get_fund_for_chat``, which never reads the chain.
+        When the read fails the card shows the stored snapshot as last known.
+        """
+        st = self.state_for_chat(chat_id)
+        if st is None:
+            return None
+        failed = False
+        cs = self.chain_sync
+        if cs is not None and st.fund.vault:
+            name = st.fund.name
+            if cs.due(name):
+                try:
+                    cs.sync(name, st.fund.vault)
+                except Exception as exc:  # the card still renders, from the stored snapshot
+                    _log.warning("tg-card read for %s failed: %s", name, exc)
+                    failed = True
+                st = self._load(name) or st
+            failed = failed or not cs.last_ok(name)
+        return fund_dict(st, now=self.service.clock(), chain_failed=failed)
 
     async def get_proposal(self, fund: Any, proposal_id: str) -> dict[str, Any] | None:
         name = self._name(fund)
@@ -1054,6 +1125,7 @@ class FundTelegramBridge:
         return CallbackFundGateway(
             get_fund_for_chat=self.get_fund_for_chat,
             get_fund_by_vault=self.get_fund_by_vault,
+            get_fund_card_for_chat=self.get_fund_card_for_chat,
             get_proposal=self.get_proposal,
             toggle_backer_fn=self.toggle_backer,
             set_card_message_id_fn=self.set_card_message_id,

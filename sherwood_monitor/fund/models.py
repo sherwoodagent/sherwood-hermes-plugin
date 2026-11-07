@@ -12,6 +12,7 @@ reader.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Iterable, TypeVar
 
 SCHEMA_VERSION = 1
@@ -386,6 +387,98 @@ class SettleReceipt:
         return cls(**d)
 
 
+# The fund card's P&L is share-price based: (sharePrice - 1) in bps, since a share starts at
+# 1 asset. Clamped: a share price cannot go below 0 (-100%), and anything past +10,000% is a
+# bad read rather than a fund.
+PNL_BPS_MIN = -10_000
+PNL_BPS_MAX = 1_000_000
+
+
+def _decimal(value: Any) -> Decimal | None:
+    if value is None or isinstance(value, (bool, float)):
+        return None
+    try:
+        out = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        return None
+    return out if out.is_finite() else None
+
+
+def share_price_pnl_bps(share_price_decimal: Any) -> int:
+    """P&L since inception in bps from the tg-card's `sharePriceDecimal` (asset per whole share).
+
+    `"1"` -> 0, `"1.0123"` -> 123, `"0.98"` -> -200 (half rounds away from zero); clamped to
+    [PNL_BPS_MIN, PNL_BPS_MAX]. Missing or unreadable (no shares outstanding) -> 0.
+    """
+    price = _decimal(share_price_decimal)
+    if price is None:
+        return 0
+    bps = int(((price - 1) * 10_000).to_integral_value(rounding=ROUND_HALF_UP))
+    return max(PNL_BPS_MIN, min(PNL_BPS_MAX, bps))
+
+
+@dataclass
+class NavSnapshot:
+    """The NAV block of the last tg-card read (`GET funds/<vault>/tg-card`), kept in the fund state.
+
+    The Telegram fund card renders NAV and P&L from it, and shows it as "last known" with its
+    time when a read fails. Amounts stay strings exactly as the read gave them: base units
+    (`total_assets`, `total_supply`, `idle_assets`) and the app's decimal formatting
+    (`*_decimal`). None = the read said null (no share price with no shares outstanding, a
+    failed settlement scan, no active strategy for unrealized P&L).
+    """
+
+    total_assets: str = ""  # asset base units ("" = the read did not say)
+    total_assets_decimal: str = "0"
+    total_supply: str = ""  # share base units ("" = the read did not say)
+    share_price_decimal: str | None = None  # asset per whole share: 1 at inception
+    idle_assets: str | None = None  # asset base units the vault holds itself (not in a strategy)
+    realized_pnl_decimal: str | None = None  # settled P&L in the scanned range
+    unrealized_pnl_decimal: str | None = None  # the active strategy's value minus what it invested
+    as_of: float | None = None  # the read's asOf.timestamp: block time, unix seconds
+    as_of_block: str = ""
+    read_at: float = 0  # this plugin's clock when the read was stored
+
+    @property
+    def nav(self) -> Decimal:
+        return _decimal(self.total_assets_decimal) or Decimal(0)
+
+    @property
+    def pnl_bps(self) -> int:
+        return share_price_pnl_bps(self.share_price_decimal)
+
+    @property
+    def shares_outstanding(self) -> bool:
+        """Someone holds shares (a deposit landed), whether or not they joined in chat."""
+        supply = _decimal(self.total_supply)
+        return supply is not None and supply > 0
+
+    @property
+    def taken_at(self) -> float:
+        """When the snapshot describes: the block time, else when it was stored."""
+        return float(self.as_of) if self.as_of else float(self.read_at)
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> "NavSnapshot | None":
+        """A stored snapshot, or None (absent in state written before 0.8.1, or unreadable)."""
+        if not isinstance(raw, dict):
+            return None
+        d = _pick(cls, raw)
+        try:
+            for key in ("total_assets", "total_supply", "as_of_block"):
+                d[key] = "" if d.get(key) is None else str(d[key])
+            d["total_assets_decimal"] = str(d.get("total_assets_decimal") or "0")
+            for key in ("share_price_decimal", "idle_assets", "realized_pnl_decimal", "unrealized_pnl_decimal"):
+                if d.get(key) is not None:
+                    d[key] = str(d[key])
+            if d.get("as_of") is not None:
+                d["as_of"] = float(d["as_of"])
+            d["read_at"] = float(d.get("read_at") or 0)
+            return cls(**d)
+        except (TypeError, ValueError):
+            return None
+
+
 @dataclass
 class FundState:
     """The whole shared state of one fund: what one JSON file holds."""
@@ -396,6 +489,9 @@ class FundState:
     claims: list[Claim] = field(default_factory=list)
     proposals: list[ProposalRecord] = field(default_factory=list)
     receipts: list[SettleReceipt] = field(default_factory=list)
+    # NAV from the last tg-card read (None until one answers). Optional and additive: a 0.8.0
+    # reader ignores the key, so the schema version stays 1.
+    nav: NavSnapshot | None = None
     schema_version: int = SCHEMA_VERSION
     revision: int = 0  # bumped on every write; the HTTP backend uses it for If-Match
     next_proposal_seq: int = 1
@@ -464,6 +560,7 @@ class FundState:
             claims=_load_list(Claim, raw.get("claims")),
             proposals=_load_list(ProposalRecord, raw.get("proposals")),
             receipts=_load_list(SettleReceipt, raw.get("receipts")),
+            nav=NavSnapshot.from_dict(raw.get("nav")),
             schema_version=int(raw.get("schema_version", SCHEMA_VERSION)),
             revision=int(raw.get("revision", 0)),
             next_proposal_seq=int(raw.get("next_proposal_seq", 1)),

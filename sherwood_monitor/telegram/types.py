@@ -124,6 +124,13 @@ class FundView:
     cooldown_until: int | None = None  # no new proposal before this (governor cooldown)
     # Deposits open to anyone (no approve-depositor step): Join hands out the deposit link too.
     deposits_open: bool = False
+    # NAV and P&L come from the last tg-card read: when it describes (block time, unix s; None =
+    # never read), and whether the card shows it as last known (the read due before this render
+    # failed, or the snapshot is old). Stale with no snapshot = NAV unavailable, never a fake 0.
+    nav_as_of: int | None = None
+    nav_stale: bool = False
+    # The same read says the vault has shares outstanding: someone deposited, joined or not.
+    shares_outstanding: bool = False
 
 
 @dataclass(frozen=True)
@@ -179,6 +186,11 @@ class FundGateway(Protocol):
     plain callables the plugin-core lane wires. Actions (``ship_draft``,
     ``approve_*``, ``remove_agent``) return a short toast on success and raise
     :class:`FundActionError` with a user-facing reason on failure.
+
+    Optional: ``fund_card_for_chat(chat_id)``, the fund for the fund card itself
+    (a throttled chain read first, so NAV is current). Without it the card uses
+    ``fund_for_chat``, which never reads the chain (it backs authorization and
+    every other card, so it stays cheap).
     """
 
     def fund_for_chat(self, chat_id: int) -> FundView | None | Awaitable[FundView | None]: ...
