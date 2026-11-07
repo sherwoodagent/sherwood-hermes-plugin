@@ -32,6 +32,7 @@ import html
 import inspect
 import json
 import logging
+import math
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -174,6 +175,7 @@ def fund_to_view(fund: Any, proposals: Iterable[Any] | None = None) -> FundView:
             symbol=str(_get(p, "symbol", default="?")),
             value=float(_get(p, "value", "value_usd", "usd", default=0) or 0),
             pnl_bps=_int_or_none(_get(p, "pnl_bps")),
+            note=str(_get(p, "note", default="") or ""),
         )
         for p in (_get(fund, "positions", default=()) or ())
     )
@@ -194,6 +196,7 @@ def fund_to_view(fund: Any, proposals: Iterable[Any] | None = None) -> FundView:
         deposits_open=_get(fund, "deposits_open", default=False) is True,
         nav_as_of=_int_or_none(_get(fund, "nav_as_of")),
         nav_stale=_get(fund, "nav_stale", default=False) is True,
+        nav_partial=_get(fund, "nav_partial", default=False) is True,
         shares_outstanding=_get(fund, "shares_outstanding", default=False) is True,
     )
 
@@ -497,11 +500,12 @@ NAV_STALE_AFTER_S = 300.0
 def fund_dict(state: FundState, *, now: float | None = None, chain_failed: bool = False) -> dict[str, Any]:
     """A fund shaped for :func:`fund_to_view` (approved members, active agents, open proposals, NAV).
 
-    NAV and P&L come from ``state.nav``, the last tg-card read (P&L is share-price based:
-    ``(sharePrice - 1)`` in bps). The fund card's own read passes ``now`` and whether the
-    read due before it failed: the snapshot is then flagged stale (shown as last known);
-    every other caller gets it unflagged. ``positions`` is never set: the read has no
-    positions list (``fund_to_view`` still parses one if it is ever added here).
+    NAV, P&L and positions come from ``state.nav``, the last tg-card read: NAV is the
+    vault's cash plus the active strategy's value, P&L is ``(NAV / supply - 1)`` in bps,
+    and ``positions`` lists the strategy's tokens and the cash (empty with no strategy).
+    The fund card's own read passes ``now`` and whether the read due before it failed:
+    the snapshot is then flagged stale (shown as last known), and no usable snapshot
+    shows NAV as unavailable. Every other caller gets it unflagged.
     """
     f = state.fund
     members = [
@@ -527,16 +531,34 @@ def fund_dict(state: FundState, *, now: float | None = None, chain_failed: bool 
 
 def _nav_fields(state: FundState, *, now: float | None, chain_failed: bool) -> dict[str, Any]:
     snap = state.nav
-    if snap is None:
-        # Never read: NAV is unknown, not 0, once a read has been tried and failed.
-        return {"nav": 0.0, "pnl_bps": 0, "nav_as_of": None, "nav_stale": bool(chain_failed)}
+    fields: dict[str, Any] | None = None
+    if snap is not None:
+        try:
+            fields = _snapshot_fields(snap, state.fund.asset)
+        except (ArithmeticError, TypeError, ValueError) as exc:  # a bad stored value never breaks a lookup
+            _log.warning("fund %s: stored NAV snapshot ignored: %s", state.fund.name, exc)
+    if snap is None or fields is None:
+        # No usable snapshot: the fund card (``now`` given) says NAV is unavailable, never 0.
+        return {"nav": 0.0, "pnl_bps": 0, "nav_as_of": None, "nav_stale": bool(chain_failed or now is not None)}
     old = now is not None and now - snap.read_at > NAV_STALE_AFTER_S
+    fields["nav_stale"] = bool(chain_failed or old)
+    return fields
+
+
+def _snapshot_fields(snap: Any, asset: str) -> dict[str, Any]:
+    nav, taken_at = float(snap.nav), float(snap.taken_at)
+    if not (math.isfinite(nav) and math.isfinite(taken_at)):
+        raise ValueError("non-finite NAV or time")
+    rows = [dict(r, symbol=asset) if r.get("cash") else r for r in snap.position_rows()]
+    if not all(math.isfinite(r["value"]) for r in rows):
+        raise ValueError("non-finite position value")
     return {
-        "nav": float(snap.nav),
+        "nav": nav,
         "pnl_bps": snap.pnl_bps,
-        "nav_as_of": int(snap.taken_at) or None,
-        "nav_stale": bool(chain_failed or old),
+        "nav_as_of": int(taken_at) or None,
+        "nav_partial": snap.nav_partial,
         "shares_outstanding": snap.shares_outstanding,
+        "positions": [{k: v for k, v in r.items() if k != "cash"} for r in rows],
     }
 
 

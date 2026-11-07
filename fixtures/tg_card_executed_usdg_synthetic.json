@@ -1,0 +1,161 @@
+{
+  "success": true,
+  "data": {
+    "vault": "0x2fD6056d9326e07Eec9Ba4499078C328E4F38b4A",
+    "chainId": 4663,
+    "asOf": {
+      "block": "108793783",
+      "timestamp": "1794094759",
+      "iso": "2026-11-07T23:39:19.000Z"
+    },
+    "fund": {
+      "address": "0x2fD6056d9326e07Eec9Ba4499078C328E4F38b4A",
+      "asset": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+      "assetSymbol": "USDG",
+      "assetDecimals": 6,
+      "totalAssets": "60000000",
+      "totalSupply": "100000000000000",
+      "shareDecimals": 12,
+      "owner": "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407",
+      "governor": "0x52f0280ee76517A273038590C46E2fB2b6b9C7CE",
+      "redemptionsLocked": true,
+      "paused": false,
+      "agentFeeBps": "500",
+      "openDeposits": true,
+      "depositsRestricted": false,
+      "depositsOpen": true,
+      "ownerOnlyProposals": false
+    },
+    "nav": {
+      "totalAssets": "60000000",
+      "totalAssetsDecimal": "60",
+      "totalSupply": "100000000000000",
+      "sharePrice": "600000",
+      "sharePriceDecimal": "0.6",
+      "idleAssets": "60000000"
+    },
+    "pnl": {
+      "realized": "0",
+      "realizedDecimal": "0",
+      "unrealized": "600000",
+      "unrealizedDecimal": "0.6"
+    },
+    "activeProposal": {
+      "id": "1",
+      "strategy": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "positionValue": "40600000",
+      "positionValueValid": true,
+      "positions": [
+        {
+          "token": "0xa1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "symbol": "TSLA",
+          "decimals": 18,
+          "targetWeightBps": 6000,
+          "tokenAmount": "60000000000000000",
+          "investedAmount": "24000000"
+        },
+        {
+          "token": "0xb2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+          "symbol": "NVDA",
+          "decimals": 18,
+          "targetWeightBps": 4000,
+          "tokenAmount": "88888888888888888",
+          "investedAmount": "16000000"
+        }
+      ]
+    },
+    "proposals": {
+      "count": "1",
+      "open": [
+        {
+          "id": "1",
+          "state": "Executed",
+          "proposer": "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407",
+          "strategy": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+          "metadataURI": "",
+          "votesAgainst": "0",
+          "votableSupply": "100000000000000",
+          "againstBps": 0,
+          "vetoThresholdBps": 2000,
+          "vetoThresholdReached": false,
+          "voteEnd": "1794092359",
+          "voteEndIso": null,
+          "secondsToVoteEnd": 0,
+          "reviewEnd": "1794094099",
+          "executeBy": "1794180559",
+          "executedAt": "1794094159",
+          "strategyDuration": "604800",
+          "maxCapital": "40000000",
+          "maxDrawdownBps": 1000,
+          "proposerBondWood": "0",
+          "requiredCoverage": "14000000",
+          "review": null,
+          "nextAction": null
+        }
+      ],
+      "recent": [
+        {
+          "id": "1",
+          "state": "Executed",
+          "proposer": "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407",
+          "strategy": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+          "metadataURI": "",
+          "votesAgainst": "0",
+          "votableSupply": "100000000000000",
+          "againstBps": 0,
+          "vetoThresholdBps": 2000,
+          "vetoThresholdReached": false,
+          "voteEnd": "1794092359",
+          "voteEndIso": null,
+          "secondsToVoteEnd": 0,
+          "reviewEnd": "1794094099",
+          "executeBy": "1794180559",
+          "executedAt": "1794094159",
+          "strategyDuration": "604800",
+          "maxCapital": "40000000",
+          "maxDrawdownBps": 1000,
+          "proposerBondWood": "0",
+          "requiredCoverage": "14000000",
+          "review": null,
+          "nextAction": null
+        }
+      ]
+    },
+    "settlements": {
+      "available": true,
+      "complete": true,
+      "fromBlock": "81707343",
+      "toBlock": "108757783",
+      "items": []
+    },
+    "members": {
+      "available": true,
+      "approved": [],
+      "truncated": false,
+      "checked": []
+    },
+    "agents": [
+      "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407"
+    ],
+    "governor": {
+      "votingPeriod": "1800",
+      "vetoThresholdBps": "2000",
+      "executionWindow": "86400",
+      "cooldownPeriod": "3600"
+    },
+    "proposeGate": {
+      "openProposals": "1",
+      "cooldownUntil": "0",
+      "cooldownUntilIso": null,
+      "secondsToCooldownEnd": 0,
+      "ready": false
+    },
+    "warnings": []
+  },
+  "meta": {
+    "command": "funds.tgCard",
+    "chainId": 4663,
+    "timestamp": "2026-11-07T23:39:20.146Z"
+  },
+  "_synthetic": "Built from tg_card_open_usdg_100.json in the tg-card.ts shape: no proposal has executed on the live vault yet. 40 of 100 USDG deployed (TSLA 60% / NVDA 40%), worth 40.6."
+}

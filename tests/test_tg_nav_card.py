@@ -91,7 +91,7 @@ def test_a_stale_snapshot_shows_last_known_nav_with_its_time():
 def test_no_snapshot_and_a_failed_read_is_unavailable_not_zero():
     text, _ = render_fund_card(view(nav_stale=True), now=AS_OF)
     assert "NAV <b>unavailable</b> · P&amp;L <b>n/a</b>" in text and "NAV <b>0" not in text
-    assert text.endswith("<i>NAV unavailable: the chain read failed. Try /fund again in a minute.</i>")
+    assert text.endswith("<i>NAV unavailable: no chain read has returned it yet. Try /fund again in a minute.</i>")
 
 
 # -- the read behind the card: throttled, only for the fund card ---------------------------

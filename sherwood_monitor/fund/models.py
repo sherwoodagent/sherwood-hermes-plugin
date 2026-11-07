@@ -11,6 +11,7 @@ reader.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field, fields
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Iterable, TypeVar
@@ -387,11 +388,13 @@ class SettleReceipt:
         return cls(**d)
 
 
-# The fund card's P&L is share-price based: (sharePrice - 1) in bps, since a share starts at
+# The fund card's P&L is share-price based: (share price - 1) in bps, since a share starts at
 # 1 asset. Clamped: a share price cannot go below 0 (-100%), and anything past +10,000% is a
 # bad read rather than a fund.
 PNL_BPS_MIN = -10_000
 PNL_BPS_MAX = 1_000_000
+# A block timestamp in seconds stays below this for millennia; a millisecond one does not.
+MAX_PLAUSIBLE_TIMESTAMP = 10**11
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -404,78 +407,241 @@ def _decimal(value: Any) -> Decimal | None:
     return out if out.is_finite() else None
 
 
-def share_price_pnl_bps(share_price_decimal: Any) -> int:
-    """P&L since inception in bps from the tg-card's `sharePriceDecimal` (asset per whole share).
+def _units(value: Any) -> int | None:
+    """Non-negative integer base units from a stored or read string (digits only), else None."""
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
+def plausible_timestamp(value: Any) -> float | None:
+    """Unix seconds, or None for anything else (NaN, inf, <= 0, milliseconds, text)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return None
+    return ts if math.isfinite(ts) and 0 < ts < MAX_PLAUSIBLE_TIMESTAMP else None
+
+
+def share_price_pnl_bps(share_price: Any) -> int:
+    """P&L since inception in bps from a share price (asset per whole share).
 
     `"1"` -> 0, `"1.0123"` -> 123, `"0.98"` -> -200 (half rounds away from zero); clamped to
     [PNL_BPS_MIN, PNL_BPS_MAX]. Missing or unreadable (no shares outstanding) -> 0.
     """
-    price = _decimal(share_price_decimal)
+    if isinstance(share_price, Decimal):
+        price = share_price if share_price.is_finite() else None
+    else:
+        price = _decimal(share_price)
     if price is None:
         return 0
     bps = int(((price - 1) * 10_000).to_integral_value(rounding=ROUND_HALF_UP))
     return max(PNL_BPS_MIN, min(PNL_BPS_MAX, bps))
 
 
+def _ratio_bps(value: int, basis: int) -> int | None:
+    """(value / basis - 1) in bps, clamped; None without a basis."""
+    if basis <= 0:
+        return None
+    return share_price_pnl_bps(Decimal(value) / Decimal(basis))
+
+
+@dataclass
+class NavPosition:
+    """One token of the active strategy (tg-card `activeProposal.positions[]`)."""
+
+    token: str = ""
+    symbol: str = ""  # "" when the token's symbol() read failed
+    invested: str = "0"  # asset base units the strategy put into this token (its cost)
+    token_amount: str = "0"  # token base units held
+    decimals: int | None = None  # the token's decimals
+    target_weight_bps: int = 0
+
+    @property
+    def label(self) -> str:
+        if self.symbol:
+            return self.symbol
+        t = self.token
+        return f"{t[:6]}…{t[-4:]}" if len(t) > 12 else (t or "?")
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> "NavPosition":
+        d = _pick(cls, raw if isinstance(raw, dict) else {})
+        for key in ("token", "symbol"):
+            d[key] = str(d.get(key) or "")
+        for key in ("invested", "token_amount"):
+            d[key] = str(_units(d.get(key)) or 0)
+        d["decimals"] = None if d.get("decimals") is None else int(d["decimals"])
+        d["target_weight_bps"] = int(d.get("target_weight_bps") or 0)
+        return cls(**d)
+
+
 @dataclass
 class NavSnapshot:
     """The NAV block of the last tg-card read (`GET funds/<vault>/tg-card`), kept in the fund state.
 
-    The Telegram fund card renders NAV and P&L from it, and shows it as "last known" with its
-    time when a read fails. Amounts stay strings exactly as the read gave them: base units
-    (`total_assets`, `total_supply`, `idle_assets`) and the app's decimal formatting
-    (`*_decimal`). None = the read said null (no share price with no shares outstanding, a
-    failed settlement scan, no active strategy for unrealized P&L).
+    The Telegram fund card renders NAV, P&L and positions from it, and shows it as "last
+    known" with its time when a read fails. Amounts stay strings exactly as the read gave
+    them: base units (`total_assets`, `total_supply`, `idle_assets`, `position_value`) and
+    the app's decimal formatting (`*_decimal`). None = the read said null.
+
+    The vault's `totalAssets()` counts only the cash it holds: a PortfolioStrategy takes the
+    capital out at execute. So NAV is that cash plus the active strategy's value
+    (`positionValue` when valid, else what it invested), and the share price behind P&L is
+    NAV / supply, not the read's cash-only `sharePriceDecimal`.
     """
 
-    total_assets: str = ""  # asset base units ("" = the read did not say)
-    total_assets_decimal: str = "0"
+    total_assets: str = ""  # vault cash, asset base units ("" = the read did not say)
+    total_assets_decimal: str = "0"  # the same, as the read formatted it
     total_supply: str = ""  # share base units ("" = the read did not say)
-    share_price_decimal: str | None = None  # asset per whole share: 1 at inception
-    idle_assets: str | None = None  # asset base units the vault holds itself (not in a strategy)
+    share_price_decimal: str | None = None  # the read's cash-only share price (used with nothing deployed)
+    idle_assets: str | None = None  # asset base units the vault holds itself
     realized_pnl_decimal: str | None = None  # settled P&L in the scanned range
     unrealized_pnl_decimal: str | None = None  # the active strategy's value minus what it invested
     as_of: float | None = None  # the read's asOf.timestamp: block time, unix seconds
     as_of_block: str = ""
     read_at: float = 0  # this plugin's clock when the read was stored
+    # 0.8.2: decimals and the active (Executed) strategy. None / "" in snapshots stored by 0.8.1.
+    asset_decimals: int | None = None
+    share_decimals: int | None = None
+    active_proposal_id: str = ""  # "" = no strategy holds the fund's capital
+    position_value: str | None = None  # the strategy's live value, asset base units
+    position_value_valid: bool | None = None  # its oracle prices were good
+    positions: list[NavPosition] = field(default_factory=list)
+
+    # -- derived -------------------------------------------------------------------------
+    @property
+    def cash_units(self) -> int | None:
+        return _units(self.total_assets)
+
+    @property
+    def invested_units(self) -> int:
+        return sum(_units(p.invested) or 0 for p in self.positions)
+
+    @property
+    def live_value_units(self) -> int | None:
+        """The strategy's valid `positionValue`, else None."""
+        return _units(self.position_value) if self.position_value_valid else None
+
+    @property
+    def deployed_units(self) -> int | None:
+        """Capital the active strategy holds: its live value, else its cost; 0 with no strategy;
+        None when a strategy is active but neither figure was readable."""
+        if not self.active_proposal_id:
+            return 0
+        live = self.live_value_units
+        if live is not None:
+            return live
+        return self.invested_units if self.positions else None
+
+    @property
+    def nav_partial(self) -> bool:
+        """A strategy is active and its value is unknown: NAV would be the vault's cash only."""
+        return self.deployed_units is None
 
     @property
     def nav(self) -> Decimal:
-        return _decimal(self.total_assets_decimal) or Decimal(0)
+        """Cash plus the active strategy's value, in whole asset units."""
+        decimal_cash = _decimal(self.total_assets_decimal) or Decimal(0)
+        if self.asset_decimals is None:
+            return decimal_cash  # a 0.8.1 snapshot: cash only, nothing deployed recorded
+        cash = self.cash_units
+        cash_value = decimal_cash if cash is None else Decimal(cash).scaleb(-self.asset_decimals)
+        return cash_value + Decimal(self.deployed_units or 0).scaleb(-self.asset_decimals)
+
+    @property
+    def share_price(self) -> Decimal | None:
+        """NAV per whole share (1 at inception); None with no shares or no way to know."""
+        supply = _units(self.total_supply)
+        if self.nav_partial or not supply:
+            return None
+        if self.share_decimals is not None and self.asset_decimals is not None:
+            return self.nav / Decimal(supply).scaleb(-self.share_decimals)
+        if not self.active_proposal_id:
+            return _decimal(self.share_price_decimal)  # nothing deployed: the read's own price is right
+        return None
 
     @property
     def pnl_bps(self) -> int:
-        return share_price_pnl_bps(self.share_price_decimal)
+        return share_price_pnl_bps(self.share_price)
 
     @property
     def shares_outstanding(self) -> bool:
         """Someone holds shares (a deposit landed), whether or not they joined in chat."""
-        supply = _decimal(self.total_supply)
-        return supply is not None and supply > 0
+        return bool(_units(self.total_supply))
 
     @property
     def taken_at(self) -> float:
         """When the snapshot describes: the block time, else when it was stored."""
         return float(self.as_of) if self.as_of else float(self.read_at)
 
+    def check(self) -> "NavSnapshot":
+        """Itself, or ValueError when a value would break the card (a non-finite NAV, a bad time)."""
+        if not math.isfinite(float(self.nav)) or not math.isfinite(float(self.read_at)):
+            raise ValueError("NAV snapshot has a non-finite value")
+        if self.as_of is not None and plausible_timestamp(self.as_of) is None:
+            raise ValueError("NAV snapshot has an implausible asOf")
+        for row in self.position_rows():
+            if not math.isfinite(row["value"]):
+                raise ValueError("NAV snapshot has a non-finite position")
+        return self
+
+    def position_rows(self) -> list[dict[str, Any]]:
+        """The card's Positions block while a strategy is active ([] with none: "none yet").
+
+        Only `investedAmount` is per token; `positionValue` is the whole strategy's. So a
+        one-token strategy shows its live value and P&L; several tokens show each at cost
+        plus one "Unrealized" row (live value minus cost) when the value is readable. The
+        vault's cash comes last (`cash: True`), so the rows add up to NAV.
+        """
+        if not self.active_proposal_id or self.asset_decimals is None:
+            return []
+        scale = 10**self.asset_decimals
+        live = self.live_value_units
+        cost = self.invested_units
+        rows: list[dict[str, Any]] = []
+        if len(self.positions) == 1 and live is not None:
+            p = self.positions[0]
+            rows.append({"symbol": p.label, "value": live / scale, "pnl_bps": _ratio_bps(live, _units(p.invested) or 0)})
+        else:
+            for p in self.positions:
+                rows.append({"symbol": p.label, "value": (_units(p.invested) or 0) / scale, "note": "at cost"})
+            if live is not None and self.positions:
+                rows.append({"symbol": "Unrealized", "value": (live - cost) / scale, "pnl_bps": _ratio_bps(live, cost)})
+            elif live is not None:
+                rows.append({"symbol": "Strategy", "value": live / scale})
+        cash = self.cash_units
+        if cash and rows:
+            rows.append({"symbol": "", "value": cash / scale, "cash": True})
+        return rows
+
     @classmethod
     def from_dict(cls, raw: Any) -> "NavSnapshot | None":
-        """A stored snapshot, or None (absent in state written before 0.8.1, or unreadable)."""
+        """A stored snapshot, or None (absent before 0.8.1, or a value that would break the card)."""
         if not isinstance(raw, dict):
             return None
         d = _pick(cls, raw)
         try:
-            for key in ("total_assets", "total_supply", "as_of_block"):
+            for key in ("total_assets", "total_supply", "as_of_block", "active_proposal_id"):
                 d[key] = "" if d.get(key) is None else str(d[key])
             d["total_assets_decimal"] = str(d.get("total_assets_decimal") or "0")
-            for key in ("share_price_decimal", "idle_assets", "realized_pnl_decimal", "unrealized_pnl_decimal"):
+            for key in ("share_price_decimal", "idle_assets", "realized_pnl_decimal", "unrealized_pnl_decimal",
+                        "position_value"):
                 if d.get(key) is not None:
                     d[key] = str(d[key])
             if d.get("as_of") is not None:
                 d["as_of"] = float(d["as_of"])
             d["read_at"] = float(d.get("read_at") or 0)
-            return cls(**d)
-        except (TypeError, ValueError):
+            for key in ("asset_decimals", "share_decimals"):
+                d[key] = None if d.get(key) is None else int(d[key])
+            if d.get("position_value_valid") is not None:
+                d["position_value_valid"] = as_bool(d["position_value_valid"])
+            d["positions"] = [NavPosition.from_dict(x) for x in (raw.get("positions") or []) if isinstance(x, dict)]
+            return cls(**d).check()
+        except (TypeError, ValueError, ArithmeticError):
             return None
 
 

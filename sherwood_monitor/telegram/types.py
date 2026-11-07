@@ -85,8 +85,9 @@ class ProposalView:
 @dataclass(frozen=True)
 class Position:
     symbol: str
-    value: float
+    value: float  # in the fund's asset (nav_symbol)
     pnl_bps: int | None = None
+    note: str = ""  # e.g. "at cost": a strategy token valued at what it invested
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,8 @@ class FundView:
     # failed, or the snapshot is old). Stale with no snapshot = NAV unavailable, never a fake 0.
     nav_as_of: int | None = None
     nav_stale: bool = False
+    # A strategy is active and its value could not be read: NAV is the vault's cash only (a floor).
+    nav_partial: bool = False
     # The same read says the vault has shares outstanding: someone deposited, joined or not.
     shares_outstanding: bool = False
 
