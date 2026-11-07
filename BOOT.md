@@ -114,7 +114,11 @@ private chat, never "Always". If the group toolset still has `terminal`,
 say so to the operator. With `proposal_signer: agent` the operator also
 needs the Sherwood CLI 0.103.0 or later on this machine (older releases
 target another network or lack the bond escrow on the propose path);
-`fund_pending_commands` says so in `cli_warning` when it is older.
+`fund_pending_commands` says so in `cli_warning` when it is older. The
+fund features work with the gateway's `multiplex_profiles` on or off; if a
+member reports "Links are not configured yet" while `SHERWOOD_TG_LINK_SECRET`
+is set in this profile's `.env`, tell the operator to check the gateway log
+for a secret-scope warning from the plugin.
 
 ## Cron setup (one-time)
 

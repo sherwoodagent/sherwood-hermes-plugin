@@ -25,6 +25,7 @@ Hermes polls with ``allowed_updates=Update.ALL_TYPES``, which includes
 """
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
 import re
@@ -54,6 +55,7 @@ from .cards_live import NO_PREVIEW, CardGone, CardRef
 from .flow import IncomingMessage, ReactionChange
 from .links import build_link, decode_start_payload, encode_start_payload
 from .runtime import TelegramRuntime
+from .scope import capture_secret_scope
 from .types import FundActionError, FundView, Person, maybe_await
 
 _log = logging.getLogger(__name__)
@@ -66,12 +68,21 @@ GROUP_TYPES = (ChatType.GROUP, ChatType.SUPERGROUP)
 
 
 def _safe(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
-    """Log and swallow handler errors (Hermes registers no PTB error handler)."""
+    """Run a handler inside this profile's secret scope; log and swallow its errors.
+
+    PTB runs our handlers in its own tasks, outside any Hermes turn, so with
+    ``multiplex_profiles`` on no secret scope is installed there and a secret
+    read raises. The scope captured in :func:`wire` is installed for the call
+    and reset afterwards, whatever happens (Hermes registers no PTB error
+    handler, so errors are logged and swallowed here).
+    """
 
     @functools.wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        scope = getattr(getattr(self, "rt", None), "secret_scope", None)
         try:
-            return await fn(*args, **kwargs)
+            with scope.installed() if scope is not None else contextlib.nullcontext():
+                return await fn(self, *args, **kwargs)
         except Exception:
             _log.exception("sherwood telegram handler %s failed", fn.__name__)
             return None
@@ -624,6 +635,9 @@ def wire(application: Any, runtime: TelegramRuntime, adapter: Any = None) -> lis
     authorization check (same chain as a message) gates who may pitch or 🔥.
     """
     runtime.attach(application)
+    if runtime.secret_scope is None:
+        # Captured here, where Hermes wires the adapter for this profile; installed around every handler.
+        runtime.secret_scope = capture_secret_scope()
     check = getattr(adapter, "_is_callback_user_authorized", None) if adapter is not None else None
     if callable(check):
         runtime.sender_check = lambda chat_id, user_id: check(str(user_id), chat_id=str(chat_id), chat_type="group")

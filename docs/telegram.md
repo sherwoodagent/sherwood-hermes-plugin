@@ -478,7 +478,17 @@ runtime.submit(runtime.post_receipt(chat_id, receipt))               # settle
 ```
 
 `CallbackFundGateway` still takes sync or async callables for other hosts; its
-docstring lists each one. PTB is imported only inside the factory Hermes calls
+docstring lists each one.
+
+Secrets under `multiplex_profiles`: the native handlers (buttons, `/fund`,
+`/leaderboard`, `/start`, group messages, reactions) run in PTB's own tasks,
+where Hermes has installed no secret scope, and with multiplexing on Hermes'
+`get_secret` refuses a read outside a scope (`UnscopedSecretError`). `wire()`
+captures this profile's scope (`telegram/scope.py`: the bound scope, else
+`build_profile_secret_scope` for this profile's Hermes home) and every
+handler runs inside it (`set_secret_scope`, reset afterwards). Reads in
+worker threads (`asyncio.to_thread`, which copies the context) inherit it.
+Outside Hermes there is no scope and the environment is read, as before. PTB is imported only inside the factory Hermes calls
 when the Telegram adapter connects, so `register()` works without it.
 `PitchFlow.link_riff(chat_id, pitch_id, riff_id)` stays available, but Hermes
 exposes no hook that returns the agent's reply message id, so the plugin does

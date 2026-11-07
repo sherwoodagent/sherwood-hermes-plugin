@@ -69,6 +69,9 @@ class TelegramRuntime:
         self._secret = secret
         # (chat_id, user_id) -> authorized, from Hermes' Telegram adapter (set in handler.wire).
         self.sender_check: Callable[[int, int], Any] | None = None
+        # This profile's Hermes secret scope, captured in handler.wire and installed around every
+        # native handler call (multiplex_profiles: PTB's tasks have no scope of their own).
+        self.secret_scope: Any = None
         self.flow = PitchFlow(
             host_for_chat=self.host_for_chat,
             on_draft_requested=self._on_draft_requested,
