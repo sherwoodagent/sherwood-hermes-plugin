@@ -82,7 +82,7 @@ grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit
 Check, against `plugin.yaml` at the pin:
 
 - `version` is `"0.8.0"` and `requires_hermes` matches `plugin.yaml`.
-- `capabilities` lists the same 16 tools, 5 hooks and 5 `requires_env` names
+- `capabilities` lists the same 17 tools, 5 hooks and 5 `requires_env` names
   (`tests/test_catalog_entry.py` enforces this in this repo).
 - `tier: community`. Only Nous maintainers set `official` or `verified`.
 
@@ -109,7 +109,7 @@ Hermes surfaces it uses, and everything rule 13 asks to disclose. Use:
 
 - **What it does:** the catalog `description` first sentence, plus a link to
   the README at the pinned commit.
-- **Surfaces:** `register_tool` (16 tools in toolsets `sherwood-monitor` and
+- **Surfaces:** `register_tool` (17 tools in toolsets `sherwood-monitor` and
   `sherwood-fund`), `register_hook` (`on_session_start`, `on_session_finalize`,
   `pre_tool_call`, `post_tool_call`, `pre_llm_call`), `register_command`
   (`/fund`, `/join-fund`, `/fund-approve`, `/fund-agents`, `/leaderboard`),

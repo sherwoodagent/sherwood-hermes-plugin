@@ -559,34 +559,59 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         agent = svc.remove_agent(fund, rt.agent_name(), str(args.get("agent") or ""), caller_telegram_id=caller_tg)
         return {"agent": asdict(agent), "note": "proposals already on-chain keep running; veto them if needed"}
 
-    def chain_hold(state: FundState, my_address: str) -> str | None:
+    def chain_hold(state: FundState, my_address: str, drafts: list[Any], include_recent: bool) -> str | None:
         """Read the fund card before handing out a propose: why not to propose now, or None.
 
-        Holds when the vault has an open proposal on chain (a propose reverts VaultHasOpenProposal,
-        after the bond approve and clone may already have gone out), when a proposal from this
-        agent's wallet is on chain but not recorded here (an earlier run proposed and could not
-        record it), or when the card cannot be read (fail closed: an unattended run must not guess).
+        Holds, in this order:
+        - the card cannot be read, or a section that matters failed: the API reports a failed
+          section as a `warnings` entry with empty proposal lists and a null `proposeGate`
+          (fail closed: an unattended run must not guess);
+        - the vault has an open proposal on chain (a propose reverts VaultHasOpenProposal, after
+          the bond approve and clone may already have gone out);
+        - a proposal from this agent's wallet is on chain, newer than anything recorded here (id
+          above the highest recorded on-chain id and, when the card gives a created time, created
+          after the draft was shipped): an earlier run may have proposed and not recorded it.
+          `include_recent=true` bypasses only this one, for a proposal that predates this record.
         """
         try:
             card = TxBuilderClient(rt.settings.tx_builder_url, timeout=8.0).fund_card(state.fund.vault)
         except TxBuilderError as exc:
             return f"could not read the vault's proposals from the fund card ({scrub_paths(exc)}); propose commands are held until it answers"
+        warnings = [str(w) for w in (card.get("warnings") or []) if isinstance(w, str)]
+        failed = [w for w in warnings if any(k in w.lower() for k in _PROPOSAL_READ_WARNINGS)]
+        if failed:
+            return f"the fund card could not read the vault's proposals ({'; '.join(failed)}); propose commands are held until it can"
+        gate = card.get("proposeGate")
+        if not isinstance(gate, dict):
+            return (
+                "the fund card has no proposeGate (the governor's open-proposal count / cooldown read failed); "
+                "propose commands are held until it answers"
+            )
         props = card.get("proposals") if isinstance(card.get("proposals"), dict) else {}
         rows = [r for key in ("open", "recent") for r in (props.get(key) or []) if isinstance(r, dict)]
         if isinstance(card.get("activeProposal"), dict):
             rows.append(card["activeProposal"])
-        recorded = {p.onchain_id for p in state.proposals if p.onchain_id is not None}
-        mine = sorted({
-            str(r.get("id")) for r in rows
-            if my_address and str(r.get("proposer") or "").lower() == my_address.lower()
-            and str(r.get("id") or "").isdigit() and int(str(r.get("id"))) not in recorded
-        })
+        recorded = [p.onchain_id for p in state.proposals if p.onchain_id is not None]
+        highest = max(recorded, default=0)
+        shipped = min(float(d.shipped_at or 0) for d in drafts) if drafts else 0.0
+        mine: set[int] = set()
+        for r in rows:
+            rid = str(r.get("id") or "")
+            if not (my_address and rid.isdigit() and str(r.get("proposer") or "").lower() == my_address.lower()):
+                continue
+            created = _created_at(r)
+            if int(rid) > highest and (created is None or created >= shipped):
+                mine.add(int(rid))
+        unrecorded = ""
         if mine:
-            return (
-                f"proposal(s) #{', #'.join(mine)} from your wallet are on chain but not recorded here: record each with "
-                "fund_set_proposal_status (status=proposed, onchain_id, tx_hash) before anything else is proposed"
+            ids = ", #".join(str(i) for i in sorted(mine))
+            which = " or ".join(d.id for d in drafts) or "your draft"
+            unrecorded = (
+                f"proposal #{ids} from your wallet is on chain and newer than anything recorded here. If it is draft "
+                f"{which}, record it: fund_set_proposal_status proposal_id=<draft id> status=proposed "
+                "onchain_id=<that id> tx_hash=<propose tx hash>. Otherwise it predates this fund record and can be "
+                "ignored: list again with include_recent=true"
             )
-        gate = card.get("proposeGate") if isinstance(card.get("proposeGate"), dict) else {}
         try:
             open_n = int(gate.get("openProposals") or 0)
         except (TypeError, ValueError):
@@ -594,10 +619,13 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         open_ids = [str(r.get("id")) for r in (props.get("open") or []) if isinstance(r, dict) and r.get("id") is not None]
         if open_n > 0 or open_ids:
             ids = f" (#{', #'.join(open_ids)})" if open_ids else ""
-            return (
+            reason = (
                 f"the vault has {max(open_n, len(open_ids))} open proposal(s) on chain{ids}: a propose now reverts "
                 "VaultHasOpenProposal; wait until it is settled or vetoed (and the cooldown has passed)"
             )
+            return f"{reason}. Also: {unrecorded}" if unrecorded else reason
+        if unrecorded and not include_recent:
+            return unrecorded
         return None
 
     def fund_pending_commands(args: dict[str, Any]) -> dict[str, Any]:
@@ -636,7 +664,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         hold = None
         if candidates:
             agent = state.agent(me)
-            hold = chain_hold(state, (agent.address if agent else "") or rt.settings.agent_address)
+            hold = chain_hold(state, (agent.address if agent else "") or rt.settings.agent_address, candidates, include_recent)
         if hold:
             out["chain_hold"] = hold
             held += [{"proposal_id": p.id, "topic": p.topic, "reason": hold} for p in candidates]
@@ -698,6 +726,24 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         fund_pending_commands,
     ]
     return {fn.__name__: _guarded(fn) for fn in fns}
+
+
+# tg-card `warnings` that mean the proposal reads behind the propose hold failed (sherwood
+# app/src/app/api/v1/funds/_lib/tg-card.ts): "Could not read [some of] the vault's proposals.",
+# "Could not read the governor's open-proposal count / cooldown."
+_PROPOSAL_READ_WARNINGS = ("the vault's proposals", "open-proposal count")
+
+
+def _created_at(row: dict[str, Any]) -> float | None:
+    """A card proposal row's creation time (unix seconds) when the card gives one; None otherwise."""
+    for key in ("createdAt", "created", "proposedAt", "snapshotTimestamp"):
+        try:
+            value = float(row.get(key))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
 
 
 # Errors a guard treats as "cannot verify the draft" (it then blocks).

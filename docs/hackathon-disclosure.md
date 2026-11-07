@@ -200,8 +200,9 @@ change is logged as a warning.
   and nothing stops an agent with a terminal from running the CLI itself.
   The plugin holds what it can: it builds a propose command only for a
   shipped draft, holds a listed command back for 30 minutes, holds every
-  propose while the vault has an open proposal or an unrecorded one from
-  the agent's wallet, expires a ship after 24 hours, resets a guest's
+  propose while the vault has an open proposal, a newer unrecorded one from
+  the agent's wallet, or a failed proposal read, expires a ship after 24
+  hours, resets a guest's
   approval if it changes its wallet or identity, and tells the agent to run
   the commands only in an operator-started one-shot or an approve-mode cron,
   never in the group chat and never on boot. Creating the fund, the agent

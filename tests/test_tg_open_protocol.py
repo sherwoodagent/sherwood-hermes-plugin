@@ -213,7 +213,7 @@ async def test_open_protocol_loop_in_memory(tmp_path, monkeypatch):
     draft_call = next(c for c in bot.send_message.await_args_list if "DRAFT" in c.kwargs.get("text", ""))
     assert [b["callback_data"] for b in buttons(draft_call)] == ["shfund:shipit:p-1"]
 
-    # -- 🚀 Ship it: the record, the event and the card carry the exact signed CLI command
+    # -- 🚀 Ship it: the record, the event and the card carry the exact Sherwood CLI command
     expected = (
         f"sherwood strategy propose portfolio --vault {FUND_VAULT} --tokens NVDA,AAPL --weights 6000,4000 "
         "--amount 100 --duration 6h --max-drawdown-bps 2000 '--name=alpha-fund: NVDA AAPL pitch' "

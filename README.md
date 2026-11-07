@@ -367,9 +367,10 @@ wallet. Then record the vault with `fund_setup`.
 - **Double-propose guards.** A listed propose command is marked handed out
   and held back for 30 minutes (`include_recent=true` lists it again).
   Before listing one, the tool reads the fund card and holds every propose
-  while the vault has an open proposal on chain, while a proposal from this
-  agent's wallet is on chain but not recorded, or when the card cannot be
-  read. A command shipped more than 24 hours ago is listed as expired; the
+  while the vault has an open proposal on chain, when the card or its
+  proposal reads failed, or while a proposal from this agent's wallet is on
+  chain and newer than anything recorded here (record it if it is the draft;
+  if it predates this fund record, `include_recent=true` lists the command). A command shipped more than 24 hours ago is listed as expired; the
   host ships it again.
 - **CLI version.** The commands carry no `--chain` and need the Sherwood CLI
   0.103.0 or later (Robinhood Chain mainnet is the only network from 0.93.0;

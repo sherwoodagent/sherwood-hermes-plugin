@@ -357,6 +357,8 @@ class FundCardStub:
         self.status = 200
         self.open: list[dict] = []
         self.recent: list[dict] = []
+        self.warnings: list[str] = []
+        self.gate_failed = False  # the API's shape for a failed openProposalCount/cooldown read
         self.calls = 0
 
     def __call__(self, url: str, timeout: float):
@@ -364,9 +366,12 @@ class FundCardStub:
         assert f"/funds/{VAULT}/tg-card?chain=4663" in url
         if self.status != 200:
             return self.status, {}
+        gate = None if self.gate_failed else {
+            "openProposals": len(self.open), "cooldownUntil": "0", "ready": not self.open}
         return 200, {"success": True, "data": {
-            "proposeGate": {"openProposals": len(self.open), "cooldownUntil": "0", "ready": not self.open},
-            "proposals": {"open": self.open, "recent": self.recent},
+            "proposeGate": gate,
+            "proposals": {"count": len(self.recent), "open": self.open, "recent": self.recent},
+            "warnings": self.warnings,
         }}
 
 
@@ -545,14 +550,102 @@ def test_propose_commands_are_held_while_the_vault_has_an_open_proposal(agent_ho
     assert [e["proposal_id"] for e in agent_host.call_tool("fund_pending_commands")["proposals"]] == ["p-1"]
 
 
-def test_an_unrecorded_proposal_from_this_wallet_holds_every_propose(agent_host, tmp_path, card, cli):
+def test_fresh_vault_an_unrecorded_proposal_from_this_wallet_holds_the_propose(agent_host, tmp_path, card, cli):
     """An earlier run proposed and could not record it; the vault is idle again (settled or vetoed)."""
     shipped_draft(agent_host, tmp_path)
-    card.recent = [{"id": "5", "state": "Settled", "proposer": HOST_ADDR}]
+    card.recent = [{"id": "1", "state": "Settled", "proposer": HOST_ADDR}]
     out = agent_host.call_tool("fund_pending_commands")
-    assert out["proposals"] == [] and "#5 from your wallet are on chain but not recorded" in out["chain_hold"]
-    agent_host.call_tool("fund_set_proposal_status", {"proposal_id": "p-1", "status": "proposed", "onchain_id": 5, "tx_hash": TX})
+    assert out["proposals"] == [] and "#1 from your wallet is on chain and newer than anything recorded" in out["chain_hold"]
+    assert "If it is draft p-1, record it" in out["chain_hold"]
+    assert "predates this fund record and can be ignored" in out["chain_hold"]
+    agent_host.call_tool("fund_set_proposal_status", {"proposal_id": "p-1", "status": "proposed", "onchain_id": 1, "tx_hash": TX})
     assert agent_host.call_tool("fund_pending_commands")["held_back"] == []
+
+
+def test_include_recent_bypasses_only_the_unrecorded_hold(agent_host, tmp_path, card, cli):
+    shipped_draft(agent_host, tmp_path)
+    card.recent = [{"id": "1", "state": "Settled", "proposer": HOST_ADDR}]
+    assert [e["proposal_id"] for e in agent_host.call_tool("fund_pending_commands", {"include_recent": True})["proposals"]] == ["p-1"]
+    card.open = [{"id": "2", "state": "Pending", "proposer": "0x" + "99" * 20}]
+    out = agent_host.call_tool("fund_pending_commands", {"include_recent": True})
+    assert out["proposals"] == [] and "VaultHasOpenProposal" in out["chain_hold"]  # never bypassed
+
+
+HISTORY = [{"id": str(i), "state": "Settled", "proposer": HOST_ADDR} for i in range(8, 0, -1)]  # #1-#8 by the owner
+
+
+def clear_handed_out(svc: FundService) -> None:
+    """As if the 30-minute hold had passed since the last listing."""
+    svc.backend.update("alpha-fund", lambda st: setattr(st.proposal("p-1"), "handed_out_at", None))
+
+
+def test_history_vault_old_proposals_below_the_highest_recorded_id_never_hold(agent_host, tmp_path, card, cli):
+    """A vault with history (e.g. #1-#8 by its owner): ids at or below the newest one recorded here are old."""
+    svc = FundService(LocalJsonBackend(tmp_path / STATE_DIR))
+    svc.backend.update("alpha-fund", lambda st: st.proposals.append(
+        ProposalRecord(id="p-0", proposer_agent="alpha", thesis="old", status="settled", onchain_id=8)))
+    svc.backend.update("alpha-fund", lambda st: setattr(st, "next_proposal_seq", 1))
+    shipped_draft(agent_host, tmp_path)
+    card.recent = list(HISTORY)
+    out = agent_host.call_tool("fund_pending_commands")
+    assert [e["proposal_id"] for e in out["proposals"]] == ["p-1"] and "chain_hold" not in out
+    card.recent = [{"id": "9", "state": "Settled", "proposer": HOST_ADDR}, *HISTORY]  # a newer one is suspect
+    clear_handed_out(svc)
+    held = agent_host.call_tool("fund_pending_commands")
+    assert held["proposals"] == [] and "#9 from your wallet" in held["chain_hold"] and "#8" not in held["chain_hold"]
+
+
+def test_history_vault_proposals_created_before_the_ship_never_hold(agent_host, tmp_path, card, cli):
+    svc = shipped_draft(agent_host, tmp_path)
+    shipped_at = svc.load("alpha-fund").proposal("p-1").shipped_at
+    card.recent = [{**row, "createdAt": str(int(shipped_at) - 3600)} for row in HISTORY]
+    out = agent_host.call_tool("fund_pending_commands")
+    assert [e["proposal_id"] for e in out["proposals"]] == ["p-1"] and "chain_hold" not in out
+    card.recent = [{"id": "9", "state": "Settled", "proposer": HOST_ADDR, "createdAt": str(int(shipped_at) + 60)}, *card.recent]
+    clear_handed_out(svc)
+    held = agent_host.call_tool("fund_pending_commands")
+    assert held["proposals"] == [] and "#9 from your wallet" in held["chain_hold"] and "#8" not in held["chain_hold"]
+
+
+def test_history_vault_without_created_times_holds_once_then_include_recent_lists_it(agent_host, tmp_path, card, cli):
+    """Nothing recorded here and no created time on the card: ids alone cannot tell, so the hold says the
+    proposals may predate this fund record and include_recent=true lists the command."""
+    shipped_draft(agent_host, tmp_path)
+    card.recent = list(HISTORY)
+    out = agent_host.call_tool("fund_pending_commands")
+    assert out["proposals"] == [] and "#1, #2, #3, #4, #5, #6, #7, #8 from your wallet" in out["chain_hold"]
+    assert "predates this fund record and can be ignored: list again with include_recent=true" in out["chain_hold"]
+    assert [e["proposal_id"] for e in agent_host.call_tool("fund_pending_commands", {"include_recent": True})["proposals"]] == ["p-1"]
+
+
+@pytest.mark.parametrize("warning", [
+    "Could not read the vault's proposals.",
+    "Could not read some of the vault's proposals.",
+])
+def test_a_failed_proposals_section_holds_propose_commands(agent_host, tmp_path, card, cli, warning):
+    """The API reports a failed section as a warning, with empty lists, never as an HTTP error."""
+    shipped_draft(agent_host, tmp_path)
+    card.warnings = [warning]
+    out = agent_host.call_tool("fund_pending_commands", {"include_recent": True})
+    assert out["proposals"] == [] and warning in out["chain_hold"]
+
+
+def test_a_null_propose_gate_holds_propose_commands(agent_host, tmp_path, card, cli):
+    shipped_draft(agent_host, tmp_path)
+    card.gate_failed = True
+    card.warnings = ["Could not read the governor's open-proposal count / cooldown."]
+    out = agent_host.call_tool("fund_pending_commands", {"include_recent": True})
+    assert out["proposals"] == [] and "open-proposal count" in out["chain_hold"]
+    card.warnings = []  # a null gate with no warning still holds
+    out = agent_host.call_tool("fund_pending_commands", {"include_recent": True})
+    assert out["proposals"] == [] and "no proposeGate" in out["chain_hold"]
+
+
+def test_unrelated_card_warnings_do_not_hold(agent_host, tmp_path, card, cli):
+    shipped_draft(agent_host, tmp_path)
+    card.warnings = ["Could not read ProposalSettled logs: settlement results and realized P&L are unavailable.",
+                     "Could not read the guardian review of proposal 3."]
+    assert [e["proposal_id"] for e in agent_host.call_tool("fund_pending_commands")["proposals"]] == ["p-1"]
 
 
 def test_an_unreadable_fund_card_holds_propose_commands(agent_host, tmp_path, card, cli):

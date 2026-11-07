@@ -66,8 +66,14 @@ and the governor parameters are CLI steps the operator runs by hand.
   listed propose is stamped `handed_out_at` and held back for 30 minutes
   (`include_recent=true` to list it again); before listing one it reads the
   fund card and holds every propose while the vault has an open proposal,
-  while a proposal from this agent's wallet is on chain but not recorded, or
-  when the card cannot be read; a command shipped over 24 hours ago is listed
+  when the card or its proposal reads failed (an error, a `warnings` entry
+  for the proposals or the open-proposal count, or a null `proposeGate`), or
+  while a proposal from this agent's wallet is on chain and newer than
+  anything recorded here (an id above the highest recorded one and, when the
+  card gives a created time, created after the ship). That last hold says to
+  record it if it is the draft, else that it predates this fund record, and
+  `include_recent=true` bypasses it (never the open-proposal hold); a command
+  shipped over 24 hours ago is listed
   as expired. A listing from a chat turn (which cannot run anything) is not
   stamped, so it never holds back the operator's run.
 - **Guest wallet swaps.** A second `/join-fund` that changes an approved,
