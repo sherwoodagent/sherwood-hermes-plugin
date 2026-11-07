@@ -118,7 +118,8 @@ target another network or lack the bond escrow on the propose path);
 fund features work with the gateway's `multiplex_profiles` on or off; if a
 member reports "Links are not configured yet" while `SHERWOOD_TG_LINK_SECRET`
 is set in this profile's `.env`, tell the operator to check the gateway log
-for a secret-scope warning from the plugin.
+for a secret-scope warning from the plugin. After changing any
+`SHERWOOD_TG_*` value the operator restarts the gateway.
 
 ## Cron setup (one-time)
 

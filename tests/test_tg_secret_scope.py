@@ -82,6 +82,21 @@ def fake_hermes(monkeypatch, home: Path) -> types.ModuleType:
     monkeypatch.setitem(sys.modules, "agent", agent)
     monkeypatch.setitem(sys.modules, "agent.secret_scope", ss)
     monkeypatch.setitem(sys.modules, "hermes_constants", constants)
+    # tui_gateway.launch_profile_policy.owner_secret_scope: for the launch home, the process env
+    # (minus globals) under the profile's own files; `ss.process_env` stands in for that env.
+    ss.process_env = {}
+    ss.owned = []
+
+    def owner_secret_scope(h):
+        ss.owned.append(Path(h))
+        return {**ss.process_env, **build_profile_secret_scope(h)}
+
+    policy = types.ModuleType("tui_gateway.launch_profile_policy")
+    policy.owner_secret_scope = owner_secret_scope
+    gateway_pkg = types.ModuleType("tui_gateway")
+    gateway_pkg.launch_profile_policy = policy
+    monkeypatch.setitem(sys.modules, "tui_gateway", gateway_pkg)
+    monkeypatch.setitem(sys.modules, "tui_gateway.launch_profile_policy", policy)
     return ss
 
 
@@ -121,8 +136,9 @@ async def test_multiplex_without_a_scope_is_the_bug(hermes):
 
 async def test_a_button_builds_a_signed_link_under_multiplexing_with_no_scope_installed(hermes):
     rt, bot = wired_runtime()
-    assert isinstance(rt.secret_scope, SecretScope) and len(hermes.built) == 1  # built for the profile home at wire time
-    assert Path(rt.secret_scope.profile_home) == hermes.built[0] and LINK_SECRET not in repr(rt.secret_scope.profile_home)
+    assert isinstance(rt.secret_scope, SecretScope) and len(hermes.owned) == 1  # Hermes' own mapping for this home
+    assert Path(rt.secret_scope.profile_home) == hermes.owned[0]
+    assert LINK_SECRET not in repr(rt.secret_scope) and API_TOKEN not in repr(rt.secret_scope)  # repr hides the mapping
     token = hermes.set_multiplex_context(True)
     try:
         assert hermes.current_secret_scope() is None  # PTB's task: nothing installed
@@ -179,6 +195,20 @@ async def test_the_app_token_reads_inside_the_scope(hermes):
         assert fund_secrets.get_secret("SHERWOOD_TG_API_TOKEN") is None  # outside it, refused (never os.environ)
     finally:
         hermes.reset_multiplex_context(token)
+
+
+async def test_a_secret_only_in_the_process_env_is_kept(hermes, monkeypatch):
+    """launchd / systemd / `op run`: the link secret is in the launch env, not the profile's .env."""
+    (sys.modules["hermes_constants"].get_hermes_home() / ".env").write_text("")  # nothing in the profile's file
+    hermes.process_env = {"SHERWOOD_TG_LINK_SECRET": "from-the-launch-env"}
+    scope = capture_secret_scope()
+    assert scope.mapping["SHERWOOD_TG_LINK_SECRET"] == "from-the-launch-env"
+    monkeypatch.setitem(sys.modules, "tui_gateway.launch_profile_policy", None)  # older Hermes: no owner_secret_scope
+    assert "SHERWOOD_TG_LINK_SECRET" not in capture_secret_scope().mapping  # files only
+
+
+def test_the_repr_never_shows_a_secret():
+    assert "s3cret" not in repr(SecretScope({"SHERWOOD_TG_LINK_SECRET": "s3cret"}, "/profiles/alpha"))
 
 
 def test_outside_hermes_there_is_nothing_to_capture(monkeypatch):

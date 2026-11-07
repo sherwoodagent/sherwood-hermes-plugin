@@ -276,7 +276,8 @@ secret scope (`agent.secret_scope.get_secret`) and never logs them. It works
 with the gateway's `multiplex_profiles` on or off: the plugin's own Telegram
 handlers run in python-telegram-bot's tasks, outside any Hermes turn, so it
 captures this profile's secret scope when the handler is wired and installs
-it (`set_secret_scope`) around every handler call. (0.7.0 did not: with
+it (`set_secret_scope`) around every handler call. That capture is frozen:
+restart the gateway after changing any `SHERWOOD_TG_*` value. (0.7.0 did not: with
 multiplexing on, every personal link failed with "Links are not configured
 yet".)
 
