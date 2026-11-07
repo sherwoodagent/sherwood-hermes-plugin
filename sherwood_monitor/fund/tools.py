@@ -20,12 +20,13 @@ from .models import TOKEN_ADDRESSES_4663, WOOD_DECIMALS, Agent, Fund, FundState,
 from .rules import RuleViolation
 from .runtime import FundRuntime
 from .service import FundServiceError
-from .signed_cli import CLI_NOTE, register_agent_command
+from . import signed_cli
+from .signed_cli import CLI_NOTE, HANDOUT_HOLD_SECONDS, SHIP_TTL_SECONDS, register_agent_command
 from .store import FundExists, FundNotFound, FundStoreError, scrub_paths
 
 # Set once, then only the operator changes them (`hermes sherwood fund-bind`), never a tool.
 LOCKED_FUND_FIELDS = ("vault", "governor", "telegram_chat_id", "host_telegram_id")
-from .txbuilder import TxBuilderError
+from .txbuilder import TxBuilderClient, TxBuilderError
 from .units import UnitsError, parse_base_units, to_base_units
 
 TOOLSET = "sherwood-fund"
@@ -195,7 +196,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "fund_approve_agent": _schema(
         "fund_approve_agent",
         "Host only. Approve a guest agent. Returns the register-agent body to sign (proposal_signer: host) or the "
-        "signed CLI command the host agent runs, `sherwood vault add ...` (proposal_signer: agent); call again "
+        "Sherwood CLI command the host agent runs, `sherwood vault add ...`, which its CLI wallet signs "
+        "(proposal_signer: agent); call again "
         "with tx_hash once registerAgent lands to mark it registered.",
         {"agent": {"type": "string", "description": "Agent name or wallet"}, "tx_hash": {"type": "string"}},
         ["agent"],
@@ -208,11 +210,16 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "fund_pending_commands": _schema(
         "fund_pending_commands",
-        "Read-only. With proposal_signer: agent, the signed Sherwood CLI commands still to run: your drafts the "
-        "host shipped that are not proposed yet (`sherwood strategy propose portfolio ...`) and, if you are the "
-        "host, approved guest agents not registered yet (`sherwood vault add ...`). Run each with the terminal "
-        "outside the group chat (a Hermes cron run or `hermes -z`), then record it as each entry's `then` says.",
-        {},
+        "With proposal_signer: agent, the Sherwood CLI commands still to run (the CLI's wallet signs them): your "
+        "drafts the host shipped that are not proposed yet (`sherwood strategy propose portfolio ...`) and, if "
+        "you are the host, approved guest agents not registered yet (`sherwood vault add ...`). A listed propose "
+        "command is marked handed out and held back for 30 minutes; propose commands are held while the vault "
+        "has an open proposal on chain. Run each only in a `hermes -z` one-shot or an approve-mode cron, never "
+        "from the group chat, then record it as each entry's `then` says.",
+        {"include_recent": {
+            "type": "boolean",
+            "description": "List propose commands handed out in the last 30 minutes again. Only when you know that run did not propose.",
+        }},
     ),
 }
 
@@ -389,6 +396,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                     setattr(st.fund, k, v)
                 if open_deposits is not None:
                     st.fund.open_deposits = open_deposits
+                    st.fund.chain_closed_reads = 0
                 if host_address and not st.fund.host:
                     st.fund.host = host_address
                 return st
@@ -551,6 +559,47 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         agent = svc.remove_agent(fund, rt.agent_name(), str(args.get("agent") or ""), caller_telegram_id=caller_tg)
         return {"agent": asdict(agent), "note": "proposals already on-chain keep running; veto them if needed"}
 
+    def chain_hold(state: FundState, my_address: str) -> str | None:
+        """Read the fund card before handing out a propose: why not to propose now, or None.
+
+        Holds when the vault has an open proposal on chain (a propose reverts VaultHasOpenProposal,
+        after the bond approve and clone may already have gone out), when a proposal from this
+        agent's wallet is on chain but not recorded here (an earlier run proposed and could not
+        record it), or when the card cannot be read (fail closed: an unattended run must not guess).
+        """
+        try:
+            card = TxBuilderClient(rt.settings.tx_builder_url, timeout=8.0).fund_card(state.fund.vault)
+        except TxBuilderError as exc:
+            return f"could not read the vault's proposals from the fund card ({scrub_paths(exc)}); propose commands are held until it answers"
+        props = card.get("proposals") if isinstance(card.get("proposals"), dict) else {}
+        rows = [r for key in ("open", "recent") for r in (props.get(key) or []) if isinstance(r, dict)]
+        if isinstance(card.get("activeProposal"), dict):
+            rows.append(card["activeProposal"])
+        recorded = {p.onchain_id for p in state.proposals if p.onchain_id is not None}
+        mine = sorted({
+            str(r.get("id")) for r in rows
+            if my_address and str(r.get("proposer") or "").lower() == my_address.lower()
+            and str(r.get("id") or "").isdigit() and int(str(r.get("id"))) not in recorded
+        })
+        if mine:
+            return (
+                f"proposal(s) #{', #'.join(mine)} from your wallet are on chain but not recorded here: record each with "
+                "fund_set_proposal_status (status=proposed, onchain_id, tx_hash) before anything else is proposed"
+            )
+        gate = card.get("proposeGate") if isinstance(card.get("proposeGate"), dict) else {}
+        try:
+            open_n = int(gate.get("openProposals") or 0)
+        except (TypeError, ValueError):
+            open_n = 0
+        open_ids = [str(r.get("id")) for r in (props.get("open") or []) if isinstance(r, dict) and r.get("id") is not None]
+        if open_n > 0 or open_ids:
+            ids = f" (#{', #'.join(open_ids)})" if open_ids else ""
+            return (
+                f"the vault has {max(open_n, len(open_ids))} open proposal(s) on chain{ids}: a propose now reverts "
+                "VaultHasOpenProposal; wait until it is settled or vetoed (and the cooldown has passed)"
+            )
+        return None
+
     def fund_pending_commands(args: dict[str, Any]) -> dict[str, Any]:
         state = svc.load(rt.fund_for(args.get("fund")))
         me = rt.agent_name().lower()
@@ -561,6 +610,37 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                 "page; there is no CLI command to run here"
             ))
             return out
+        try:
+            include_recent = as_bool(args.get("include_recent"))
+        except ValueError as exc:
+            raise UnitsError("include_recent must be true or false") from exc
+        now = svc.clock()
+        mine = [
+            p for p in state.proposals
+            if p.status == "draft" and p.shipped_at and p.propose_command and p.proposer_agent.lower() == me
+        ]
+        held: list[dict[str, Any]] = []
+        expired: list[dict[str, Any]] = []
+        candidates = []
+        for p in mine:
+            if now - float(p.shipped_at or 0) > SHIP_TTL_SECONDS:
+                expired.append({"proposal_id": p.id, "topic": p.topic, "shipped_at": p.shipped_at,
+                                "reason": "shipped over 24 hours ago: not runnable; ask the host to ship it again"})
+            elif p.handed_out_at and now - p.handed_out_at < HANDOUT_HOLD_SECONDS and not include_recent:
+                held.append({"proposal_id": p.id, "topic": p.topic, "handed_out_at": p.handed_out_at, "reason": (
+                    "handed out less than 30 minutes ago: if that run proposed it, record it with "
+                    "fund_set_proposal_status; pass include_recent=true only if you know it did not run"
+                )})
+            else:
+                candidates.append(p)
+        hold = None
+        if candidates:
+            agent = state.agent(me)
+            hold = chain_hold(state, (agent.address if agent else "") or rt.settings.agent_address)
+        if hold:
+            out["chain_hold"] = hold
+            held += [{"proposal_id": p.id, "topic": p.topic, "reason": hold} for p in candidates]
+            candidates = []
         proposals = [
             {
                 "proposal_id": p.id,
@@ -570,9 +650,15 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                 "then": f"fund_set_proposal_status proposal_id={p.id} status=proposed onchain_id=<on-chain id> "
                         "tx_hash=<propose tx hash>",
             }
-            for p in state.proposals
-            if p.status == "draft" and p.shipped_at and p.propose_command and p.proposer_agent.lower() == me
+            for p in candidates
         ]
+        if current_caller().messaging:
+            # A chat turn has no terminal and cannot run them: listing here must not hold back the
+            # operator's one-shot or cron.
+            out["handed_out"] = False
+        else:
+            svc.mark_handed_out(state.fund.name, [p.id for p in candidates])
+            out["handed_out"] = bool(candidates)
         registrations = []
         host = state.host_agent()
         if host is not None and host.name.lower() == me:
@@ -587,8 +673,11 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                         "command": cmd,
                         "then": f"fund_approve_agent agent={a.name} tx_hash=<registerAgent tx hash>",
                     })
-        out.update(proposals=proposals, registrations=registrations, note=CLI_NOTE)
-        now = svc.clock()
+        out.update(proposals=proposals, registrations=registrations, held_back=held, expired=expired, note=CLI_NOTE)
+        if proposals or registrations:
+            warning = signed_cli.cli_version_warning(rt.sherwood_bin)
+            if warning:
+                out["cli_warning"] = warning
         if proposals and state.fund.cooldown_until and state.fund.cooldown_until > now:
             out["cooldown_until"] = state.fund.cooldown_until
             out["wait"] = "the governor cooldown is on: a propose before cooldown_until reverts CooldownNotElapsed"

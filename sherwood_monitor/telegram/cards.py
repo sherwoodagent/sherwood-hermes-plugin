@@ -583,10 +583,11 @@ def render_personal_link(
 
 
 def render_shipped_command(base_html: str, command: str, *, shipped_by: str, proposer: str, limit: int = 4000) -> str:
-    """A shipped draft card under proposal_signer: agent: the card plus the signed CLI command to run."""
+    """A shipped draft card under proposal_signer: agent: the card plus the Sherwood CLI command to run
+    (the proposing agent's CLI wallet signs it; the plugin does not)."""
     head = (
         f"{base_html}\n\n<i>🚀 Shipped by {esc(shipped_by)}. {esc(proposer)} proposes it from its own wallet "
-        "with the Sherwood CLI, outside this chat (a Hermes cron run or hermes -z):</i>"
+        "with the Sherwood CLI, outside this chat (a hermes -z one-shot or an approve-mode cron):</i>"
     )
     text = f"{head}\n<pre>{esc(command)}</pre>"
     if len(text) <= limit:

@@ -376,7 +376,7 @@ def register(ctx: Any) -> None:
     fund_guard = None
     fund_rt = None
     try:
-        fund_rt = register_fund(ctx, cfg_path)
+        fund_rt = register_fund(ctx, cfg_path, sherwood_bin=cfg.sherwood_bin)
         fund_guard = make_fund_guard(fund_rt)
     except Exception as exc:
         _log.warning("fund features disabled: %s", exc)

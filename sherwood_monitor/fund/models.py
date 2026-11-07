@@ -81,7 +81,10 @@ def _opt_int(v: Any) -> int | None:
 
 
 def as_bool(v: Any) -> bool:
-    """A JSON/tool flag as a bool: true/false, 1/0, or the strings "true"/"false" (anything else raises)."""
+    """A JSON/tool flag as a bool: true/false, 1/0, the strings "true"/"false", or null (false).
+    Anything else raises ValueError."""
+    if v is None:
+        return False
     if isinstance(v, bool):
         return v
     if isinstance(v, int) and v in (0, 1):
@@ -128,6 +131,10 @@ class Fund:
     # depositsRestricted is off): no approve-depositor step. Set by fund_setup; the tg-card
     # read's `fund.depositsOpen` replaces it whenever that read answers (the chain wins).
     open_deposits: bool = False
+    # Consecutive tg-card reads that said `depositsOpen: false` while the record says open. The
+    # app's rule read fails closed (an unread rule comes back false, with no warning), so an open
+    # fund closes only after two such reads in a row.
+    chain_closed_reads: int = 0
     created_at: float = 0
 
     @property
@@ -141,6 +148,8 @@ class Fund:
         d["agent_fee_bps"] = _opt_int(d.get("agent_fee_bps"))
         if "open_deposits" in d:
             d["open_deposits"] = as_bool(d["open_deposits"])
+        if "chain_closed_reads" in d:
+            d["chain_closed_reads"] = _opt_int(d["chain_closed_reads"]) or 0
         if d.get("cooldown_until") is not None:
             d["cooldown_until"] = float(d["cooldown_until"])
         if d.get("max_capital") is not None:
@@ -327,9 +336,11 @@ class ProposalRecord:
     # The host's "ship it" on the draft card (go-ahead to propose).
     shipped_at: float | None = None
     shipped_by: str = ""
-    # proposal_signer: agent: the signed Sherwood CLI command the proposer agent runs (outside
-    # the plugin, in a cron run or `hermes -z`) once the host ships the draft. "" otherwise.
+    # proposal_signer: agent: the Sherwood CLI command the proposer agent runs (outside the
+    # plugin, in a cron run or `hermes -z`; its CLI wallet signs) once the host ships the draft.
+    # "" otherwise. fund_pending_commands stamps handed_out_at when it lists it.
     propose_command: str = ""
+    handed_out_at: float | None = None
     created_at: float = 0
     updated_at: float = 0
 

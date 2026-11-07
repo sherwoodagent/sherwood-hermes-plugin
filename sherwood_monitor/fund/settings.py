@@ -40,7 +40,7 @@ class FundSettings:
     fund_state_url: str = ""  # http backend base URL (stub for now)
     # Who signs propose. `host`: pre-GA beta (factory.ownerOnlyProposals), the host's
     # browser wallet owns the vault and co-signs the agent's draft from a signing link.
-    # `agent`: open protocol, the agent's own wallet (the one the signed Sherwood CLI
+    # `agent`: open protocol, the agent's own wallet (the one the Sherwood CLI
     # holds) owns the vault and proposes; "ship it" and agent approvals hand the agent
     # the exact CLI command to run (fund/signed_cli.py). The plugin signs in neither.
     proposal_signer: str = "host"

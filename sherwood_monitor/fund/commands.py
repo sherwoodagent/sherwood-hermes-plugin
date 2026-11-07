@@ -115,8 +115,8 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
             if not rt.settings.host_cosigns:
                 # proposal_signer: agent: the vault owner is the host agent's CLI wallet.
                 return (
-                    f"Approved {agent.name}. The host agent registers it with the signed Sherwood CLI "
-                    f"(its own wallet, outside this chat):\n{register_agent_command(state.fund, agent)}\n"
+                    f"Approved {agent.name}. The host agent registers it with the Sherwood CLI, whose wallet signs, "
+                    f"outside this chat:\n{register_agent_command(state.fund, agent)}\n"
                     f"{CLI_NOTE}\nThen: /fund-approve {agent.name} <tx_hash>"
                 )
             return (

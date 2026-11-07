@@ -1128,9 +1128,10 @@ def _shipped_context(fund: str, record: ProposalRecord) -> str:
     return (
         "<sherwood-fund-shipped>\n"
         f"Fund {_quote(fund, 64)}: the host shipped draft {pid} ({_quote(record.topic, 80)}). "
-        f"{_quote(record.proposer_agent, 64)} proposes it from its own wallet with the signed Sherwood CLI "
-        "command on the draft card (fund_pending_commands lists it). This chat turn has no terminal: the command "
-        "runs outside the group, in a Hermes cron run or a `hermes -z` one-shot. Once it lands, record it: "
+        f"{_quote(record.proposer_agent, 64)} proposes it from its own wallet with the Sherwood CLI command on "
+        "the draft card (fund_pending_commands lists it). This chat turn has no terminal: the command runs "
+        "outside the group, in a `hermes -z` one-shot the operator starts or a cron the operator set up in "
+        "approve mode. Do not try to run it here. Once it lands, record it: "
         f"fund_set_proposal_status {pid} proposed with onchain_id and tx_hash.\n"
         "</sherwood-fund-shipped>"
     )

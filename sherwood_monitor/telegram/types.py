@@ -74,7 +74,7 @@ class ProposalView:
     guardian_coverage: str = ""  # tg-card review.coverage.kind: none | partial | full | unpriced
     bond_buffer_status: str = ""  # propose-portfolio bondBuffer.status (sherwood #740)
     bond_buffer_note: str = ""  # bufferNote, or the 409 premium message
-    # proposal_signer: agent: the signed CLI command the proposer agent runs once shipped ("" otherwise).
+    # proposal_signer: agent: the Sherwood CLI command the proposer agent runs once shipped ("" otherwise).
     propose_command: str = ""
 
     @property

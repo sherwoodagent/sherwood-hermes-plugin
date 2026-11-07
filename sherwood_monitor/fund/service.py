@@ -262,6 +262,19 @@ class FundService:
             if existing is not None and not existing.removed:
                 if existing.registered:
                     raise RuleViolation(rules.deny("already_registered", f"{existing.name} is already a co-manager"))
+                swapped = (
+                    existing.address.lower() != agent.address.lower()
+                    or str(existing.identity_id) != str(agent.identity_id)
+                )
+                if swapped and existing.approved:
+                    # The host approved the old wallet / identity, not this one: back to pending, so no
+                    # register-agent body or `sherwood vault add` command is built for the new pair.
+                    _log.warning(
+                        "fund %s: %s asked again with wallet %s / identity %s; its approval is reset",
+                        fund, existing.name, agent.address, agent.identity_id,
+                    )
+                    existing.approved = False
+                    existing.approved_at = None
                 existing.identity_id = agent.identity_id
                 existing.address = agent.address
                 existing.owner_telegram_id = agent.owner_telegram_id or existing.owner_telegram_id
@@ -490,7 +503,7 @@ class FundService:
 
         Nothing is signed here. With `proposal_signer: agent` (`agent_signs`,
         default from the service) the record and the `shipped` event carry the
-        exact signed CLI command the proposer agent runs
+        exact Sherwood CLI command the proposer agent runs (its CLI wallet signs it)
         (`sherwood strategy propose portfolio ...`); with `host` (pre-GA) the
         host co-signs from a link and no command is built.
         """
@@ -509,6 +522,7 @@ class FundService:
             require(rules.check_cooldown(state, now))
             if agent_signs:
                 record.propose_command = propose_portfolio_command(state.fund, record)
+                record.handed_out_at = None  # a fresh ship is listed again at once
             record.shipped_at = now
             record.shipped_by = str(caller_telegram_id or "")
             record.updated_at = now
@@ -518,6 +532,21 @@ class FundService:
         data = {"propose_command": record.propose_command} if record.propose_command else {}
         self._emit(FundEvent(EV_SHIPPED, fund, proposal=record, data=data))
         return record
+
+    def mark_handed_out(self, fund: str, proposal_ids: list[str]) -> None:
+        """fund_pending_commands handed these propose commands out: stamp them, so the next
+        listing holds them back for a while instead of handing the same propose out twice."""
+        if not proposal_ids:
+            return
+        now = self.clock()
+
+        def mutate(state: FundState) -> None:
+            for pid in proposal_ids:
+                record = state.proposal(pid)
+                if record is not None and record.status == "draft" and record.propose_command:
+                    record.handed_out_at = now
+
+        self.backend.update(fund, mutate)
 
     def portfolio_payload(
         self, fund: Fund, record: ProposalRecord, *, proposer: str, metadata_uri: str = ""
@@ -708,8 +737,9 @@ class FundService:
         Rejected -> vetoed) when that is a legal step. `proposeGate.cooldownUntil`
         replaces the local cooldown; `governor` gives cooldownPeriod and
         vetoThresholdBps; `fund.depositsOpen` (the vault's openDeposits and not
-        the factory's depositsRestricted) replaces `open_deposits`. Settles stay
-        with `record_settle` (it needs the P&L).
+        the factory's depositsRestricted) replaces `open_deposits`: `true` at
+        once, `false` only after two reads in a row (the app's rule read fails
+        closed). Settles stay with `record_settle` (it needs the P&L).
         """
         data = card.get("data", card) if isinstance(card, dict) else {}
         props = data.get("proposals") or {}
@@ -737,7 +767,7 @@ class FundService:
                 if fee is not None:
                     state.fund.agent_fee_bps = fee  # the chain's value; drafts refuse it above the cap
                 if deposits_open is not None:
-                    state.fund.open_deposits = deposits_open  # the chain's posture beats the record
+                    _apply_deposits_open(state, deposits_open)  # the chain's posture beats the record
                 for m in state.members:
                     if m.address and m.address.lower() in deposit_order:
                         m.deposit_no = deposit_order[m.address.lower()]
@@ -903,6 +933,38 @@ def is_portfolio(record: ProposalRecord) -> bool:
     return bool(execute) and all(leg.symbol and leg.weight_bps > 0 for leg in execute) and sum(
         leg.weight_bps for leg in execute
     ) == 10_000
+
+
+# The app reads a vault's launch rules failing closed: an unread rule comes back as
+# `depositsOpen: false` with no warning. So an open fund closes only after this many
+# consecutive reads say so; `true` applies at once (a failed read never opens a fund).
+DEPOSITS_CLOSE_AFTER_READS = 2
+
+
+def _apply_deposits_open(state: FundState, deposits_open: bool) -> None:
+    fund = state.fund
+    if deposits_open:
+        fund.chain_closed_reads = 0
+        if not fund.open_deposits:
+            fund.open_deposits = True
+            _log.warning("fund %s: the chain says deposits are open; the fund is now open to anyone", fund.name)
+        return
+    if not fund.open_deposits:
+        fund.chain_closed_reads = 0
+        return
+    fund.chain_closed_reads += 1
+    if fund.chain_closed_reads < DEPOSITS_CLOSE_AFTER_READS:
+        _log.warning(
+            "fund %s: a chain read says deposits are restricted (read %d of %d); the fund stays open until "
+            "the next read agrees", fund.name, fund.chain_closed_reads, DEPOSITS_CLOSE_AFTER_READS,
+        )
+        return
+    fund.open_deposits = False
+    fund.chain_closed_reads = 0
+    _log.warning(
+        "fund %s: %d chain reads in a row say deposits are restricted; the fund is now restricted (the host "
+        "approves each member)", fund.name, DEPOSITS_CLOSE_AFTER_READS,
+    )
 
 
 def _start_cooldown(state: FundState, now: float) -> None:

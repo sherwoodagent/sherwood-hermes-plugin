@@ -17,6 +17,8 @@ class FundRuntime:
     settings: FundSettings
     # Telegram id -> linked wallet from the app (GET /api/tg/link); None disables the lookup.
     applink: AppLinkClient | None = None
+    # The monitor's `sherwood_bin`: fund_pending_commands reads `<bin> --version` (read-only).
+    sherwood_bin: str = "sherwood"
 
     def agent_name(self) -> str:
         name = self.settings.agent_name.strip()
@@ -36,6 +38,7 @@ def build_runtime(
     *,
     backend: FundStateBackend | None = None,
     clock: Callable[[], float] = time.time,
+    sherwood_bin: str = "sherwood",
 ) -> FundRuntime:
     # Pin the state directory now: every later read and write in this process
     # must hit the same files, whatever happens to $HOME afterwards.
@@ -48,6 +51,7 @@ def build_runtime(
         FundService(backend, clock=clock, tx_builder_url=settings.tx_builder_url, proposal_signer=settings.proposal_signer),
         settings,
         AppLinkClient(settings.app_base_url, allowed_hosts=settings.app_link_hosts),
+        sherwood_bin or "sherwood",
     )
 
 

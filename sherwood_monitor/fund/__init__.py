@@ -33,9 +33,9 @@ FUND_SKILLS: dict[str, str] = {"fund-pitch": "pitch", "fund-propose": "propose",
 __all__ = ["FUND_SKILLS", "FundRuntime", "build_runtime", "make_fund_guard", "register_fund"]
 
 
-def register_fund(ctx: Any, cfg_path: Path | None) -> FundRuntime:
+def register_fund(ctx: Any, cfg_path: Path | None, *, sherwood_bin: str = "sherwood") -> FundRuntime:
     """Register fund tools, slash commands and skills. Returns the runtime (for the guard)."""
-    rt = build_runtime(load_fund_settings(cfg_path, ctx))
+    rt = build_runtime(load_fund_settings(cfg_path, ctx), sherwood_bin=sherwood_bin)
 
     handlers = make_fund_tool_handlers(rt)
     for name, schema in SCHEMAS.items():

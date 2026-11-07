@@ -121,16 +121,23 @@ async def test_ship_it_without_a_command_only_clears_the_buttons():
 
 # -- the loop through register() ------------------------------------------------------------------
 class OpenChainStub(ChainStub):
-    """tg-card with the `fund` section (vault info + launch rules: depositsOpen)."""
+    """tg-card with the `fund` section (vault info + launch rules: depositsOpen, always a bool) and
+    an idle vault until a proposal is on chain (`on_chain`)."""
 
     def __init__(self) -> None:
         super().__init__()
         self.deposits_open = True
+        self.on_chain = False
 
     def __call__(self, url: str, timeout: float):
         status, payload = super().__call__(url, timeout)
         payload["data"]["fund"] = {"openDeposits": True, "depositsRestricted": not self.deposits_open,
                                    "depositsOpen": self.deposits_open, "ownerOnlyProposals": False}
+        if not self.on_chain:
+            payload["data"]["proposeGate"] = {"openProposals": 0, "cooldownUntil": "0", "ready": True}
+            payload["data"]["proposals"] = {"open": [], "recent": []}
+        else:
+            payload["data"]["proposals"]["open"][0]["proposer"] = HOST_ADDR
         return status, payload
 
 
@@ -209,8 +216,8 @@ async def test_open_protocol_loop_in_memory(tmp_path, monkeypatch):
     # -- 🚀 Ship it: the record, the event and the card carry the exact signed CLI command
     expected = (
         f"sherwood strategy propose portfolio --vault {FUND_VAULT} --tokens NVDA,AAPL --weights 6000,4000 "
-        "--amount 100 --duration 6h --max-drawdown-bps 2000 --name 'alpha-fund: NVDA AAPL pitch' "
-        "--description 'AI capex keeps beating'"
+        "--amount 100 --duration 6h --max-drawdown-bps 2000 '--name=alpha-fund: NVDA AAPL pitch' "
+        "'--description=AI capex keeps beating'"
     )
     shipped_events = []
     svc.subscribe(lambda ev: shipped_events.append(ev) if ev.kind == "shipped" else None)
@@ -225,9 +232,15 @@ async def test_open_protocol_loop_in_memory(tmp_path, monkeypatch):
     assert "<sherwood-fund-shipped>" in out["context"] and "fund_pending_commands" in out["context"]
     assert "has no terminal" in out["context"] and "prepare/propose-portfolio" not in out["context"]
 
-    # -- the one-shot fetches the command, runs it outside the plugin, records what landed
-    (entry,) = ctx.call_tool("fund_pending_commands")["proposals"]
-    assert entry["command"] == expected
+    # -- the one-shot fetches the command (the fund card says the vault is idle; the CLI is new
+    # enough), runs it outside the plugin, records what landed
+    monkeypatch.setattr("sherwood_monitor.preflight.subprocess.run",
+                        lambda argv, **kw: SimpleNamespace(returncode=0, stdout="0.103.0\n", stderr=""))
+    pending = ctx.call_tool("fund_pending_commands")
+    (entry,) = pending["proposals"]
+    assert entry["command"] == expected and "cli_warning" not in pending
+    assert ctx.call_tool("fund_pending_commands")["proposals"] == []  # handed out: held back, not proposed twice
+    chain.on_chain = True
     ctx.call_tool("fund_set_proposal_status", {"proposal_id": "p-1", "status": "proposed", "onchain_id": 9, "tx_hash": TX})
     ctx.call_tool("fund_set_proposal_status", {"proposal_id": "p-1", "status": "voting"})
     await settle_tasks(40)
@@ -236,12 +249,14 @@ async def test_open_protocol_loop_in_memory(tmp_path, monkeypatch):
     assert ctx.call_tool("fund_pending_commands")["proposals"] == []
     assert svc.load("alpha-fund").fund.open_deposits is True  # the chain read agreed
 
-    # -- the chain says deposits are restricted after all: the chain beats the record
+    # -- the chain says deposits are restricted: one read may be a failed rule read (the app fails
+    # closed), so the fund closes on the second read in a row
     chain.deposits_open = False
-    bridge.chain_sync._next.clear()
-    await rt.refresh_proposal_card(CHAT, "9")
-    await settle_tasks(40)
-    assert svc.load("alpha-fund").fund.open_deposits is False
+    for expected_open in (True, False):
+        bridge.chain_sync._next.clear()
+        await rt.refresh_proposal_card(CHAT, "9")
+        await settle_tasks(40)
+        assert svc.load("alpha-fund").fund.open_deposits is expected_open
     assert ctx.call_tool("fund_status")["deposits_open"] is False
 
 

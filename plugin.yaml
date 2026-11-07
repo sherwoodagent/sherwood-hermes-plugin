@@ -103,7 +103,7 @@ config_schema:
     description: >-
       Who signs propose: `host` (pre-GA beta, ownerOnlyProposals: the host's browser
       wallet owns the vault and co-signs the agent's draft) or `agent` (open protocol:
-      the agent's own wallet, held by the signed Sherwood CLI, owns the vault and
+      the agent's own wallet, held by the Sherwood CLI, owns the vault and
       proposes; ship it and agent approvals hand the agent the exact CLI command)
   fund_state_backend:
     type: str

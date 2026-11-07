@@ -328,7 +328,7 @@ class FundHandlers:
         except Exception as exc:  # the ship stands; the card just keeps its old text
             _log.debug("shipped draft %s not re-read: %s", arg, exc)
         if command:
-            # proposal_signer: agent: the card shows the exact signed CLI command the agent runs.
+            # proposal_signer: agent: the card shows the exact Sherwood CLI command the agent runs.
             host = person_from_user(query.from_user)
             text = render_shipped_command(
                 getattr(query.message, "text_html", None) or "", command,
