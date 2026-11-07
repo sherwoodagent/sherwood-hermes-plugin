@@ -301,9 +301,13 @@ FundService ──events──▶ FundTelegramBridge ──submit()──▶ Tel
   `apply_chain_card` takes Against %, voting/review windows, guardian coverage,
   the chain state (review/approved/executed/vetoed), `proposeGate.cooldownUntil`
   and `fund.depositsOpen` (the vault's `openDeposits` and not the factory's
-  `depositsRestricted`, which replaces `open_deposits`) from it. The read
-  runs only while a proposal is live on chain, so before that the record
-  field decides.
+  `depositsRestricted`, which replaces `open_deposits`) from it. The 60 s
+  refresh runs only while a proposal is live on chain; since 0.8.1 the
+  Telegram `/fund` command also reads once when the 30 s throttle allows
+  (for the card's NAV and P&L; the Hermes in-session `/fund` and
+  `fund_status` render from stored state). Until a read answers, the record
+  field decides; an open fund closes only after two consecutive restricted
+  reads.
 - **Signing.** Nothing in the plugin sends a transaction. Members sign in the
   browser from personal `/tg/*` links; with `proposal_signer: host` the host
   signs from `/tg/sign` links (see "Host signing page" in `docs/telegram.md`);
