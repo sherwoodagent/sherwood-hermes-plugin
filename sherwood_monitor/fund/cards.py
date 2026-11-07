@@ -110,7 +110,8 @@ def render_fund_card(state: FundState, *, now: float, app_base_url: str = "") ->
     lines = [
         f"{f.name} · {f.asset} on Robinhood Chain ({f.chain_id})",
         f"Vault {short_addr(f.vault)} · voting {_minutes(f.voting_period)} · veto at {f.veto_threshold_bps / 100:g}% Against",
-        f"Members: {approved} approved" + (f", {waiting} waiting for the host" if waiting else ""),
+        (f"Members: {approved} joined · deposits are open to anyone (no host approval)" if f.open_deposits
+         else f"Members: {approved} approved" + (f", {waiting} waiting for the host" if waiting else "")),
         "Agents: " + (", ".join(_agent_tag(a) for a in agents) if agents else "none"),
     ]
     open_ = state.open_proposals()

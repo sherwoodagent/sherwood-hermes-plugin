@@ -16,10 +16,11 @@ from ..session import current_caller
 from . import authz, rules
 from .applink import ensure_member_address
 from .cards import render_fund_card, render_receipt
-from .models import TOKEN_ADDRESSES_4663, WOOD_DECIMALS, Agent, Fund, FundState, Leg
+from .models import TOKEN_ADDRESSES_4663, WOOD_DECIMALS, Agent, Fund, FundState, Leg, as_bool
 from .rules import RuleViolation
 from .runtime import FundRuntime
 from .service import FundServiceError
+from .signed_cli import CLI_NOTE, register_agent_command
 from .store import FundExists, FundNotFound, FundStoreError, scrub_paths
 
 # Set once, then only the operator changes them (`hermes sherwood fund-bind`), never a tool.
@@ -29,6 +30,12 @@ from .units import UnitsError, parse_base_units, to_base_units
 
 TOOLSET = "sherwood-fund"
 ToolHandler = Callable[..., str]
+
+# Chat- and model-facing answer to an approve-member request on a fund with open deposits.
+OPEN_DEPOSITS_NOTE = (
+    "deposits are open on this fund, nothing to approve: anyone can deposit from the fund card's "
+    "💰 Deposit or 🎟 Join button"
+)
 
 _FUND = {"type": "string", "description": "Fund subdomain. Optional when this Hermes runs one fund."}
 
@@ -84,6 +91,12 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Vault agent fee in bps, at most 1500 (guardians refuse to approve near the 20% cap); 500 recommended",
             },
             "metadata_uri": {"type": "string", "description": "ipfs:// fund metadata, for the create-fund body"},
+            "open_deposits": {
+                "type": "boolean",
+                "description": "Deposits open to anyone (create-fund openDeposits: true): members join and deposit with no "
+                "host approval. Default false (the host approves each member). Once the vault exists, the chain's "
+                "value (fund card read) replaces this.",
+            },
         },
         ["fund"],
     ),
@@ -170,7 +183,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "fund_approve_member": _schema(
         "fund_approve_member",
         "Host only. Approve a depositor (deposits are restricted). Returns the approve-depositor body to sign. "
-        "Without `address`, the wallet the member linked in the app (/tg/join) is used when there is one.",
+        "Without `address`, the wallet the member linked in the app (/tg/join) is used when there is one. "
+        "On a fund with open deposits there is nothing to approve and it says so.",
         {
             "member": {"type": "string", "description": "Telegram id or wallet address"},
             "address": {"type": "string", "description": "Wallet, when approving by telegram id"},
@@ -180,8 +194,9 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "fund_approve_agent": _schema(
         "fund_approve_agent",
-        "Host only. Approve a guest agent. Returns the register-agent body to sign; call again with "
-        "tx_hash once registerAgent lands to mark it registered.",
+        "Host only. Approve a guest agent. Returns the register-agent body to sign (proposal_signer: host) or the "
+        "signed CLI command the host agent runs, `sherwood vault add ...` (proposal_signer: agent); call again "
+        "with tx_hash once registerAgent lands to mark it registered.",
         {"agent": {"type": "string", "description": "Agent name or wallet"}, "tx_hash": {"type": "string"}},
         ["agent"],
     ),
@@ -190,6 +205,14 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "Host only. Remove a guest agent in one action: drops its claims and cancels its drafts.",
         {"agent": {"type": "string"}},
         ["agent"],
+    ),
+    "fund_pending_commands": _schema(
+        "fund_pending_commands",
+        "Read-only. With proposal_signer: agent, the signed Sherwood CLI commands still to run: your drafts the "
+        "host shipped that are not proposed yet (`sherwood strategy propose portfolio ...`) and, if you are the "
+        "host, approved guest agents not registered yet (`sherwood vault add ...`). Run each with the terminal "
+        "outside the group chat (a Hermes cron run or `hermes -z`), then record it as each entry's `then` says.",
+        {},
     ),
 }
 
@@ -296,6 +319,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             "members": {"approved": sum(m.approved for m in state.members), "waiting": sum(not m.approved for m in state.members)},
             "cooldown_until": state.fund.cooldown_until,
             "pitch_claims": [asdict(c) for c in rules.active_claims(state, now) if c.idea_by],
+            "deposits_open": state.fund.open_deposits,
         }
 
     def fund_setup(args: dict[str, Any]) -> dict[str, Any]:
@@ -314,6 +338,11 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         if "agent_fee_bps" in ints:
             rules.require(rules.check_agent_fee(ints["agent_fee_bps"]))
         cap_raw = args.get("max_capital")
+        open_raw = args.get("open_deposits")
+        try:
+            open_deposits = None if open_raw is None else as_bool(open_raw)
+        except ValueError as exc:
+            raise UnitsError("open_deposits must be true or false") from exc
         host_address = str(args.get("host_address") or rt.settings.agent_address or "")
         for key in ("vault", "governor"):
             if key in fields_ and not rules.is_address(fields_[key]):
@@ -331,6 +360,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             new = Fund(name=name, asset=asset_arg or "USDG", host=host_address, **fields_)
             for k, v in limits_for(new).items():
                 setattr(new, k, v)
+            if open_deposits is not None:
+                new.open_deposits = open_deposits
             state = svc.create_fund(
                 new,
                 Agent(
@@ -356,6 +387,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                         ))
                 for k, v in {**fields_, **limits_for(st.fund)}.items():
                     setattr(st.fund, k, v)
+                if open_deposits is not None:
+                    st.fund.open_deposits = open_deposits
                 if host_address and not st.fund.host:
                     st.fund.host = host_address
                 return st
@@ -387,7 +420,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                     "name": state.fund.name,
                     "symbol": state.fund.name[:8].upper().replace("-", ""),
                     "subdomain": state.fund.name,
-                    "openDeposits": False,  # restricted: the host approves each member
+                    # false: restricted, the host approves each member; true: open to anyone.
+                    "openDeposits": state.fund.open_deposits,
                 },
             }
         return out
@@ -477,6 +511,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         # Authorize first; only then the credentialed app lookup and its state write.
         rules.require(rules.check_caller_is_host(state, caller_tg))
         rules.require(rules.check_host_action(state, rt.agent_name()))
+        if state.fund.open_deposits:
+            return {"open_deposits": True, "approved": False, "note": OPEN_DEPOSITS_NOTE}
         if not args.get("address"):
             ensure_member_address(rt, fund, str(args.get("member") or ""))  # app link lookup
         member, body = svc.approve_member(
@@ -500,8 +536,13 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             caller_telegram_id=caller_tg,
         )
         out: dict[str, Any] = {"agent": asdict(agent)}
-        if not agent.registered:
+        if not agent.registered and rt.settings.host_cosigns:
             out["prepare"] = {"route": "register-agent", "url": f"{svc.tx_builder_url}/prepare/register-agent", "body": body}
+        elif not agent.registered:
+            # proposal_signer: agent: the vault owner is the host agent's CLI wallet, not a browser wallet.
+            out["command"] = register_agent_command(svc.load(fund).fund, agent)
+            out["note"] = CLI_NOTE
+            out["then"] = f"fund_approve_agent agent={agent.name} tx_hash=<registerAgent tx hash>"
         return out
 
     def fund_remove_agent(args: dict[str, Any]) -> dict[str, Any]:
@@ -509,6 +550,49 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         caller_tg = host_gate(fund)
         agent = svc.remove_agent(fund, rt.agent_name(), str(args.get("agent") or ""), caller_telegram_id=caller_tg)
         return {"agent": asdict(agent), "note": "proposals already on-chain keep running; veto them if needed"}
+
+    def fund_pending_commands(args: dict[str, Any]) -> dict[str, Any]:
+        state = svc.load(rt.fund_for(args.get("fund")))
+        me = rt.agent_name().lower()
+        out: dict[str, Any] = {"fund": state.fund.name, "proposal_signer": rt.settings.proposal_signer}
+        if rt.settings.host_cosigns:
+            out.update(proposals=[], registrations=[], note=(
+                "proposal_signer is host: the host co-signs shipped drafts and signs registerAgent on the signing "
+                "page; there is no CLI command to run here"
+            ))
+            return out
+        proposals = [
+            {
+                "proposal_id": p.id,
+                "topic": p.topic,
+                "shipped_at": p.shipped_at,
+                "command": p.propose_command,
+                "then": f"fund_set_proposal_status proposal_id={p.id} status=proposed onchain_id=<on-chain id> "
+                        "tx_hash=<propose tx hash>",
+            }
+            for p in state.proposals
+            if p.status == "draft" and p.shipped_at and p.propose_command and p.proposer_agent.lower() == me
+        ]
+        registrations = []
+        host = state.host_agent()
+        if host is not None and host.name.lower() == me:
+            for a in state.agents:
+                if a.approved and not a.registered and not a.removed:
+                    try:
+                        cmd = register_agent_command(state.fund, a)
+                    except RuleViolation:
+                        continue
+                    registrations.append({
+                        "agent": a.name,
+                        "command": cmd,
+                        "then": f"fund_approve_agent agent={a.name} tx_hash=<registerAgent tx hash>",
+                    })
+        out.update(proposals=proposals, registrations=registrations, note=CLI_NOTE)
+        now = svc.clock()
+        if proposals and state.fund.cooldown_until and state.fund.cooldown_until > now:
+            out["cooldown_until"] = state.fund.cooldown_until
+            out["wait"] = "the governor cooldown is on: a propose before cooldown_until reverts CooldownNotElapsed"
+        return out
 
     fns = [
         fund_status,
@@ -522,6 +606,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         fund_approve_member,
         fund_approve_agent,
         fund_remove_agent,
+        fund_pending_commands,
     ]
     return {fn.__name__: _guarded(fn) for fn in fns}
 

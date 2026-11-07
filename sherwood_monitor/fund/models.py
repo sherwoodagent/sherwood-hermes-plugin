@@ -80,6 +80,20 @@ def _opt_int(v: Any) -> int | None:
     return None if v is None or v == "" else int(v)
 
 
+def as_bool(v: Any) -> bool:
+    """A JSON/tool flag as a bool: true/false, 1/0, or the strings "true"/"false" (anything else raises)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int) and v in (0, 1):
+        return bool(v)
+    text = str(v).strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no", ""):
+        return False
+    raise ValueError(f"expected true or false, got {v!r}")
+
+
 @dataclass
 class Fund:
     """One fund. `name` is the Sherwood subdomain and the state-file key.
@@ -110,6 +124,10 @@ class Fund:
     cooldown_period: int = DEFAULT_COOLDOWN_SECONDS
     # No new proposal before this time (set when a proposal is vetoed or settled).
     cooldown_until: float | None = None
+    # Deposits open to anyone (vault created with openDeposits: true while the factory's
+    # depositsRestricted is off): no approve-depositor step. Set by fund_setup; the tg-card
+    # read's `fund.depositsOpen` replaces it whenever that read answers (the chain wins).
+    open_deposits: bool = False
     created_at: float = 0
 
     @property
@@ -121,6 +139,8 @@ class Fund:
         d = _pick(cls, raw)
         d["max_drawdown_bps"] = _opt_int(d.get("max_drawdown_bps"))
         d["agent_fee_bps"] = _opt_int(d.get("agent_fee_bps"))
+        if "open_deposits" in d:
+            d["open_deposits"] = as_bool(d["open_deposits"])
         if d.get("cooldown_until") is not None:
             d["cooldown_until"] = float(d["cooldown_until"])
         if d.get("max_capital") is not None:
@@ -307,6 +327,9 @@ class ProposalRecord:
     # The host's "ship it" on the draft card (go-ahead to propose).
     shipped_at: float | None = None
     shipped_by: str = ""
+    # proposal_signer: agent: the signed Sherwood CLI command the proposer agent runs (outside
+    # the plugin, in a cron run or `hermes -z`) once the host ships the draft. "" otherwise.
+    propose_command: str = ""
     created_at: float = 0
     updated_at: float = 0
 

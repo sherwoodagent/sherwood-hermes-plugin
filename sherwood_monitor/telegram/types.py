@@ -74,6 +74,8 @@ class ProposalView:
     guardian_coverage: str = ""  # tg-card review.coverage.kind: none | partial | full | unpriced
     bond_buffer_status: str = ""  # propose-portfolio bondBuffer.status (sherwood #740)
     bond_buffer_note: str = ""  # bufferNote, or the 409 premium message
+    # proposal_signer: agent: the signed CLI command the proposer agent runs once shipped ("" otherwise).
+    propose_command: str = ""
 
     @property
     def display_id(self) -> str:
@@ -120,6 +122,8 @@ class FundView:
     open_proposals: tuple[ProposalView, ...] = ()
     nav_symbol: str = "USDC"
     cooldown_until: int | None = None  # no new proposal before this (governor cooldown)
+    # Deposits open to anyone (no approve-depositor step): Join hands out the deposit link too.
+    deposits_open: bool = False
 
 
 @dataclass(frozen=True)

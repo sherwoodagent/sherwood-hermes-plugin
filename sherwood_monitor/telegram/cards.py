@@ -10,11 +10,11 @@ Callback data (``shfund:<action>:<arg>``, at most 64 bytes):
     vote:<pid>            ❌ Object, hands back a personal /tg/vote link (anyone)
     deposit:<vault>       personal /tg/deposit link (anyone)
     withdraw:<vault>      personal /tg/withdraw link (anyone)
-    join:<vault>          personal /tg/join link (anyone)
-    shipit:<draft>        host only
+    join:<vault>          personal /tg/join link (anyone); with open deposits the /tg/deposit link too
+    shipit:<draft>        host only (proposal_signer: agent: the card then shows the CLI propose command)
     propose:<draft>       host only: hands back the host signing page link
-    approve_member:<tg>   host only (then hands the host a /tg/sign link)
-    approve_agent:<name>  host only (then hands the host a /tg/sign link)
+    approve_member:<tg>   host only (then hands the host a /tg/sign link; open deposits: nothing to approve)
+    approve_agent:<name>  host only (then hands the host a /tg/sign link; agent signer: no link)
     remove_agent:<name>   host only
 """
 from __future__ import annotations
@@ -549,18 +549,46 @@ def sign_link_details(url: str) -> list[str]:
     return lines
 
 
-def render_personal_link(kind: str, url: str, fund_name: str) -> tuple[str, InlineKeyboardMarkup]:
-    """The per-user message holding a signed URL button."""
-    noun, label = LINK_LABELS.get(kind, (kind, "Open in browser"))
+def _expires(kind: str) -> str:
     ttl = link_ttl_s(kind)
-    expires = f"{ttl // 3600} hours" if ttl >= 3600 else f"{ttl // 60} minutes"
+    return f"{ttl // 3600} hours" if ttl >= 3600 else f"{ttl // 60} minutes"
+
+
+def render_personal_link(
+    kind: str, url: str, fund_name: str, *, deposit_url: str | None = None
+) -> tuple[str, InlineKeyboardMarkup]:
+    """The per-user message holding a signed URL button.
+
+    ``deposit_url`` (a join on a fund with open deposits): the member's deposit
+    link rides along as a second button, since there is no host approval to wait for.
+    """
+    noun, label = LINK_LABELS.get(kind, (kind, "Open in browser"))
     text = (
         f"🔐 Your personal {esc(noun)} link for <b>{esc(fund_name)}</b>.\n"
-        f"It is tied to your Telegram account and expires in {expires}. "
+        f"It is tied to your Telegram account and expires in {_expires(kind)}. "
         "Your wallet signs in the browser."
     )
     if kind == "sign":
         details = sign_link_details(url)
         if details:
             text += "\n\nCheck before you sign:\n" + "\n".join(details)
-    return text, _kb([[InlineKeyboardButton(label, url=url)]])
+    rows = [[InlineKeyboardButton(label, url=url)]]
+    if deposit_url:
+        text += (
+            "\n\nDeposits are open on this fund, so there is no approval to wait for: link your wallet, "
+            f"then deposit with the second button (it expires in {_expires('deposit')})."
+        )
+        rows.append([InlineKeyboardButton(LINK_LABELS["deposit"][1], url=deposit_url)])
+    return text, _kb(rows)
+
+
+def render_shipped_command(base_html: str, command: str, *, shipped_by: str, proposer: str, limit: int = 4000) -> str:
+    """A shipped draft card under proposal_signer: agent: the card plus the signed CLI command to run."""
+    head = (
+        f"{base_html}\n\n<i>🚀 Shipped by {esc(shipped_by)}. {esc(proposer)} proposes it from its own wallet "
+        "with the Sherwood CLI, outside this chat (a Hermes cron run or hermes -z):</i>"
+    )
+    text = f"{head}\n<pre>{esc(command)}</pre>"
+    if len(text) <= limit:
+        return text
+    return f"{head}\n<i>The command is too long for this card: fund_pending_commands has it.</i>"
