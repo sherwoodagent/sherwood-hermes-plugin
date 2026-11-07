@@ -29,10 +29,13 @@ What changed for consumers in 0.8.1:
   line explains depositors who deposited from the app without tapping
   🎟 Join: "Members 0 (depositors haven't tapped 🎟 Join yet)". Details are in
   [docs/telegram.md](telegram.md).
-- **`/fund` now triggers one tg-card read** when the 30 s throttle allows.
-  Before 0.8.1, the 60 s refresh read only while a proposal was live. The
-  read also applies the chain's `depositsOpen`, so the open-deposits posture
-  can update before the first proposal.
+- **The Telegram `/fund` command now triggers one tg-card read** when the
+  30 s throttle allows. The Hermes in-session `/fund` slash command and the
+  `fund_status` tool render from stored state without a read. Before 0.8.1,
+  the 60 s refresh read only while a proposal was live. The read also
+  applies the chain's `depositsOpen`, so the open-deposits posture can update
+  before the first proposal: an open read applies at once, and an open fund
+  closes only after two consecutive restricted reads.
 - **Unchanged:** the tools (17), hooks, slash commands, `requires_env`, the
   cron set and cadences, `MIN_CLI_VERSION` (`0.71.0`), the agent-signer CLI
   floor (`0.103.0`), and the group-chat fund wording in the consumer docs.
@@ -246,7 +249,7 @@ git log --format='%h %G?' origin/main..HEAD   # G on every commit
   release and is held for the maintainer.
 - **The catalog reviews the pinned tree.** This PR's fixes to
   `docs/catalog-submission.md` (0.8.0 → 0.8.1), `docs/hackathon-disclosure.md`
-  (title, and the `/fund` read trigger) and `docs/fund-host-join.md` (the
+  (title, and the Telegram `/fund` read trigger) and `docs/fund-host-join.md` (the
   same read trigger) land after the v0.8.1 tag. So the tree at `cedb3a9`
   still says v0.8.0 in the disclosure title, and it still says the
   open-deposits read happens only during a live proposal. Whether that
