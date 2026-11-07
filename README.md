@@ -39,13 +39,13 @@ sherwood config set --private-key <0x...>
 ## Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.7.0 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.0 release commit>
 ```
 
 Hermes has no `@tag` install syntax; `--ref` takes a full 40-character commit
-sha. Use the commit the `v0.7.0` tag points at: it is on the
-[v0.7.0 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.7.0),
-or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.7.0 --jq .sha`.
+sha. Use the commit the `v0.8.0` tag points at: it is on the
+[v0.8.0 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.0),
+or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.0 --jq .sha`.
 (This README cannot carry that sha: it is part of the commit.) Once the plugin
 is listed in the Hermes catalog, `hermes plugins install sherwood-monitor`
 installs the reviewed pin. Hermes ≥ 0.21.5.
@@ -92,7 +92,7 @@ SHERWOOD_PRIVATE_KEY=0x...      # optional, secret: only for XMTP; the address i
 The Python package installs fine even if the sidecar build fails; XMTP is just disabled until you rebuild. To skip the build and rebuild manually:
 
 ```bash
-SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.7.0 release commit>
+SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.0 release commit>
 # find the installed location:
 python3 -c "import sherwood_monitor, pathlib; print(pathlib.Path(sherwood_monitor.__file__).parent.parent / 'xmtp_sidecar')"
 cd <that path>
@@ -220,23 +220,31 @@ is where the fund talks; the contracts decide what happens to the money.
   unless Against reaches 20% of share supply before the voting window ends
   (1800 s on the demo vault). Silence means pass. 👍 Back it is social and
   never votes.
-- **Deposits are restricted.** The host approves each member
-  (`approveDepositor`) before they can deposit.
+- **Deposits are restricted or open.** Restricted (the default,
+  `openDeposits: false`): the host approves each member (`approveDepositor`)
+  before they can deposit. Open (`fund_setup open_deposits=true`, the vault
+  created with `openDeposits: true`): a member taps 🎟 Join, links a wallet
+  and gets their deposit link in the same message; there is no approval
+  step. Once the vault exists, the fund-card read's `depositsOpen` (the
+  vault's flag and the factory's `depositsRestricted`) decides.
 - **Nothing moves money from chat.** Every money action is a plain link to
-  `app.sherwood.sh` that the person signs with their own wallet. The plugin
-  builds unsigned transactions through the prepare API at `api.sherwood.sh`
-  and never signs or sends one. The host signs owner actions on `/tg/sign`,
-  members sign from their own wallets, and the agent never holds member funds.
+  `app.sherwood.sh` that the person signs with their own wallet, or, with
+  `proposal_signer: agent`, a signed Sherwood CLI command the host agent runs
+  outside the chat. The plugin builds unsigned transactions through the
+  prepare API at `api.sherwood.sh`, hands out those commands, and never signs
+  or sends a transaction. With `proposal_signer: host` the host signs owner
+  actions on `/tg/sign`; members sign from their own wallets, and the agent
+  never holds member funds.
 
 ### App pages (app.sherwood.sh)
 
 | Page | Who | What it does |
 |---|---|---|
 | `/tg/join?fund=<vault>` | member | Telegram login, link a wallet, ask to join |
-| `/tg/deposit?fund=<vault>` | approved member | deposit USDG |
+| `/tg/deposit?fund=<vault>` | approved member (anyone when deposits are open) | deposit USDG |
 | `/tg/withdraw?fund=<vault>` | member | redeem shares |
 | `/tg/vote?proposal=<governor>:<id>` | member | ❌ Object: cast an Against vote |
-| `/tg/sign?fund=<vault>&action=<route>&...` | host | sign an owner action: approve a member or agent, co-sign a proposal, set the agent fee |
+| `/tg/sign?fund=<vault>&action=<route>&...` | host (`proposal_signer: host`) | sign an owner action: approve a member or agent, co-sign a proposal, set the agent fee |
 | `/tg/fund/<vault>` | anyone | public read-only fund page |
 
 Personal links carry the tapper's Telegram id, are signed with
@@ -250,7 +258,7 @@ vectors: [docs/telegram.md](docs/telegram.md).
 ### Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.7.0 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.0 release commit>
 ```
 
 (The sha: see [Install](#install).) Once the plugin is listed in the Hermes
@@ -289,14 +297,16 @@ fund:
   owner_telegram_id: "123456789"   # Telegram user id of the human who runs this Hermes
   default_fund: alpha-fund
   app_link_hosts: app.sherwood.sh  # hosts the member-wallet lookup may call (https only)
-  proposal_signer: host            # host co-signs proposals while ownerOnlyProposals is on; `agent` after GA
+  proposal_signer: host            # host: the host's browser wallet owns the vault and co-signs from /tg/sign (pre-GA);
+                                   # agent: the agent's own CLI wallet owns the vault and proposes (open protocol)
 ```
 
 Per fund, `fund_setup` records the rest once: `vault`, `governor`,
 `telegram_chat_id`, `host_telegram_id` (the host's Telegram user id: only the
 host approves members and agents, ships drafts and co-signs), the
-per-proposal ceilings `max_capital` and `max_drawdown_bps`, and
-`agent_fee_bps`. The agent fee must be at most 1500 bps (15%): guardians
+per-proposal ceilings `max_capital` and `max_drawdown_bps`,
+`agent_fee_bps`, and `open_deposits` (default false; it sets `openDeposits`
+in the `create-fund` body). The agent fee must be at most 1500 bps (15%): guardians
 refuse to approve near the 20% cap, so claims and drafts are refused while
 the fee is unknown or above 1500. Set 500 with `prepare/set-agent-fee` before
 the first proposal. After that only the operator changes a fund's vault,
@@ -307,6 +317,49 @@ Host and join steps, the coordination rules (one open proposal per agent, two
 per fund, claim before proposing) and the Telegram wiring:
 [docs/fund-host-join.md](docs/fund-host-join.md). BotFather and gateway
 setup: [docs/telegram.md](docs/telegram.md).
+
+### Open protocol mode (`proposal_signer: agent`)
+
+The factory on Robinhood Chain opened on 2026-11-06 (`ownerOnlyProposals`
+false, `depositsRestricted` false, `creationFee` 0). In this mode the host is
+the Hermes agent's own wallet: the one the signed `sherwood` CLI holds in
+`~/.sherwood/config.json`. That wallet creates the vault (with
+`openDeposits: true` for an open fund), registers guest agents, sets the
+governor parameters and the agent fee, and proposes. The agent signs with
+it through the CLI, outside the plugin; the plugin never reads that key and
+never signs or sends a transaction. Its job is to hand the agent the exact
+command and record the result:
+
+- **Ship it.** The host's 🚀 Ship it puts the command on the draft card, on
+  the proposal record (`propose_command`) and in the `shipped` event:
+  `sherwood strategy propose portfolio --vault <vault> --tokens <symbols>
+  --weights <bps> --amount <max capital> --duration <e.g. 6h>
+  --max-drawdown-bps <bps> --name '<name>' --description '<thesis>'`.
+  `--max-drawdown-bps` carries the drawdown the fund rules checked (the CLI
+  defaults to 20%). Every argument is shell-quoted. There is no ✍️ Co-sign
+  button.
+- **Guest agents.** `fund_approve_agent` and `/fund-approve <agent>` return
+  `sherwood vault add --vault <vault> --wallet <agent> --agent-id <id>`
+  instead of a register-agent body or a `/tg/sign` link; confirm with the tx
+  hash as before.
+- **Running them.** The Telegram toolset has no terminal, on purpose
+  (Deployment boundary below), so the commands run in a Hermes cron run or a
+  `hermes -z` one-shot: `fund_pending_commands` lists this agent's shipped,
+  unproposed drafts (and, for the host, approved, unregistered agents) with
+  their commands. Afterwards the agent records what landed:
+  `fund_set_proposal_status <id> proposed` with `onchain_id` and `tx_hash`,
+  or `fund_approve_agent` with `tx_hash`. Both are host-authority tools, so
+  Hermes' approval gate applies: a `hermes -z` one-shot runs without
+  approval prompts, while a cron run follows `approvals.cron_mode`, whose
+  default `deny` blocks the recording step; record from the CLI or a
+  one-shot then, or set `approvals.cron_mode: approve` for a profile you
+  trust.
+- **CLI version.** The commands carry no `--chain`: Robinhood Chain mainnet
+  is the default (and only) network of Sherwood CLI 0.93.0 and later.
+  Older releases default to a fork, so run them with 0.93.0 or later.
+
+With `proposal_signer: host` (the default) none of this applies: the host's
+browser wallet owns the vault and co-signs from `/tg/sign`, as before.
 
 ### Deployment boundary (required)
 
@@ -551,9 +604,13 @@ who signs what and the known limitations, is in
 
 - **No signing, no custody.** The plugin never signs or sends a transaction
   and never holds member funds. It builds unsigned transactions and posts
-  links; wallets sign in the browser. The only wallet credential it can hold
-  is the optional `SHERWOOD_PRIVATE_KEY` (below), used to derive the XMTP
-  sidecar's key, never to sign a transaction.
+  links; wallets sign in the browser. With `proposal_signer: agent` it also
+  hands the host agent signed `sherwood` CLI commands (propose, register an
+  agent); the agent runs them with its terminal tool, outside the plugin,
+  and the CLI signs with the key it holds, which the plugin never reads.
+  The only wallet credential the plugin can hold is the optional
+  `SHERWOOD_PRIVATE_KEY` (below), used to derive the XMTP sidecar's key,
+  never to sign a transaction.
 - **Network calls.** `api.sherwood.sh` (the prepare API for unsigned
   transactions; the fund-card read, which live cards request every 60 s and
   the plugin throttles to at most one per 30 s per fund; and the

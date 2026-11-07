@@ -23,7 +23,7 @@ MONITOR_TOOLS = {
 FUND_TOOLS = {
     "fund_status", "fund_setup", "fund_claim_topic", "fund_release_claim", "fund_draft_proposal",
     "fund_set_proposal_status", "fund_record_vote", "fund_record_settle", "fund_approve_member",
-    "fund_approve_agent", "fund_remove_agent",
+    "fund_approve_agent", "fund_remove_agent", "fund_pending_commands",
 }
 
 

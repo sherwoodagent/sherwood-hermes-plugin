@@ -45,7 +45,7 @@ def build_runtime(
         state_url=settings.fund_state_url,
     )
     return FundRuntime(
-        FundService(backend, clock=clock, tx_builder_url=settings.tx_builder_url),
+        FundService(backend, clock=clock, tx_builder_url=settings.tx_builder_url, proposal_signer=settings.proposal_signer),
         settings,
         AppLinkClient(settings.app_base_url, allowed_hosts=settings.app_link_hosts),
     )

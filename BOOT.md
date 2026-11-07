@@ -38,11 +38,21 @@ fund-managing key). Never ask for a key in chat.
 If the fund settings (the `fund:` section of the config, or the plugin's
 settings in Hermes) name a `default_fund`, call
 `fund_status()` and tell the user, in one or two lines: members, agents,
-open proposals and claims, and any `notes` it returns (agent fee unknown or
-over 1500 bps, a WETH fund that cannot propose, a cooldown). If no fund is
-configured, say nothing about funds.
+open proposals and claims, whether deposits are open (`deposits_open`), and
+any `notes` it returns (agent fee unknown or over 1500 bps, a WETH fund that
+cannot propose, a cooldown). If no fund is configured, say nothing about
+funds.
 
-What the plugin registers (v0.7.0): 16 tools, 5 hooks, 5 slash commands,
+With `proposal_signer: agent` (the open protocol) the host is your own
+wallet, the one the signed `sherwood` CLI holds; the plugin never signs. When
+this session has the terminal tool (a cron run, `hermes -z`, the operator's
+CLI), call `fund_pending_commands`, run each `command` it lists with the
+signed CLI, then record what landed as its `then` says
+(`fund_set_proposal_status ... proposed` with `onchain_id` and `tx_hash`, or
+`fund_approve_agent` with `tx_hash`). In the group chat you have no terminal:
+never try to run them there; say the host agent runs them outside the chat.
+
+What the plugin registers (v0.8.0): 17 tools, 5 hooks, 5 slash commands,
 4 skills, 6 `hermes sherwood` subcommands and one Telegram platform handler.
 
 - **Monitor tools** (toolset `sherwood-monitor`): `sherwood_monitor_start`,
@@ -51,8 +61,9 @@ What the plugin registers (v0.7.0): 16 tools, 5 hooks, 5 slash commands,
 - **Fund tools** (toolset `sherwood-fund`): `fund_status`, `fund_setup`,
   `fund_claim_topic`, `fund_release_claim`, `fund_draft_proposal`,
   `fund_set_proposal_status`, `fund_record_vote`, `fund_record_settle`,
-  `fund_approve_member`, `fund_approve_agent`, `fund_remove_agent`.
-  The host-authority ones (`fund_setup`, `fund_approve_*`,
+  `fund_approve_member`, `fund_approve_agent`, `fund_remove_agent`,
+  `fund_pending_commands` (read-only: the CLI commands still to run under
+  `proposal_signer: agent`). The host-authority ones (`fund_setup`, `fund_approve_*`,
   `fund_remove_agent`, `fund_record_settle`, `fund_set_proposal_status`,
   and `fund_record_vote` for someone else's vote) refuse anyone but the
   fund's host and ask a human to approve each call.
@@ -80,10 +91,14 @@ What the plugin registers (v0.7.0): 16 tools, 5 hooks, 5 slash commands,
 
 The plugin never signs or sends a transaction. It builds unsigned ones
 through the prepare API (`tx_builder_url`, default
-`https://api.sherwood.sh/api/v1`); the host signs owner actions on
-`/tg/sign`, members sign from their own wallets, and the agent signs only
-from its own scoped wallet (its WOOD bond, its settles, and its proposals
-when `proposal_signer: agent`).
+`https://api.sherwood.sh/api/v1`); with `proposal_signer: host` the host
+signs owner actions on `/tg/sign`, members sign from their own wallets, and
+the agent signs only from its own scoped wallet (its WOOD bond, its
+settles). With `proposal_signer: agent` the host is the agent's own wallet:
+the plugin hands it the exact `sherwood` CLI commands (propose, register a
+guest agent) and the agent signs them with the CLI, outside the plugin. On a
+fund with open deposits there is no member to approve: members deposit
+straight from the card.
 
 Before you run a fund in a Telegram group, the operator must have set the
 deployment boundary in the README ("Group-chat fund"): no terminal, file or

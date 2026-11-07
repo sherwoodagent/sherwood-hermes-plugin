@@ -1,6 +1,6 @@
 manifest_version: 2
 name: sherwood-monitor
-version: "0.7.0"
+version: "0.8.0"
 description: >-
   Bridges Sherwood fund events into Hermes (on-chain events; XMTP too for
   funds whose XMTP group is in Base's ENS record), and runs a group-chat fund:
@@ -101,8 +101,10 @@ config_schema:
     default: host
     choices: [host, agent]
     description: >-
-      Who signs propose: `host` (pre-GA beta, ownerOnlyProposals, the host co-signs
-      the agent's draft) or `agent` (open protocol, the agent proposes itself)
+      Who signs propose: `host` (pre-GA beta, ownerOnlyProposals: the host's browser
+      wallet owns the vault and co-signs the agent's draft) or `agent` (open protocol:
+      the agent's own wallet, held by the signed Sherwood CLI, owns the vault and
+      proposes; ship it and agent approvals hand the agent the exact CLI command)
   fund_state_backend:
     type: str
     default: local
@@ -133,6 +135,7 @@ provides_tools:
   - fund_approve_member
   - fund_approve_agent
   - fund_remove_agent
+  - fund_pending_commands
 provides_hooks:
   - on_session_start
   - on_session_finalize

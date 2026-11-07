@@ -48,6 +48,7 @@ from .cards import (
     parse_cb,
     render_leaderboard,
     render_personal_link,
+    render_shipped_command,
 )
 from .cards_live import NO_PREVIEW, CardGone, CardRef
 from .flow import IncomingMessage, ReactionChange
@@ -284,8 +285,16 @@ class FundHandlers:
             base_url=self.settings.app_base_url,
             fund=fund.vault,
         )
+        deposit_url = None
+        if action == "join" and fund.deposits_open:
+            # Open deposits: nothing for the host to approve, so the deposit link comes with the join link.
+            deposit_url = build_link(
+                "deposit", tg_user_id=query.from_user.id, secret=secret, base_url=self.settings.app_base_url,
+                fund=fund.vault,
+            )
         await self.deliver_personal_link(
-            query, context, kind=action, fund=fund, url=url, start_payload=_start_payload(action, fund.vault)
+            query, context, kind=action, fund=fund, url=url, start_payload=_start_payload(action, fund.vault),
+            deposit_url=deposit_url,
         )
 
     async def _note_join_request(self, query: Any, chat_id: int) -> None:
@@ -312,6 +321,26 @@ class FundHandlers:
             await _answer(query, str(exc) or "Could not ship this draft.", show_alert=True)
             return
         await _answer(query, toast or "🚀 Shipped.")
+        command = ""
+        try:
+            view = await maybe_await(self.rt.gateway.proposal(chat_id, arg))
+            command = (getattr(view, "propose_command", "") or "") if view is not None else ""
+        except Exception as exc:  # the ship stands; the card just keeps its old text
+            _log.debug("shipped draft %s not re-read: %s", arg, exc)
+        if command:
+            # proposal_signer: agent: the card shows the exact signed CLI command the agent runs.
+            host = person_from_user(query.from_user)
+            text = render_shipped_command(
+                getattr(query.message, "text_html", None) or "", command,
+                shipped_by=host.handle if host else "the host", proposer=view.proposer or "the agent",
+            )
+            try:
+                await query.edit_message_text(
+                    text=text, parse_mode=ParseMode.HTML, reply_markup=None, link_preview_options=NO_PREVIEW
+                )
+                return
+            except TelegramError as exc:
+                _log.debug("could not show the propose command on the draft card: %s", exc)
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except TelegramError as exc:
@@ -369,7 +398,8 @@ class FundHandlers:
             _log.debug("could not stamp host action: %s", exc)
 
     async def deliver_personal_link(
-        self, query: Any, context: Any, *, kind: str, fund: FundView, url: str, start_payload: str | None
+        self, query: Any, context: Any, *, kind: str, fund: FundView, url: str, start_payload: str | None,
+        deposit_url: str | None = None,
     ) -> str:
         """Hand one user their signed URL button without showing it to the group.
 
@@ -379,9 +409,10 @@ class FundHandlers:
         2. a DM, when the user has started the bot before;
         3. ``answer_callback_query(url=t.me/<bot>?start=<payload>)``, which opens
            the bot's DM; ``/start <payload>`` then sends the link there.
-        Returns which path delivered it.
+        Returns which path delivered it. ``deposit_url`` (a join on a fund with
+        open deposits) adds the member's deposit link as a second button.
         """
-        text, markup = render_personal_link(kind, url, fund.name)
+        text, markup = render_personal_link(kind, url, fund.name, deposit_url=deposit_url)
         bot = context.bot
         user_id = int(query.from_user.id)
         chat = getattr(query.message, "chat", None)
@@ -496,11 +527,16 @@ class FundHandlers:
             if not url:
                 await msg.reply_text("The signing page isn't ready for this draft yet.")
                 return
-        else:
+        deposit_url = None
+        if kind != "propose":
             secret = self._secret_or_none()
             if not secret:
                 await msg.reply_text("Links are not configured yet. Ask the host.")
                 return
+            if kind == "join" and fund.deposits_open:
+                deposit_url = build_link(
+                    "deposit", tg_user_id=user.id, secret=secret, base_url=self.settings.app_base_url, fund=fund.vault
+                )
             if kind == "vote":
                 url = build_link(
                     "vote",
@@ -514,7 +550,7 @@ class FundHandlers:
                 url = build_link(
                     kind, tg_user_id=user.id, secret=secret, base_url=self.settings.app_base_url, fund=fund.vault
                 )
-        text, markup = render_personal_link(kind, url, fund.name)
+        text, markup = render_personal_link(kind, url, fund.name, deposit_url=deposit_url)
         await msg.reply_html(text, reply_markup=markup, link_preview_options=NO_PREVIEW)
 
     # -- observers ---------------------------------------------------------------
