@@ -39,13 +39,13 @@ sherwood config set --private-key <0x...>
 ## Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.0 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.1 release commit>
 ```
 
 Hermes has no `@tag` install syntax; `--ref` takes a full 40-character commit
-sha. Use the commit the `v0.8.0` tag points at: it is on the
-[v0.8.0 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.0),
-or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.0 --jq .sha`.
+sha. Use the commit the `v0.8.1` tag points at: it is on the
+[v0.8.1 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.1),
+or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.1 --jq .sha`.
 (This README cannot carry that sha: it is part of the commit.) Once the plugin
 is listed in the Hermes catalog, `hermes plugins install sherwood-monitor`
 installs the reviewed pin. Hermes ≥ 0.21.5.
@@ -92,7 +92,7 @@ SHERWOOD_PRIVATE_KEY=0x...      # optional, secret: only for XMTP; the address i
 The Python package installs fine even if the sidecar build fails; XMTP is just disabled until you rebuild. To skip the build and rebuild manually:
 
 ```bash
-SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.0 release commit>
+SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.1 release commit>
 # find the installed location:
 python3 -c "import sherwood_monitor, pathlib; print(pathlib.Path(sherwood_monitor.__file__).parent.parent / 'xmtp_sidecar')"
 cd <that path>
@@ -261,7 +261,7 @@ vectors: [docs/telegram.md](docs/telegram.md).
 ### Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.0 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.1 release commit>
 ```
 
 (The sha: see [Install](#install).) Once the plugin is listed in the Hermes

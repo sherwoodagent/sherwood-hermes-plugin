@@ -18,6 +18,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
 from . import rules
@@ -28,6 +29,7 @@ from .models import (
     FundState,
     Leg,
     Member,
+    NavSnapshot,
     ProposalRecord,
     Review,
     SettleReceipt,
@@ -36,6 +38,7 @@ from .rules import RuleViolation, require
 from .signed_cli import propose_portfolio_command
 from .store import FundNotFound, FundStateBackend, FundStoreError, validate_fund_name
 from .txbuilder import DEFAULT_TX_BUILDER_URL, TxBuilderError, build_propose_body, build_propose_portfolio_body
+from .units import format_units
 
 
 _log = logging.getLogger(__name__)
@@ -739,7 +742,9 @@ class FundService:
         vetoThresholdBps; `fund.depositsOpen` (the vault's openDeposits and not
         the factory's depositsRestricted) replaces `open_deposits`: `true` at
         once, `false` only after two reads in a row (the app's rule read fails
-        closed). Settles stay with `record_settle` (it needs the P&L).
+        closed). `nav` / `pnl` / `asOf` become the fund's NAV snapshot (what
+        the Telegram fund card shows), unless the stored one is from a later
+        block. Settles stay with `record_settle` (it needs the P&L).
         """
         data = card.get("data", card) if isinstance(card, dict) else {}
         props = data.get("proposals") or {}
@@ -755,7 +760,8 @@ class FundService:
         deposits_open = fund_info.get("depositsOpen")
         deposits_open = deposits_open if isinstance(deposits_open, bool) else None
         deposit_order = _deposit_order(data.get("members"))
-        if gov or gate or fee is not None or deposit_order or deposits_open is not None:
+        nav = _nav_snapshot(data, self.clock())
+        if gov or gate or fee is not None or deposit_order or deposits_open is not None or nav is not None:
             def fund_mutate(state: FundState) -> None:
                 if str(gov.get("cooldownPeriod") or "").isdigit():
                     state.fund.cooldown_period = int(gov["cooldownPeriod"])
@@ -771,6 +777,11 @@ class FundService:
                 for m in state.members:
                     if m.address and m.address.lower() in deposit_order:
                         m.deposit_no = deposit_order[m.address.lower()]
+                if nav is not None:
+                    old = state.nav
+                    # A cached read of an older block never replaces a newer snapshot.
+                    if old is None or not (old.as_of and nav.as_of and nav.as_of < old.as_of):
+                        state.nav = nav
 
             self.backend.update(fund, fund_mutate)
         state = self.backend.load(fund)
@@ -1004,6 +1015,65 @@ def _deposit_order(members: Any) -> dict[str, int]:
         if n:
             out[row["address"].lower()] = n
     return out
+
+
+def _nav_snapshot(data: dict[str, Any], now: float) -> NavSnapshot | None:
+    """The tg-card's `nav`, `pnl` and `asOf` blocks as a NavSnapshot stored at `now`.
+
+    None when the read has no readable total assets (`nav.totalAssetsDecimal`, or
+    `nav.totalAssets` with `fund.assetDecimals`): a card without NAV leaves the
+    stored snapshot alone. Other fields are kept when they parse, else left None.
+    """
+    nav = data.get("nav")
+    if not isinstance(nav, dict):
+        return None
+    fund_info = data.get("fund") if isinstance(data.get("fund"), dict) else {}
+    total = _base_units(nav.get("totalAssets"))
+    total_decimal = _decimal_text(nav.get("totalAssetsDecimal"))
+    if total_decimal is None and total is not None:
+        decimals = _opt_int(fund_info.get("assetDecimals"))
+        if decimals is not None and 0 <= decimals <= 36:
+            total_decimal = format_units(total, decimals)
+    if total_decimal is None:
+        return None
+    supply = _base_units(nav.get("totalSupply"))
+    if supply is None:
+        supply = _base_units(fund_info.get("totalSupply"))
+    pnl = data.get("pnl") if isinstance(data.get("pnl"), dict) else {}
+    as_of = data.get("asOf") if isinstance(data.get("asOf"), dict) else {}
+    idle = _base_units(nav.get("idleAssets"))
+    block = _base_units(as_of.get("block"))
+    return NavSnapshot(
+        total_assets="" if total is None else str(total),
+        total_assets_decimal=total_decimal,
+        total_supply="" if supply is None else str(supply),
+        share_price_decimal=_decimal_text(nav.get("sharePriceDecimal")),
+        idle_assets=None if idle is None else str(idle),
+        realized_pnl_decimal=_decimal_text(pnl.get("realizedDecimal")),
+        unrealized_pnl_decimal=_decimal_text(pnl.get("unrealizedDecimal")),
+        as_of=_opt_float(as_of.get("timestamp")),
+        as_of_block="" if block is None else str(block),
+        read_at=float(now),
+    )
+
+
+def _base_units(value: Any) -> int | None:
+    """A non-negative integer amount from the read (`"100000000"` or 100000000); None otherwise."""
+    if isinstance(value, bool) or value is None:
+        return None
+    text = str(value).strip()
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
+def _decimal_text(value: Any) -> str | None:
+    """A decimal amount from the read, as the read wrote it (`"100"`, `"-1.5"`); None when null or not a number."""
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    try:
+        return text if text and Decimal(text).is_finite() else None
+    except InvalidOperation:
+        return None
 
 
 def _coverage_kind(row: dict[str, Any]) -> str | None:

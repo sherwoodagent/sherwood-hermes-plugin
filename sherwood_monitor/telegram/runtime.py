@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable, Coroutine
 
 from .flow import PitchFlow
 from .settings import TelegramSettings, link_secret
-from .types import DraftRequested, FundGateway, MemberView, Person, Receipt, maybe_await
+from .types import DraftRequested, FundGateway, FundView, MemberView, Person, Receipt, maybe_await
 
 _log = logging.getLogger(__name__)
 
@@ -174,6 +174,13 @@ class TelegramRuntime:
             return True
         return any(int(m.tg_id) == int(user_id) for m in fund.members)
 
+    async def fund_for_card(self, chat_id: int) -> FundView | None:
+        """The fund for the fund card: the gateway's ``fund_card_for_chat`` (a throttled chain read
+        first, so NAV is current) when it has one, else ``fund_for_chat``."""
+        fresh = getattr(self.gateway, "fund_card_for_chat", None)
+        fn = fresh if callable(fresh) else self.gateway.fund_for_chat
+        return await maybe_await(fn(chat_id))
+
     async def host_for_chat(self, chat_id: int) -> int | None:
         fund = await maybe_await(self.gateway.fund_for_chat(chat_id))
         return None if fund is None else fund.host_tg_id
@@ -291,7 +298,7 @@ class TelegramRuntime:
         self._require()
         from .cards import render_fund_card
 
-        fund = await maybe_await(self.gateway.fund_for_chat(chat_id))
+        fund = await self.fund_for_card(chat_id)
         if fund is None:
             return None
         caps = await self.capabilities(chat_id)

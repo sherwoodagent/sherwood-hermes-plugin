@@ -176,6 +176,12 @@ class FundHandlers:
             return None
         return await maybe_await(self.rt.gateway.fund_for_chat(chat_id))
 
+    async def _fund_for_card(self, chat_id: int) -> FundView | None:
+        """The fund card's fund: a throttled chain read first (NAV), never for a chat not allowed."""
+        if not self.settings.chat_allowed(chat_id):
+            return None
+        return await self.rt.fund_for_card(chat_id)
+
     def _secret_or_none(self) -> str | None:
         secret = self.rt.link_secret()
         if not secret:
@@ -476,7 +482,7 @@ class FundHandlers:
         if msg is None:
             return
         chat_id = int(msg.chat.id)
-        fund = await self._fund_for_chat(chat_id)
+        fund = await self._fund_for_card(chat_id)
         if fund is None:
             if self.settings.chat_allowed(chat_id):
                 await msg.reply_text("No Sherwood fund is linked to this chat yet.")

@@ -1,0 +1,85 @@
+{
+  "success": true,
+  "data": {
+    "vault": "0x2fD6056d9326e07Eec9Ba4499078C328E4F38b4A",
+    "chainId": 4663,
+    "asOf": {
+      "block": "108757783",
+      "timestamp": "1794091159",
+      "iso": "2026-11-07T22:39:19.000Z"
+    },
+    "fund": {
+      "address": "0x2fD6056d9326e07Eec9Ba4499078C328E4F38b4A",
+      "asset": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+      "assetSymbol": "USDG",
+      "assetDecimals": 6,
+      "totalAssets": "100000000",
+      "totalSupply": "100000000000000",
+      "shareDecimals": 12,
+      "owner": "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407",
+      "governor": "0x52f0280ee76517A273038590C46E2fB2b6b9C7CE",
+      "redemptionsLocked": false,
+      "paused": false,
+      "agentFeeBps": "500",
+      "openDeposits": true,
+      "depositsRestricted": false,
+      "depositsOpen": true,
+      "ownerOnlyProposals": false
+    },
+    "nav": {
+      "totalAssets": "100000000",
+      "totalAssetsDecimal": "100",
+      "totalSupply": "100000000000000",
+      "sharePrice": "1000000",
+      "sharePriceDecimal": "1",
+      "idleAssets": "100000000"
+    },
+    "pnl": {
+      "realized": "0",
+      "realizedDecimal": "0",
+      "unrealized": null,
+      "unrealizedDecimal": null
+    },
+    "activeProposal": null,
+    "proposals": {
+      "count": "0",
+      "open": [],
+      "recent": []
+    },
+    "settlements": {
+      "available": true,
+      "complete": true,
+      "fromBlock": "81707343",
+      "toBlock": "108757783",
+      "items": []
+    },
+    "members": {
+      "available": true,
+      "approved": [],
+      "truncated": false,
+      "checked": []
+    },
+    "agents": [
+      "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407"
+    ],
+    "governor": {
+      "votingPeriod": "1800",
+      "vetoThresholdBps": "2000",
+      "executionWindow": "86400",
+      "cooldownPeriod": "3600"
+    },
+    "proposeGate": {
+      "openProposals": "0",
+      "cooldownUntil": "0",
+      "cooldownUntilIso": null,
+      "secondsToCooldownEnd": 0,
+      "ready": true
+    },
+    "warnings": []
+  },
+  "meta": {
+    "command": "funds.tgCard",
+    "chainId": 4663,
+    "timestamp": "2026-11-07T22:39:20.146Z"
+  }
+}

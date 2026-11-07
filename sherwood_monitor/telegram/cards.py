@@ -326,12 +326,15 @@ def render_fund_card(
     notice: str | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     current = time.time() if now is None else now
-    lines = [
-        f"🏦 <b>{esc(f.name)}</b>",
-        f"NAV <b>{fmt_amount(round(f.nav, 2))} {esc(f.nav_symbol)}</b> · P&amp;L <b>{fmt_pct(f.pnl_bps, signed=True)}</b>",
-        "",
-        "<b>Positions</b>",
-    ]
+    if f.nav_stale and f.nav_as_of is None:
+        # The chain read failed and there is no earlier one: say so, never a made-up 0.
+        nav_line = "NAV <b>unavailable</b> · P&amp;L <b>n/a</b>"
+    else:
+        nav_line = (
+            f"NAV <b>{fmt_amount(round(f.nav, 2))} {esc(f.nav_symbol)}</b>"
+            f" · P&amp;L <b>{fmt_pct(f.pnl_bps, signed=True)}</b>"
+        )
+    lines = [f"🏦 <b>{esc(f.name)}</b>", nav_line, "", "<b>Positions</b>"]
     if f.positions:
         for pos in f.positions:
             pnl = f" ({fmt_pct(pos.pnl_bps, signed=True)})" if pos.pnl_bps is not None else ""
@@ -352,9 +355,11 @@ def render_fund_card(
         lines += ["", f"⏳ Next proposal possible at {hhmm} UTC"]
     lines.append("")
     agents = ", ".join(esc(a) for a in f.agents) if f.agents else "none"
-    lines.append(f"Members {len(f.members)} · Agents {agents}")
-    if notice:
-        lines += ["", f"<i>{esc(notice)}</i>"]
+    lines.append(f"{members_label(f)} · Agents {agents}")
+    notices = [n for n in (nav_notice(f, current), notice) if n]
+    if notices:
+        lines.append("")
+        lines += [f"<i>{esc(n)}</i>" for n in notices]
     rows = [
         [_view_button(f.vault, base_url, "📊 View")],
         [
@@ -366,6 +371,28 @@ def render_fund_card(
         [InlineKeyboardButton("🎟 Join", callback_data=cb("join", f.vault.lower()))],
     ]
     return "\n".join(lines), _kb(rows)
+
+
+def members_label(f: FundView) -> str:
+    """``Members N``: chat members who joined (🎟 Join). A wallet that deposited from the app
+    without joining is not one, and the read has no depositor list to count them from; so
+    with open deposits, shares outstanding and nobody joined, the line says why it is 0
+    instead of sitting at 0 next to a non-zero NAV."""
+    if not f.members and f.deposits_open and f.shares_outstanding:
+        return "Members 0 (depositors haven't tapped 🎟 Join yet)"
+    return f"Members {len(f.members)}"
+
+
+def nav_notice(f: FundView, now: float) -> str | None:
+    """The fund card's NAV notice when the chain read is behind (``nav_stale``), else None."""
+    if not f.nav_stale:
+        return None
+    if f.nav_as_of is None:
+        return "NAV unavailable: the chain read failed. Try /fund again in a minute."
+    when = datetime.fromtimestamp(int(f.nav_as_of), tz=timezone.utc)
+    today = datetime.fromtimestamp(int(now), tz=timezone.utc).date()
+    stamp = when.strftime("%H:%M") if when.date() == today else f"{when.strftime('%b')} {when.day} {when.strftime('%H:%M')}"
+    return f"Last known NAV, as of {stamp} UTC."
 
 
 def render_member_card(

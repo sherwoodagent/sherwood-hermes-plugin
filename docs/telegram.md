@@ -178,6 +178,21 @@ the review countdown and the booked coverage). The fund card shows
 after a veto or a settle. A vetoed card says the bond comes back at once; a
 settle receipt says the bond stays in escrow for the 14-day challenge window.
 
+The fund card's NAV and P&L come from the tg-card read (`GET
+funds/<vault>/tg-card`). Every read stores a NAV snapshot in the fund state:
+total assets, share price, realized and unrealized P&L, idle assets and the
+read's `asOf`. P&L is share-price based: `(sharePrice - 1)` in bps, since a
+share starts at 1 asset, and +0.0% with no shares outstanding. `/fund` reads
+the chain first when the 30 s throttle allows. Authorization, the pitch flow
+and the other cards never trigger a read. When the read fails, the card shows
+the last snapshot and ends with "Last known NAV, as of HH:MM UTC.", or "NAV
+unavailable" when there has never been a snapshot, never a made-up 0.
+Positions show "none yet": the read has no positions list. Members counts chat
+members who tapped 🎟 Join. With open deposits, a wallet that deposited from
+the app without joining is not counted, and the read lists no depositors. So
+when the vault has shares outstanding and nobody has joined, the line reads
+"Members 0 (depositors haven't tapped 🎟 Join yet)".
+
 A voting proposal card looks like this:
 
 ```
