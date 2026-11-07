@@ -67,8 +67,9 @@ What the plugin registers (v0.8.0): 17 tools, 5 hooks, 5 slash commands,
   `fund_claim_topic`, `fund_release_claim`, `fund_draft_proposal`,
   `fund_set_proposal_status`, `fund_record_vote`, `fund_record_settle`,
   `fund_approve_member`, `fund_approve_agent`, `fund_remove_agent`,
-  `fund_pending_commands` (read-only: the CLI commands still to run under
-  `proposal_signer: agent`). The host-authority ones (`fund_setup`, `fund_approve_*`,
+  `fund_pending_commands` (the CLI commands still to run under
+  `proposal_signer: agent`; it stamps the propose commands it hands out).
+  The host-authority ones (`fund_setup`, `fund_approve_*`,
   `fund_remove_agent`, `fund_record_settle`, `fund_set_proposal_status`,
   and `fund_record_vote` for someone else's vote) refuse anyone but the
   fund's host and ask a human to approve each call.
