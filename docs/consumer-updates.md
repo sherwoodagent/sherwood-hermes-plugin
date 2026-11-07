@@ -59,9 +59,18 @@ What changed for consumers in 0.8.0:
   - The upgrade sentence (line 56) now covers any earlier release.
   - The Note (line 59) says v0.8.0.
   - A new `### Group-chat fund` subsection comes after line 62, the end of
-    the Hermes section. It covers the open factory (with a link to read the
-    flags live), the two settings, where agent commands run, the CLI 0.103.0
-    floor for them, and that the plugin never signs.
+    the Hermes section. It covers:
+    - who pitches (members) and who drafts (the agent)
+    - the open factory, with a link to read the flags live
+    - the two settings
+    - where agent commands run: never from a Telegram turn and never on boot
+    - that the group's toolset must have no terminal, file or code tools
+      (Hermes' default `hermes-telegram` has them), with a link to the
+      README's Deployment boundary
+    - the CLI 0.103.0 floor for agent commands
+    - that the plugin never signs
+  - `main` moved to `3d957f2` (#137) after the PR opened. #137 touches none
+    of these files, so the line numbers hold.
 - **`cli/cron-jobs.mdx`:** the install pin and `--force` clause (line 16). The
   cron table is unchanged.
 - **`guides/set-up-grok.mdx`:** the install pin (line 26).
@@ -69,7 +78,7 @@ What changed for consumers in 0.8.0:
 Checks: `npx mint validate` passed (build and validation), and
 `npx mint broken-links` found no broken links.
 
-The exact diff (#138, head `7094f8a`):
+The exact diff (#138, head `e67e1f2`, from its merge base `f23726b`):
 
 ````diff
 diff --git a/cli/cron-jobs.mdx b/cli/cron-jobs.mdx
@@ -86,7 +95,7 @@ index 14dcc5f..5efce70 100644
  - **Monitor wallet** for the gas watchdog: `SHERWOOD_AGENT_ADDRESS=0x...` in the Hermes profile `.env`. The plugin does not read the Sherwood CLI's config
  - **Always-on host** — laptop sleep means missed cron runs
 diff --git a/cli/installation.mdx b/cli/installation.mdx
-index 64c3c59..0b7269f 100644
+index 64c3c59..bc13cf9 100644
 --- a/cli/installation.mdx
 +++ b/cli/installation.mdx
 @@ -50,13 +50,22 @@ cd sherwood/cli && npm install && npm run build
@@ -109,10 +118,10 @@ index 64c3c59..0b7269f 100644
 +
 +### Group-chat fund
 +
-+The plugin can run a fund inside a Telegram group: the agent pitches trades, members back or object, and guest Hermes agents join as co-managers. The factory on Robinhood Chain opened on 2026-11-06 (`ownerOnlyProposals` false, `depositsRestricted` false, `creationFee` 0; [read the flags live](/explanations/launch-posture#reading-the-posture-yourself) before you rely on them). Anyone with an [ERC-8004](/reference/integrations/erc-8004) identity can create a vault, deposits are open or restricted per vault, and any registered agent of a vault can propose. Plugin v0.8.0 supports both postures with two independent settings:
++The plugin can run a fund inside a Telegram group: members pitch trade ideas, the agent drafts a proposal when three people react 🔥 to an idea or the host says "ship it", members back or object, and guest Hermes agents join as co-managers. The factory on Robinhood Chain opened on 2026-11-06 (`ownerOnlyProposals` false, `depositsRestricted` false, `creationFee` 0; [read the flags live](/explanations/launch-posture#reading-the-posture-yourself) before you rely on them). Anyone with an [ERC-8004](/reference/integrations/erc-8004) identity can create a vault, deposits are open or restricted per vault, and any registered agent of a vault can propose. Plugin v0.8.0 supports both postures with two independent settings:
 +
 +- **Deposits, per fund.** Restricted (the default): the host approves each member before they can deposit. Open (`open_deposits`, for a vault created with open deposits): a member taps 🎟 Join, links a wallet and deposits, with no approval step.
-+- **Who signs, per Hermes (`proposal_signer`).** `host` (the default): the host's browser wallet owns the vault and signs owner actions on `app.sherwood.sh/tg/sign`. `agent` (open protocol): the agent's own wallet, the one the Sherwood CLI holds, owns the vault. For a draft the host shipped, or a guest agent the host approved, the plugin hands the agent the exact CLI command (`sherwood strategy propose portfolio ...` or `sherwood vault add ...`). The agent runs it with its CLI wallet in a `hermes -z` one-shot the operator starts, or in a cron set to `approvals.cron_mode: approve`, never from a Telegram turn: the group's toolset has no terminal. These commands need Sherwood CLI 0.103.0 or later. Creating the vault, setting the agent fee and the governor parameters stay CLI steps the operator runs.
++- **Who signs, per Hermes (`proposal_signer`).** `host` (the default): the host's browser wallet owns the vault and signs owner actions on `app.sherwood.sh/tg/sign`. `agent` (open protocol): the agent's own wallet, the one the Sherwood CLI holds, owns the vault. For a draft the host shipped, or a guest agent the host approved, the plugin hands the agent the exact CLI command (`sherwood strategy propose portfolio ...` or `sherwood vault add ...`). The agent runs it with its CLI wallet in a `hermes -z` one-shot the operator starts, or in a cron set to `approvals.cron_mode: approve`, never from a Telegram turn and never on boot. The group's toolset must have no terminal, file or code tools (Hermes' default `hermes-telegram` toolset has them): see the plugin's [Deployment boundary](https://github.com/sherwoodagent/sherwood-hermes-plugin#deployment-boundary-required). These commands need Sherwood CLI 0.103.0 or later. Creating the vault, setting the agent fee and the governor parameters stay CLI steps the operator runs.
 +
 +Either way the plugin never signs or sends a transaction. Members sign from their own wallets; the plugin builds unsigned transactions through the prepare API and hands out links or commands.
 diff --git a/guides/set-up-grok.mdx b/guides/set-up-grok.mdx
