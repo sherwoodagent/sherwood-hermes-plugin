@@ -4,13 +4,13 @@ The `v0.8.0` tag points at `e92bd8573c0296853faa6de7801114874ac2455d` (the
 merge of #31): `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.0 --jq .sha`.
 The consumer PRs below were opened on 2026-11-07 against
 `sherwoodagent/mintlify-docs` `main` at `f23726b` and `sherwoodagent/skill`
-`main` at `1f784ea`. Line numbers are from those commits. Every merge is held
+`main` at `1f784ea` (moved to `259d9f1` when skill #120 merged; §2 uses that). Line numbers are from those commits. Every merge is held
 for the maintainer.
 
 | Repo | PR | Waits on |
 |---|---|---|
 | `sherwoodagent/mintlify-docs` | [#138](https://github.com/sherwoodagent/mintlify-docs/pull/138) | maintainer merge |
-| `sherwoodagent/skill` | [#122](https://github.com/sherwoodagent/skill/pull/122) | maintainer merge (skill release 0.34.4) |
+| `sherwoodagent/skill` | [#122](https://github.com/sherwoodagent/skill/pull/122) | maintainer merge (skill release 0.35.1) |
 | `sherwoodagent/sherwood` | [#744](https://github.com/sherwoodagent/sherwood/pull/744) (draft) | #138 and #122 merging, then two pointer commits |
 
 What changed for consumers in 0.8.0:
@@ -149,52 +149,48 @@ blocks site consistency, not these PRs.
 
 ## 2. sherwoodagent/skill (#122)
 
-This is skill release 0.34.4: `.claude-plugin/plugin.json` `version` and
-`SKILL.md` `metadata.version` (line 9) move together. 0.34.4 is the next
-patch: draft skill PR #120 still targets 0.35.0, so whichever merges second
-re-bumps first.
+This is skill release 0.35.1: `.claude-plugin/plugin.json` `version` and
+`SKILL.md` `metadata.version` (line 9) move together. Skill #120 merged as
+0.35.0 while this PR was open, and pins CLI 0.104.0. The branch merged `main`
+(`259d9f1`) with a signed merge commit and took the next patch. The line
+numbers below are against `259d9f1`.
 
 - **`SKILL.md`:**
-  - The install pin moves to the new sha at line 27 (quick start), 1757
-    (Install block), 1760 (its note and the v0.8.0 release-page link), 1769
-    (rebuild block) and 1774 (upgrade line, now any earlier release).
-  - Line 1731 (the section intro) says v0.8.0.
-  - Line 1807 (the group-chat fund paragraph) adds `fund_pending_commands`,
+  - The install pin moves to the new sha at line 27 (quick start), 1770
+    (Install block), 1773 (its note and the v0.8.0 release-page link), 1782
+    (rebuild block) and 1787 (upgrade line, now any earlier release).
+  - Line 1744 (the section intro) says v0.8.0.
+  - Line 1820 (the group-chat fund paragraph) adds `fund_pending_commands`,
     a list of the two settings (deposits, `proposal_signer`) with where
     agent-signer commands run and how to record them, the CLI 0.103.0 floor
-    ("newer than this skill's pin"), and a line that a guest agent proposes
-    only while `ownerOnlyProposals` is off (read live).
+    (the skill's 0.104.0 pin meets it), and a line that a guest agent
+    proposes only while `ownerOnlyProposals` is off (read live).
   - The propose command is not spelled out: its `--max-drawdown-bps` flag is
     not in the skill, and the skill's `CLAUDE.md` requires every documented
     flag to exist in the pinned CLI.
 - **`CLAUDE.md`:** lines 13 and 20 describe the Hermes pin as
   `--ref <40-hex sha of the vX.Y.Z tag>`, not `@vX.Y.Z`.
 
-Checks: `scripts/check-skill.sh` passed (skill version 0.34.4, CLI pin
-0.100.5).
+Checks: `scripts/check-skill.sh` passed (skill version 0.35.1, CLI pin
+0.104.0).
 
-Follow-ups for the skill and CLI lane, outside this PR:
+Follow-up for the skill lane, outside this PR: the launch section is stale.
+"Launch rules (Robinhood Chain, invite-only launch)" (lines 39-55),
+"Single-operator vaults" (425-431), the `--open-deposits` rows (523, 606),
+line 1514 and the decision tree still describe the closed posture.
 
-- **The launch section is stale.** "Launch rules (Robinhood Chain,
-  invite-only launch)" (lines 43-55), "Single-operator vaults" (427-431),
-  the `--open-deposits` rows (523, 606), line 1501 and the decision tree
-  still describe the closed posture.
-- **The CLI pin is below the agent-signer floor.** The skill pins CLI
-  0.100.5, below the 0.103.0 that agent-signer commands need. Bumping it with
-  `scripts/bump-cli-pin.sh` is its own skill release.
-
-The exact diff (#122, head `f6afd03`):
+The exact diff (#122, head `10ea7cd`, against `main` `259d9f1`):
 
 ````diff
 diff --git a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
-index f9e2c82..7e3b889 100644
+index f9a498d..653fe1c 100644
 --- a/.claude-plugin/plugin.json
 +++ b/.claude-plugin/plugin.json
 @@ -1,6 +1,6 @@
  {
    "name": "sherwood",
--  "version": "0.34.3",
-+  "version": "0.34.4",
+-  "version": "0.35.0",
++  "version": "0.35.1",
    "description": "Agent-managed ERC-4626 investment vaults on Robinhood Chain (4663) \u2014 deploy vaults, run tokenized-stock, lending and liquidity strategies, and manage vault operations via CLI or HTTP API",
    "author": {
      "name": "Sherwood",
@@ -220,15 +216,15 @@ index 1b65f94..9f55c58 100644
  
  Sub-skills under `skills/*/SKILL.md` carry their OWN `version` frontmatter — bump those independently when their behavior changes.
 diff --git a/SKILL.md b/SKILL.md
-index 099e2f5..5079340 100644
+index 319d026..e6e2017 100644
 --- a/SKILL.md
 +++ b/SKILL.md
 @@ -6,7 +6,7 @@ license: MIT
  compatibility: Requires Node.js 22+, the @sherwoodagent/cli npm package, network access to Robinhood Chain (4663) RPC and https://api.sherwood.sh
  metadata:
    author: sherwood
--  version: '0.34.3'
-+  version: '0.34.4'
+-  version: '0.35.0'
++  version: '0.35.1'
  ---
  
  # Sherwood
@@ -241,7 +237,7 @@ index 099e2f5..5079340 100644
  
  **HTTP API (no CLI install).** Live base: `https://api.sherwood.sh` with root paths (`/chains`, `/prepare/identity-mint`, `/vaults/:address`). That host is already v1 — do **not** add a `/v1` prefix (`https://api.sherwood.sh/v1/...` 404s). `https://www.sherwood.sh/api/v1` also 404s. Catalog: `GET https://api.sherwood.sh/`. See [references/external-signer-integration.md](references/external-signer-integration.md).
  
-@@ -1728,7 +1728,7 @@ One line each; the linked section has the detail.
+@@ -1741,7 +1741,7 @@ One line each; the linked section has the detail.
  
  ## Running on Hermes Agent
  
@@ -250,7 +246,7 @@ index 099e2f5..5079340 100644
  
  ### What the plugin adds
  
-@@ -1754,10 +1754,10 @@ command -v hermes && hermes plugins list | grep -q sherwood-monitor && echo "ins
+@@ -1767,10 +1767,10 @@ command -v hermes && hermes plugins list | grep -q sherwood-monitor && echo "ins
  ### Install
  
  ```bash
@@ -263,7 +259,7 @@ index 099e2f5..5079340 100644
  
  Requirements: Python ≥ 3.11, **Node ≥ 22 and npm** (for the bundled sidecar build), and a configured Sherwood CLI (the monitor runs it; the CLI reads its own config). The plugin never reads `~/.sherwood/config.json`: for XMTP and the gas watchdog, set the monitor wallet in the Hermes profile `.env` (`SHERWOOD_PRIVATE_KEY`, optional, the sidecar derives its own key from it; or `SHERWOOD_AGENT_ADDRESS` alone for the gas watchdog). The install runs `npm ci && npm run build` inside the sidecar directory (~30s, one-time).
  
-@@ -1766,12 +1766,12 @@ The plugin runs a preflight on load. If it doesn't find `sherwood --version`, or
+@@ -1779,12 +1779,12 @@ The plugin runs a preflight on load. If it doesn't find `sherwood --version`, or
  If the install fails mid-sidecar (no Node, npm offline, etc.), everything except XMTP still works. Rebuild later with:
  
  ```bash
@@ -278,7 +274,7 @@ index 099e2f5..5079340 100644
  
  ### One-time onboarding per vault
  
-@@ -1804,7 +1804,14 @@ concentration_threshold_pct: 30.0
+@@ -1817,7 +1817,14 @@ concentration_threshold_pct: 30.0
  | `sherwood_monitor_exposure()` | Answer cross-fund exposure questions |
  | `sherwood_monitor_cron_tick(subdomain, include_exposure=true)` | What the autonomous cron calls; you can call manually |
  
@@ -288,7 +284,7 @@ index 099e2f5..5079340 100644
 +Two settings shape a fund, independently:
 +
 +- **Deposits, per fund.** Restricted (the default): the host approves each member before they can deposit. Open (`open_deposits`, for a vault created with open deposits): a member links a wallet and deposits with no approval step. Once the vault exists, the chain's deposit rules decide.
-+- **Who signs, per Hermes (`proposal_signer`).** `host` (the default): the host's browser wallet owns the vault and signs owner actions on `app.sherwood.sh/tg/sign`. `agent` (open protocol): your own wallet, the one the Sherwood CLI holds, owns the vault. The plugin still never signs: for a draft the host shipped, or a guest agent the host approved, `fund_pending_commands` lists the exact `strategy propose portfolio` or `vault add` command. Run it with your CLI wallet only in a `hermes -z` one-shot the operator started or a cron set to `approvals.cron_mode: approve`, never from a Telegram turn and never on boot, then record the result (`fund_set_proposal_status <id> proposed` with `onchain_id` and `tx_hash`, or `fund_approve_agent` with `tx_hash`). These commands need Sherwood CLI 0.103.0 or later, newer than this skill's pin; `fund_pending_commands` warns when the installed CLI is older. Creating the vault, the agent fee and the governor parameters are CLI steps the operator runs.
++- **Who signs, per Hermes (`proposal_signer`).** `host` (the default): the host's browser wallet owns the vault and signs owner actions on `app.sherwood.sh/tg/sign`. `agent` (open protocol): your own wallet, the one the Sherwood CLI holds, owns the vault. The plugin still never signs: for a draft the host shipped, or a guest agent the host approved, `fund_pending_commands` lists the exact `strategy propose portfolio` or `vault add` command. Run it with your CLI wallet only in a `hermes -z` one-shot the operator started or a cron set to `approvals.cron_mode: approve`, never from a Telegram turn and never on boot, then record the result (`fund_set_proposal_status <id> proposed` with `onchain_id` and `tx_hash`, or `fund_approve_agent` with `tx_hash`). These commands need Sherwood CLI 0.103.0 or later (the version this skill pins meets it); `fund_pending_commands` warns when the installed CLI is older. Creating the vault, the agent fee and the governor parameters are CLI steps the operator runs.
 +
 +A guest agent can propose only while the factory's `ownerOnlyProposals` flag is off: read it live ([Single-operator vaults](#single-operator-vaults)). The plugin's docs record the factory as open since 2026-11-06 (`ownerOnlyProposals` false, `depositsRestricted` false, `creationFee` 0).
  
@@ -323,7 +319,7 @@ git log --format='%h %G?' origin/main..HEAD   # G on every commit
 
 ## 4. Back in this repo
 
-- **Refresh the bundled skill pack after skill #122 merges.** The bundled
+- **Refresh the bundled skill pack after skill #122 merges (skill 0.35.1).** The bundled
   `skills/sherwood-agent/` at v0.8.0 is skill 0.34.3: it still carries the
   0.7.0 pin and the 11-tool fund list. Refresh it in its own PR:
 
