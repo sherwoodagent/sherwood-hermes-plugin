@@ -20,24 +20,28 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 from .childenv import child_env
 
 _log = logging.getLogger(__name__)
+_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
 async def fetch_vault_info(sherwood_bin: str, subdomain: str) -> dict | None:
-    """Shell out to `sherwood vault info <subdomain> --json` and return the raw dict.
+    """Shell out to `sherwood vault info <subdomain> --json` (or `--vault <address>` for a
+    0x vault address) and return the raw dict.
 
     Returns None on any failure (non-zero exit, parse error, subprocess error,
     or the subcommand not existing on this CLI version).
     """
+    target = ["--vault", subdomain] if _ADDRESS_RE.match(subdomain or "") else [subdomain]
     try:
         proc = await asyncio.create_subprocess_exec(
             sherwood_bin,
             "vault",
             "info",
-            subdomain,
+            *target,
             "--json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

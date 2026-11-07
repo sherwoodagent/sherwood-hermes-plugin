@@ -23,18 +23,21 @@ here is guarded, so without it the plugin still loads and the cards are off.
 | Host says "ship it" | chat, social | host Telegram id |
 | 👍 Back it | chat, social (callback) | none; it never votes |
 | ❌ Object | browser: casts Against | wallet signature, onchain |
-| Join / Deposit / Withdraw | browser | wallet signature, onchain |
-| 🚀 Ship it / ✍️ Co-sign / approve or remove | chat callback (host only), then onchain where it applies | host Telegram id in chat, wallet onchain |
+| Join / Deposit / Withdraw | browser | wallet signature, onchain (deposits need the host's approval unless the fund's deposits are open) |
+| 🚀 Ship it / ✍️ Co-sign / approve or remove | chat callback (host only), then onchain where it applies | host Telegram id in chat, wallet onchain (`proposal_signer: agent`: the host agent's CLI wallet, outside the chat) |
 
 Governance is optimistic veto: only Against counts. A proposal passes unless
 Against reaches 20% of share supply before the window ends (1800 s in the
 demo). Silence means pass.
 
 Money never moves from chat. Every money action is a plain URL button that
-opens `${APP_BASE_URL}/tg/...` in the browser, where the wallet signs. There is
-no Mini App: Telegram's Bot Developer Terms (7.1-7.4) allow blockchain Mini
-Apps on TON only. The chat allowlist decides who can talk to the bot; it does
-not gate money. The contracts do.
+opens `${APP_BASE_URL}/tg/...` in the browser, where the wallet signs, or,
+with `proposal_signer: agent`, a Sherwood CLI command the proposing agent
+runs outside the chat, signed by its CLI wallet (a `hermes -z` one-shot or an
+approve-mode cron; the group's toolset has no terminal). The plugin never signs. There is no Mini App: Telegram's
+Bot Developer Terms (7.1-7.4) allow blockchain Mini Apps on TON only. The
+chat allowlist decides who can talk to the bot; it does not gate money. The
+contracts do.
 
 Bots never see each other's messages in groups. Guest agents coordinate through
 the shared fund state, never by reading each other in chat.
@@ -206,11 +209,11 @@ Callback data is `shfund:<action>:<arg>`, at most 64 bytes, routed by one
 | `shfund:vote:<pid>` | anyone | personal `/tg/vote` link (❌ Object); the link uses the on-chain id, and a proposal without one gets "not on-chain yet" |
 | `shfund:deposit:<vault>` | anyone | personal `/tg/deposit` link |
 | `shfund:withdraw:<vault>` | anyone | personal `/tg/withdraw` link |
-| `shfund:join:<vault>` | anyone | records a join request (first tap shows the host an Approve card), then the personal `/tg/join` link |
-| `shfund:shipit:<draft>` | host | ship the draft to a vote |
+| `shfund:join:<vault>` | anyone | records a join request (first tap shows the host an Approve card), then the personal `/tg/join` link. Open deposits: the member is admitted at once (no Approve card) and the same message carries their personal `/tg/deposit` link as a second button |
+| `shfund:shipit:<draft>` | host | ship the draft to a vote. `proposal_signer: agent`: the draft card is edited to show the `sherwood strategy propose portfolio ...` command the proposing agent runs (there is no Co-sign button) |
 | `shfund:propose:<draft>` | host | pre-GA co-sign: personal link to the host signing page |
-| `shfund:approve_member:<tg_id>` | host | approve a member, then the host's `/tg/sign` link for `approveDepositor` |
-| `shfund:approve_agent:<name>` | host | approve a guest agent, then the host's `/tg/sign` link for `registerAgent` |
+| `shfund:approve_member:<tg_id>` | host | approve a member, then the host's `/tg/sign` link for `approveDepositor`. Open deposits: "nothing to approve" |
+| `shfund:approve_agent:<name>` | host | approve a guest agent, then the host's `/tg/sign` link for `registerAgent`. `proposal_signer: agent`: no link; `/fund-approve <name>` gives the `sherwood vault add` command |
 | `shfund:remove_agent:<name>` | host | remove an agent |
 
 Host-only callbacks compare the tapper's Telegram id with the fund's host id
@@ -235,9 +238,12 @@ contracts still gate anything onchain.
 
 ## Host signing page (contract with the app lane)
 
-The host signs owner-only transactions from a personal link, delivered like the
-member links below (ephemeral message, DM, start link). **The app lane must add
-the route.**
+With `proposal_signer: host` (the closed posture: the human host's browser
+wallet owns the vault) the host signs owner-only transactions from a personal
+link, delivered like the member links below (ephemeral message, DM, start
+link). With `proposal_signer: agent` the vault owner is the agent's own CLI
+wallet and the plugin issues no `/tg/sign` link for proposals or agent
+registrations. **The app lane must add the route.**
 
 ```
 ${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<host_telegram_id>&ts=<unix_seconds>&sig=<hex>
@@ -258,11 +264,11 @@ ${APP_BASE_URL}/tg/sign?fund=<vault>&action=<route>&body=<b64>&tg=<host_telegram
   `bondQuoteWood` / `bondShortfallWood`, then send `[...prelude, ...txs]` in
   order (for propose-portfolio: bond approve -> clone -> propose), waiting for
   each. Never re-order or edit the body.
-- When it is used: after the host taps ✅ Approve member (approveDepositor),
-  ✅ Approve agent (registerAgent), and ✍️ Co-sign on a draft card
-  (propose-portfolio with the host as `proposer`, pre-GA while
-  `ownerOnlyProposals` is on). The plugin builds the body; it never signs or
-  sends.
+- When it is used: after the host taps ✅ Approve member (approveDepositor,
+  restricted deposits only), ✅ Approve agent (registerAgent), and ✍️ Co-sign
+  on a draft card (propose-portfolio with the host as `proposer`, pre-GA while
+  `ownerOnlyProposals` is on), all under `proposal_signer: host`. The plugin
+  builds the body; it never signs or sends.
 - **Bond buffer (sherwood #740).** A `propose-portfolio` body carries the
   plugin's intent: `bondSwapMaxPremiumBps: 300` (the WOOD swap pays at most 3%
   over the feed), `bondSwapDeadlineSeconds: 600`, and, when the agent quoted
@@ -414,7 +420,9 @@ produces a link for that person:
    user then gets an alert asking them to start the bot and tap again.
 
 So a member taps twice (the card button, then the URL button), three times on
-the first-ever DM path. `answerCallbackQuery` cannot open the app directly: the
+the first-ever DM path. On a fund with open deposits the 🎟 Join message (and
+its `/start` fallback) holds two URL buttons: the join link (link a wallet)
+and the member's deposit link, since there is no approval to wait for. `answerCallbackQuery` cannot open the app directly: the
 Bot API only lets its `url` open a game or a `t.me/<bot>?start=` link. Set
 `SHERWOOD_TG_PERSONAL_LINKS=dm` to skip the ephemeral attempt.
 
@@ -470,7 +478,17 @@ runtime.submit(runtime.post_receipt(chat_id, receipt))               # settle
 ```
 
 `CallbackFundGateway` still takes sync or async callables for other hosts; its
-docstring lists each one. PTB is imported only inside the factory Hermes calls
+docstring lists each one.
+
+Secrets under `multiplex_profiles`: the native handlers (buttons, `/fund`,
+`/leaderboard`, `/start`, group messages, reactions) run in PTB's own tasks,
+where Hermes has installed no secret scope, and with multiplexing on Hermes'
+`get_secret` refuses a read outside a scope (`UnscopedSecretError`). `wire()`
+captures this profile's scope (`telegram/scope.py`: the bound scope, else
+`build_profile_secret_scope` for this profile's Hermes home) and every
+handler runs inside it (`set_secret_scope`, reset afterwards). Reads in
+worker threads (`asyncio.to_thread`, which copies the context) inherit it.
+Outside Hermes there is no scope and the environment is read, as before. PTB is imported only inside the factory Hermes calls
 when the Telegram adapter connects, so `register()` works without it.
 `PitchFlow.link_riff(chat_id, pitch_id, riff_id)` stays available, but Hermes
 exposes no hook that returns the agent's reply message id, so the plugin does

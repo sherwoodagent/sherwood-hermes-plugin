@@ -16,19 +16,27 @@ from ..session import current_caller
 from . import authz, rules
 from .applink import ensure_member_address
 from .cards import render_fund_card, render_receipt
-from .models import TOKEN_ADDRESSES_4663, WOOD_DECIMALS, Agent, Fund, FundState, Leg
+from .models import TOKEN_ADDRESSES_4663, WOOD_DECIMALS, Agent, Fund, FundState, Leg, as_bool
 from .rules import RuleViolation
 from .runtime import FundRuntime
 from .service import FundServiceError
+from . import signed_cli
+from .signed_cli import CLI_NOTE, HANDOUT_HOLD_SECONDS, SHIP_TTL_SECONDS, register_agent_command
 from .store import FundExists, FundNotFound, FundStoreError, scrub_paths
 
 # Set once, then only the operator changes them (`hermes sherwood fund-bind`), never a tool.
 LOCKED_FUND_FIELDS = ("vault", "governor", "telegram_chat_id", "host_telegram_id")
-from .txbuilder import TxBuilderError
+from .txbuilder import TxBuilderClient, TxBuilderError
 from .units import UnitsError, parse_base_units, to_base_units
 
 TOOLSET = "sherwood-fund"
 ToolHandler = Callable[..., str]
+
+# Chat- and model-facing answer to an approve-member request on a fund with open deposits.
+OPEN_DEPOSITS_NOTE = (
+    "deposits are open on this fund, nothing to approve: anyone can deposit from the fund card's "
+    "💰 Deposit or 🎟 Join button"
+)
 
 _FUND = {"type": "string", "description": "Fund subdomain. Optional when this Hermes runs one fund."}
 
@@ -84,6 +92,12 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Vault agent fee in bps, at most 1500 (guardians refuse to approve near the 20% cap); 500 recommended",
             },
             "metadata_uri": {"type": "string", "description": "ipfs:// fund metadata, for the create-fund body"},
+            "open_deposits": {
+                "type": "boolean",
+                "description": "Deposits open to anyone (create-fund openDeposits: true): members join and deposit with no "
+                "host approval. Default false (the host approves each member). Once the vault exists, the chain's "
+                "value (fund card read) replaces this.",
+            },
         },
         ["fund"],
     ),
@@ -170,7 +184,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "fund_approve_member": _schema(
         "fund_approve_member",
         "Host only. Approve a depositor (deposits are restricted). Returns the approve-depositor body to sign. "
-        "Without `address`, the wallet the member linked in the app (/tg/join) is used when there is one.",
+        "Without `address`, the wallet the member linked in the app (/tg/join) is used when there is one. "
+        "On a fund with open deposits there is nothing to approve and it says so.",
         {
             "member": {"type": "string", "description": "Telegram id or wallet address"},
             "address": {"type": "string", "description": "Wallet, when approving by telegram id"},
@@ -180,8 +195,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "fund_approve_agent": _schema(
         "fund_approve_agent",
-        "Host only. Approve a guest agent. Returns the register-agent body to sign; call again with "
-        "tx_hash once registerAgent lands to mark it registered.",
+        "Host only. Approve a guest agent. Returns the register-agent body to sign (proposal_signer: host) or the "
+        "Sherwood CLI command the host agent runs, `sherwood vault add ...`, which its CLI wallet signs "
+        "(proposal_signer: agent); call again "
+        "with tx_hash once registerAgent lands to mark it registered.",
         {"agent": {"type": "string", "description": "Agent name or wallet"}, "tx_hash": {"type": "string"}},
         ["agent"],
     ),
@@ -190,6 +207,19 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "Host only. Remove a guest agent in one action: drops its claims and cancels its drafts.",
         {"agent": {"type": "string"}},
         ["agent"],
+    ),
+    "fund_pending_commands": _schema(
+        "fund_pending_commands",
+        "With proposal_signer: agent, the Sherwood CLI commands still to run (the CLI's wallet signs them): your "
+        "drafts the host shipped that are not proposed yet (`sherwood strategy propose portfolio ...`) and, if "
+        "you are the host, approved guest agents not registered yet (`sherwood vault add ...`). A listed propose "
+        "command is marked handed out and held back for 30 minutes; propose commands are held while the vault "
+        "has an open proposal on chain. Run each only in a `hermes -z` one-shot or an approve-mode cron, never "
+        "from the group chat, then record it as each entry's `then` says.",
+        {"include_recent": {
+            "type": "boolean",
+            "description": "List propose commands handed out in the last 30 minutes again. Only when you know that run did not propose.",
+        }},
     ),
 }
 
@@ -296,6 +326,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             "members": {"approved": sum(m.approved for m in state.members), "waiting": sum(not m.approved for m in state.members)},
             "cooldown_until": state.fund.cooldown_until,
             "pitch_claims": [asdict(c) for c in rules.active_claims(state, now) if c.idea_by],
+            "deposits_open": state.fund.open_deposits,
         }
 
     def fund_setup(args: dict[str, Any]) -> dict[str, Any]:
@@ -314,6 +345,11 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         if "agent_fee_bps" in ints:
             rules.require(rules.check_agent_fee(ints["agent_fee_bps"]))
         cap_raw = args.get("max_capital")
+        open_raw = args.get("open_deposits")
+        try:
+            open_deposits = None if open_raw is None else as_bool(open_raw)
+        except ValueError as exc:
+            raise UnitsError("open_deposits must be true or false") from exc
         host_address = str(args.get("host_address") or rt.settings.agent_address or "")
         for key in ("vault", "governor"):
             if key in fields_ and not rules.is_address(fields_[key]):
@@ -331,6 +367,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             new = Fund(name=name, asset=asset_arg or "USDG", host=host_address, **fields_)
             for k, v in limits_for(new).items():
                 setattr(new, k, v)
+            if open_deposits is not None:
+                new.open_deposits = open_deposits
             state = svc.create_fund(
                 new,
                 Agent(
@@ -356,6 +394,9 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                         ))
                 for k, v in {**fields_, **limits_for(st.fund)}.items():
                     setattr(st.fund, k, v)
+                if open_deposits is not None:
+                    st.fund.open_deposits = open_deposits
+                    st.fund.chain_closed_reads = 0
                 if host_address and not st.fund.host:
                     st.fund.host = host_address
                 return st
@@ -387,7 +428,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                     "name": state.fund.name,
                     "symbol": state.fund.name[:8].upper().replace("-", ""),
                     "subdomain": state.fund.name,
-                    "openDeposits": False,  # restricted: the host approves each member
+                    # false: restricted, the host approves each member; true: open to anyone.
+                    "openDeposits": state.fund.open_deposits,
                 },
             }
         return out
@@ -477,6 +519,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         # Authorize first; only then the credentialed app lookup and its state write.
         rules.require(rules.check_caller_is_host(state, caller_tg))
         rules.require(rules.check_host_action(state, rt.agent_name()))
+        if state.fund.open_deposits:
+            return {"open_deposits": True, "approved": False, "note": OPEN_DEPOSITS_NOTE}
         if not args.get("address"):
             ensure_member_address(rt, fund, str(args.get("member") or ""))  # app link lookup
         member, body = svc.approve_member(
@@ -500,8 +544,13 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             caller_telegram_id=caller_tg,
         )
         out: dict[str, Any] = {"agent": asdict(agent)}
-        if not agent.registered:
+        if not agent.registered and rt.settings.host_cosigns:
             out["prepare"] = {"route": "register-agent", "url": f"{svc.tx_builder_url}/prepare/register-agent", "body": body}
+        elif not agent.registered:
+            # proposal_signer: agent: the vault owner is the host agent's CLI wallet, not a browser wallet.
+            out["command"] = register_agent_command(svc.load(fund).fund, agent)
+            out["note"] = CLI_NOTE
+            out["then"] = f"fund_approve_agent agent={agent.name} tx_hash=<registerAgent tx hash>"
         return out
 
     def fund_remove_agent(args: dict[str, Any]) -> dict[str, Any]:
@@ -509,6 +558,158 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         caller_tg = host_gate(fund)
         agent = svc.remove_agent(fund, rt.agent_name(), str(args.get("agent") or ""), caller_telegram_id=caller_tg)
         return {"agent": asdict(agent), "note": "proposals already on-chain keep running; veto them if needed"}
+
+    def chain_hold(state: FundState, my_address: str, drafts: list[Any], include_recent: bool) -> str | None:
+        """Read the fund card before handing out a propose: why not to propose now, or None.
+
+        Holds, in this order:
+        - the card cannot be read, or a section that matters failed: the API reports a failed
+          section as a `warnings` entry with empty proposal lists and a null `proposeGate`
+          (fail closed: an unattended run must not guess);
+        - the vault has an open proposal on chain (a propose reverts VaultHasOpenProposal, after
+          the bond approve and clone may already have gone out);
+        - a proposal from this agent's wallet is on chain, newer than anything recorded here (id
+          above the highest recorded on-chain id and, when the card gives a created time, created
+          after the draft was shipped): an earlier run may have proposed and not recorded it.
+          `include_recent=true` bypasses only this one, for a proposal that predates this record.
+        """
+        try:
+            card = TxBuilderClient(rt.settings.tx_builder_url, timeout=8.0).fund_card(state.fund.vault)
+        except TxBuilderError as exc:
+            return f"could not read the vault's proposals from the fund card ({scrub_paths(exc)}); propose commands are held until it answers"
+        warnings = [str(w) for w in (card.get("warnings") or []) if isinstance(w, str)]
+        failed = [w for w in warnings if any(k in w.lower() for k in _PROPOSAL_READ_WARNINGS)]
+        if failed:
+            return f"the fund card could not read the vault's proposals ({'; '.join(failed)}); propose commands are held until it can"
+        gate = card.get("proposeGate")
+        if not isinstance(gate, dict):
+            return (
+                "the fund card has no proposeGate (the governor's open-proposal count / cooldown read failed); "
+                "propose commands are held until it answers"
+            )
+        props = card.get("proposals") if isinstance(card.get("proposals"), dict) else {}
+        rows = [r for key in ("open", "recent") for r in (props.get(key) or []) if isinstance(r, dict)]
+        if isinstance(card.get("activeProposal"), dict):
+            rows.append(card["activeProposal"])
+        recorded = [p.onchain_id for p in state.proposals if p.onchain_id is not None]
+        highest = max(recorded, default=0)
+        shipped = min(float(d.shipped_at or 0) for d in drafts) if drafts else 0.0
+        mine: set[int] = set()
+        for r in rows:
+            rid = str(r.get("id") or "")
+            if not (my_address and rid.isdigit() and str(r.get("proposer") or "").lower() == my_address.lower()):
+                continue
+            created = _created_at(r)
+            if int(rid) > highest and (created is None or created >= shipped):
+                mine.add(int(rid))
+        unrecorded = ""
+        if mine:
+            ids = ", #".join(str(i) for i in sorted(mine))
+            which = " or ".join(d.id for d in drafts) or "your draft"
+            unrecorded = (
+                f"proposal #{ids} from your wallet is on chain and newer than anything recorded here. If it is draft "
+                f"{which}, record it: fund_set_proposal_status proposal_id=<draft id> status=proposed "
+                "onchain_id=<that id> tx_hash=<propose tx hash>. Otherwise it predates this fund record and can be "
+                "ignored: list again with include_recent=true"
+            )
+        try:
+            open_n = int(gate.get("openProposals") or 0)
+        except (TypeError, ValueError):
+            open_n = 0
+        open_ids = [str(r.get("id")) for r in (props.get("open") or []) if isinstance(r, dict) and r.get("id") is not None]
+        if open_n > 0 or open_ids:
+            ids = f" (#{', #'.join(open_ids)})" if open_ids else ""
+            reason = (
+                f"the vault has {max(open_n, len(open_ids))} open proposal(s) on chain{ids}: a propose now reverts "
+                "VaultHasOpenProposal; wait until it is settled or vetoed (and the cooldown has passed)"
+            )
+            return f"{reason}. Also: {unrecorded}" if unrecorded else reason
+        if unrecorded and not include_recent:
+            return unrecorded
+        return None
+
+    def fund_pending_commands(args: dict[str, Any]) -> dict[str, Any]:
+        state = svc.load(rt.fund_for(args.get("fund")))
+        me = rt.agent_name().lower()
+        out: dict[str, Any] = {"fund": state.fund.name, "proposal_signer": rt.settings.proposal_signer}
+        if rt.settings.host_cosigns:
+            out.update(proposals=[], registrations=[], note=(
+                "proposal_signer is host: the host co-signs shipped drafts and signs registerAgent on the signing "
+                "page; there is no CLI command to run here"
+            ))
+            return out
+        try:
+            include_recent = as_bool(args.get("include_recent"))
+        except ValueError as exc:
+            raise UnitsError("include_recent must be true or false") from exc
+        now = svc.clock()
+        mine = [
+            p for p in state.proposals
+            if p.status == "draft" and p.shipped_at and p.propose_command and p.proposer_agent.lower() == me
+        ]
+        held: list[dict[str, Any]] = []
+        expired: list[dict[str, Any]] = []
+        candidates = []
+        for p in mine:
+            if now - float(p.shipped_at or 0) > SHIP_TTL_SECONDS:
+                expired.append({"proposal_id": p.id, "topic": p.topic, "shipped_at": p.shipped_at,
+                                "reason": "shipped over 24 hours ago: not runnable; ask the host to ship it again"})
+            elif p.handed_out_at and now - p.handed_out_at < HANDOUT_HOLD_SECONDS and not include_recent:
+                held.append({"proposal_id": p.id, "topic": p.topic, "handed_out_at": p.handed_out_at, "reason": (
+                    "handed out less than 30 minutes ago: if that run proposed it, record it with "
+                    "fund_set_proposal_status; pass include_recent=true only if you know it did not run"
+                )})
+            else:
+                candidates.append(p)
+        hold = None
+        if candidates:
+            agent = state.agent(me)
+            hold = chain_hold(state, (agent.address if agent else "") or rt.settings.agent_address, candidates, include_recent)
+        if hold:
+            out["chain_hold"] = hold
+            held += [{"proposal_id": p.id, "topic": p.topic, "reason": hold} for p in candidates]
+            candidates = []
+        proposals = [
+            {
+                "proposal_id": p.id,
+                "topic": p.topic,
+                "shipped_at": p.shipped_at,
+                "command": p.propose_command,
+                "then": f"fund_set_proposal_status proposal_id={p.id} status=proposed onchain_id=<on-chain id> "
+                        "tx_hash=<propose tx hash>",
+            }
+            for p in candidates
+        ]
+        if current_caller().messaging:
+            # A chat turn has no terminal and cannot run them: listing here must not hold back the
+            # operator's one-shot or cron.
+            out["handed_out"] = False
+        else:
+            svc.mark_handed_out(state.fund.name, [p.id for p in candidates])
+            out["handed_out"] = bool(candidates)
+        registrations = []
+        host = state.host_agent()
+        if host is not None and host.name.lower() == me:
+            for a in state.agents:
+                if a.approved and not a.registered and not a.removed:
+                    try:
+                        cmd = register_agent_command(state.fund, a)
+                    except RuleViolation:
+                        continue
+                    registrations.append({
+                        "agent": a.name,
+                        "command": cmd,
+                        "then": f"fund_approve_agent agent={a.name} tx_hash=<registerAgent tx hash>",
+                    })
+        out.update(proposals=proposals, registrations=registrations, held_back=held, expired=expired, note=CLI_NOTE)
+        if proposals or registrations:
+            warning = signed_cli.cli_version_warning(rt.sherwood_bin)
+            if warning:
+                out["cli_warning"] = warning
+        if proposals and state.fund.cooldown_until and state.fund.cooldown_until > now:
+            out["cooldown_until"] = state.fund.cooldown_until
+            out["wait"] = "the governor cooldown is on: a propose before cooldown_until reverts CooldownNotElapsed"
+        return out
 
     fns = [
         fund_status,
@@ -522,8 +723,27 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         fund_approve_member,
         fund_approve_agent,
         fund_remove_agent,
+        fund_pending_commands,
     ]
     return {fn.__name__: _guarded(fn) for fn in fns}
+
+
+# tg-card `warnings` that mean the proposal reads behind the propose hold failed (sherwood
+# app/src/app/api/v1/funds/_lib/tg-card.ts): "Could not read [some of] the vault's proposals.",
+# "Could not read the governor's open-proposal count / cooldown."
+_PROPOSAL_READ_WARNINGS = ("the vault's proposals", "open-proposal count")
+
+
+def _created_at(row: dict[str, Any]) -> float | None:
+    """A card proposal row's creation time (unix seconds) when the card gives one; None otherwise."""
+    for key in ("createdAt", "created", "proposedAt", "snapshotTimestamp"):
+        try:
+            value = float(row.get(key))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
 
 
 # Errors a guard treats as "cannot verify the draft" (it then blocks).

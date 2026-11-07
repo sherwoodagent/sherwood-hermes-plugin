@@ -26,20 +26,21 @@ downside.
 - **Thesis**: two or three sentences. What you expect, why now, what would
   prove you wrong. Name the member whose idea it was (`idea_by` = their
   telegram id).
-- **Legs**: one line each, in order, e.g. `swap 400 USDG -> TSLA`,
-  `settle: swap TSLA -> USDG`. Use `phase: settle` for the unwind legs.
-  Only Robinhood Chain stock tokens and the fund asset. Prices from Chainlink
-  feeds only.
-- **Max capital**: the most the batch may move out of the vault, in the fund
-  asset ("500" USDG). Each leg's `cap` is its own max outflow; approve legs
-  take 0. Caps must sum to no more than max capital.
+- **Legs**: a PortfolioStrategy basket, one leg per stock token with its
+  weight in bps of max capital, weights summing to 10000, each symbol once,
+  at most 20, e.g. `{"summary": "buy NVDA", "symbol": "NVDA", "weight_bps":
+  6000}`, `{"summary": "buy AAPL", "symbol": "AAPL", "weight_bps": 4000}`.
+  Only Robinhood Chain stock tokens. Prices from Chainlink feeds only.
+- **Max capital**: the most the basket may take out of the vault, in the
+  fund asset ("500" USDG).
 - **Max drawdown (bps)**: the loss you are declaring up front. 1000 = 10%.
   It sizes the settle-price guard; do not inflate it to be safe.
 - **Duration**: seconds the position stays open (`strategy_duration_seconds`).
 
-When you have calldata for a leg (the Sherwood CLI with `--calldata-only`),
-pass `target`, `data` and `value` on the leg. Without calldata the draft is
-still recorded and the response lists what is missing.
+Only with `proposal_signer: host`: a raw-calldata draft (legs with
+`target`, `data`, `value` and a `cap` each, from the CLI's
+`--calldata-only`) also works; the host co-signs it. With
+`proposal_signer: agent` only symbol + weight legs ship.
 
 ## The bond
 
@@ -66,7 +67,25 @@ still recorded and the response lists what is missing.
   its message in `bond_buffer_note` with status `premium-over-cap`; only the
   host may accept it (`allowBondSwapPremium`), on the signing page.
 
-## Order of calls
+## Order of calls (`proposal_signer: agent`, the open protocol)
+
+1. `fund_status`, then `fund_draft_proposal` with symbol + `weight_bps`
+   legs. The draft card posts in the group.
+2. Wait for the host's 🚀 Ship it. Never propose a draft the host has not
+   shipped: shipping is the go-ahead (the plugin's rule; nothing on chain
+   enforces it, so it is on you).
+3. Only in a `hermes -z` one-shot the operator started for it, or a cron
+   the operator set up with `approvals.cron_mode: approve`: call
+   `fund_pending_commands` and run each listed `command` verbatim with the
+   terminal, nothing added or changed. Your CLI wallet signs it (bond
+   approve, clone, propose). Never in the group chat (no terminal there),
+   never on boot, never a command you typed yourself. Respect `held_back`,
+   `chain_hold`, `expired` and `cli_warning`: they mean do not run it now.
+4. Record what landed at once, as the entry's `then` says:
+   `fund_set_proposal_status(proposal_id, status="proposed", onchain_id,
+   tx_hash)`. If it failed, say so; if it will never run, `status="cancelled"`.
+
+## Order of calls (`proposal_signer: host`)
 
 1. `fund_status` (fresh state).
 2. `fund_draft_proposal(topic, thesis, legs, max_capital, max_drawdown_bps,
@@ -90,5 +109,6 @@ still recorded and the response lists what is missing.
 ## Don't
 
 - Don't propose without a claim, or with someone else's.
+- Don't run a propose command the host has not shipped, or change one before running it.
 - Don't bond with anything but your own WOOD, or approve more than quote + 5%.
 - Don't hide the downside to avoid objections. Objections are the product.

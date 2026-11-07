@@ -1,7 +1,7 @@
-# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.7.0)
+# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.0)
 
 This is the disclosure for the Nous Hermes hackathon entry and for the Hermes
-plugin catalog (rule 13). It describes what the plugin does at v0.7.0, who
+plugin catalog (rule 13). It describes what the plugin does at v0.8.0, who
 signs what, what it reads, and what does not work yet.
 
 ## What it is
@@ -16,8 +16,9 @@ signs what, what it reads, and what does not work yet.
   none.
 - **Group-chat fund.** It runs a Sherwood fund inside a Telegram group. The
   agent pitches trades, members back or object to them, the host approves
-  members and guest Hermes agents, and each proposal gets a card in the chat
-  that updates as votes and the chain change.
+  members (or deposits are open to anyone) and guest Hermes agents, and each
+  proposal gets a card in the chat that updates as votes and the chain
+  change.
 
 Sherwood vaults are on Robinhood Chain mainnet (chain 4663). The fund asset is
 USDG. There is no testnet deployment.
@@ -27,8 +28,11 @@ USDG. There is no testnet deployment.
 On chain (Robinhood Chain 4663), using contracts that already exist. The
 plugin adds no contracts:
 
-- The vault is a Sherwood vault (ERC-4626) created through the factory with
-  restricted deposits (`openDeposits: false`).
+- The vault is a Sherwood vault (ERC-4626) created through the factory,
+  with restricted deposits (`openDeposits: false`, the default) or open
+  deposits (`openDeposits: true`). The factory on 4663 opened on 2026-11-06
+  (`ownerOnlyProposals` false, `depositsRestricted` false, `creationFee` 0),
+  so an open vault takes deposits from anyone.
 - Proposals are PortfolioStrategy clones made through the strategy factory.
   Each proposal names its legs (stock tokens and weights), a maximum capital
   and a maximum drawdown, which must sit inside the fund's ceilings.
@@ -68,11 +72,23 @@ The plugin never signs or sends a transaction. It builds unsigned
 transactions through the prepare API at `api.sherwood.sh` and posts links. A
 person or the agent signs each one with their own wallet.
 
+The plugin runs in one of two postures. With `proposal_signer: host` (the
+default, the closed pre-GA posture) the vault owner is the human host's
+browser wallet. With `proposal_signer: agent` (the open protocol) the vault
+owner is the Hermes agent's own wallet: the one the `sherwood` CLI holds in
+`~/.sherwood/config.json`. The plugin never reads that key. For a proposal
+or a guest-agent registration it hands the agent the exact CLI command; the
+agent runs it outside the plugin, in a `hermes -z` one-shot the operator
+starts or a cron the operator configured in approve mode (the Telegram
+toolset has no terminal), and the CLI's wallet signs. Deposits are
+restricted or open per fund, independently of the signer.
+
 | Signer | Signs | Where |
 |---|---|---|
-| Host (vault owner) | create the fund; approve each depositor (`approveDepositor`); register each guest agent (`registerAgent`); set the agent fee; co-sign proposals while the protocol requires owner-only proposals (`proposal_signer: host`) | `app.sherwood.sh/tg/sign`, from a link issued to the host's Telegram id. The page's contract: check the link and that the connected wallet owns the vault, show every address in full, and send the prepared transactions in order without editing them. |
+| Host (vault owner), `proposal_signer: host` | create the fund; approve each depositor (`approveDepositor`, restricted deposits only); register each guest agent (`registerAgent`); set the agent fee; co-sign proposals while the protocol requires owner-only proposals | `app.sherwood.sh/tg/sign`, from a link issued to the host's Telegram id. The page's contract: check the link and that the connected wallet owns the vault, show every address in full, and send the prepared transactions in order without editing them. |
+| Host agent (vault owner), `proposal_signer: agent` | register each guest agent (`sherwood vault add --vault --wallet --agent-id`); propose its own drafts (`sherwood strategy propose portfolio ...`, with its own WOOD bond). Creating the fund (`--open-deposits` for an open fund), the agent fee and governor parameters are CLI steps the operator runs by hand; the plugin builds no command for them | the `sherwood` CLI with the wallet it holds, run by the agent with its terminal tool outside the group chat. The plugin builds the command (from the draft the fund rules checked, every argument shell-quoted, free text in the attached `--flag=value` form), shows it on the draft card and in `fund_pending_commands`, and records the on-chain id and tx hash afterwards. |
 | Members | join (link a wallet), deposit, withdraw, Object (an Against vote) | `app.sherwood.sh/tg/join`, `/tg/deposit`, `/tg/withdraw`, `/tg/vote`, from their own wallets |
-| The agent | its own WOOD bond approval and the USDG to WOOD swap that tops up the bond; settling its own proposals; proposing directly once the protocol allows non-owner proposals (`proposal_signer: agent`) | its own scoped wallet (`fund.agent_address`) |
+| The agent (and guest agents) | its own WOOD bond approval and the USDG to WOOD swap that tops up the bond; settling its own proposals; under `proposal_signer: agent` a guest agent proposes its own shipped drafts with its own CLI wallet | its own wallet (`fund.agent_address`) |
 | The plugin | nothing on chain; HMAC signatures on links, and XMTP messages from the sidecar's own derived key when `SHERWOOD_PRIVATE_KEY` is set | |
 
 The agent never holds member funds. Deposits go into the vault, and a
@@ -102,7 +118,8 @@ unsigned calldata; it holds no keys and no funds.
   register-agent, deposit, propose, propose-portfolio, vote, execute, settle,
   redeem, set-agent-fee and others), the fund-card read
   `GET funds/<vault>/tg-card` (live cards refresh every 60 s; reads are
-  throttled to at most one per 30 s per fund), and `/sources/prices`.
+  throttled to at most one per 30 s per fund; `fund_pending_commands` reads
+  it once before it hands out a propose command), and `/sources/prices`.
 - **app.sherwood.sh:** `GET /api/tg/link` to find the wallet a member linked
   (bearer `SHERWOOD_TG_API_TOKEN`, https on allowlisted hosts only, no
   redirects), and a readiness check on share images before posting them.
@@ -125,7 +142,10 @@ unsigned calldata; it holds no keys and no funds.
   `https://mainnet.base.org` (override `SIDECAR_BASE_RPC`) to read each
   fund's XMTP group id from the Durin L2Registry, and talks to the XMTP
   network.
-- **Child processes:** the `sherwood` CLI, node and npm get the environment
+- **Child processes:** the plugin runs the `sherwood` CLI only for reads
+  (`session check`, `vault info`, and `--version`, which
+  `fund_pending_commands` also runs under `proposal_signer: agent`); it never
+  runs a signing command. The `sherwood` CLI, node and npm get the environment
   without `SHERWOOD_PRIVATE_KEY`, `TELEGRAM_BOT_TOKEN` and `SHERWOOD_TG_*`.
   Hermes itself keeps plugin secrets in its environment, so a session with
   the terminal tool, or a cron script, can read them: use a dedicated
@@ -147,18 +167,46 @@ proposal per agent, at most two per fund (drafts count), claim a topic before
 drafting (a claim lasts 10 minutes), no agent reviews its own proposal, and
 max capital and drawdown inside the fund's ceilings.
 
-## Restricted deposits
+## Deposits
 
-Deposits are closed by default. A member taps 🎟 Join, links a wallet on
+Deposits are restricted by default. A member taps 🎟 Join, links a wallet on
 `/tg/join`, and the host approves them with a button. The plugin checks that
 the tapper is the host before it looks up the member's wallet, shows the
 address in full, and hands the host a `/tg/sign` link for `approveDepositor`.
 Only then can the member deposit.
 
+On a fund with open deposits (`fund_setup open_deposits=true`, the vault
+created with `openDeposits: true`) there is no approval step. A member taps
+🎟 Join and gets one message with two personal links: `/tg/join` to link a
+wallet and `/tg/deposit`. No Approve card goes to the host, and
+`fund_approve_member` and `/fund-approve <member>` answer that there is
+nothing to approve. Once the vault exists, the fund-card read's
+`depositsOpen` (the vault's flag and the factory's `depositsRestricted`)
+replaces the setting, so the chain decides which posture applies. The app
+reads those rules failing closed (a rule it could not read comes back as
+restricted, with no warning), so an open read applies at once and a
+restricted read closes an open fund only after two reads in a row; each
+change is logged as a warning.
+
 ## What is held for human approval
 
-- Every owner action on chain needs the host's wallet signature on
-  `/tg/sign`.
+- With `proposal_signer: host`, every owner action on chain needs the human
+  host's wallet signature on `/tg/sign`.
+- With `proposal_signer: agent`, no human signs anything: the agent's CLI
+  wallet does. The human gate is the host's Telegram tap: 🚀 Ship it for a
+  proposal, the approval of a guest agent (a human-approved tool call) for a
+  registration. That gate is the plugin's convention, not an on-chain
+  control: the open factory accepts a propose from any registered agent,
+  and nothing stops an agent with a terminal from running the CLI itself.
+  The plugin holds what it can: it builds a propose command only for a
+  shipped draft, holds a listed command back for 30 minutes, holds every
+  propose while the vault has an open proposal, a newer unrecorded one from
+  the agent's wallet, or a failed proposal read, expires a ship after 24
+  hours, resets a guest's
+  approval if it changes its wallet or identity, and tells the agent to run
+  the commands only in an operator-started one-shot or an approve-mode cron,
+  never in the group chat and never on boot. Creating the fund, the agent
+  fee and governor parameters are the operator's own CLI steps.
 - The host-authority tools (`fund_setup`, `fund_approve_member`,
   `fund_approve_agent`, `fund_remove_agent`, `fund_record_settle`,
   `fund_set_proposal_status`, and `fund_record_vote` for someone else's vote)
@@ -207,6 +255,24 @@ Only then can the member deposit.
 - **It depends on hosted routes.** The prepare API, the fund-card read, the
   member-wallet lookup and the `/tg` pages are served by Sherwood. When a
   route is missing, the plugin names it and the card shows less.
+- **Agent-signer commands need Sherwood CLI 0.103.0 or later.** They carry
+  no `--chain` (Robinhood Chain mainnet is the only network from 0.93.0),
+  0.93.0 shipped without the bond escrow addresses on the propose path, and
+  0.103.0 is the release the flags were checked against.
+  `fund_pending_commands` reads `sherwood --version` and warns when it is
+  older.
+- **A deny-mode cron must not run agent-signer commands.** Recording the
+  on-chain id after a propose (`fund_set_proposal_status`) or the tx after a
+  registration (`fund_approve_agent`) is a host-authority call, so Hermes'
+  approval gate applies. A `hermes -z` one-shot runs without approval
+  prompts; a cron follows `approvals.cron_mode`, whose default `deny` blocks
+  the recording, so an unrecorded propose would be listed again (the
+  30-minute hold and the chain check limit that; they do not replace the
+  record). Run the commands only in an operator-started one-shot or a cron
+  set to `approve`.
+- **The open-deposits read runs only during a live proposal.** The plugin
+  reads the fund card only while a proposal is on chain, so before the first
+  one the `open_deposits` setting decides how the Join button behaves.
 - **Telegram limits.** 🔥 reactions reach the bot only when it is a group
   admin; ephemeral link messages are not guaranteed to reach an offline
   client (the bot falls back to a DM, then a start link). Pitches live 6

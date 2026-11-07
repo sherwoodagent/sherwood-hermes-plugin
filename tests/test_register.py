@@ -58,7 +58,7 @@ def test_register_calls_all_ctx_methods(tmp_path: Path, mock_ctx, monkeypatch):
     # pre_tool_call, post_tool_call, pre_llm_call), ONE `hermes sherwood` CLI
     # command (start/stop/status/tail/install-cron are its subcommands),
     # 5 slash commands, 1 + 3 fund skills
-    assert mock_ctx.register_tool.call_count == 16
+    assert mock_ctx.register_tool.call_count == 17
     assert mock_ctx.register_hook.call_count == 5
     assert mock_ctx.register_cli_command.call_count == 1
     assert mock_ctx.register_command.call_count == 5
@@ -74,7 +74,7 @@ def test_register_with_missing_cli_still_registers(tmp_path: Path, mock_ctx, mon
         register(mock_ctx)
 
     # Tools/hooks still register even when CLI is missing
-    assert mock_ctx.register_tool.call_count == 16
+    assert mock_ctx.register_tool.call_count == 17
     # pre_llm_call hook was registered (buffer carries the warning now)
     hook_names = [call.args[0] for call in mock_ctx.register_hook.call_args_list]
     assert "pre_llm_call" in hook_names
@@ -253,4 +253,4 @@ def test_register_refuses_a_malformed_key(tmp_path: Path, mock_ctx, monkeypatch)
         from sherwood_monitor import register
         register(mock_ctx)
     mock_sidecar_cls.assert_not_called()
-    assert mock_ctx.register_tool.call_count == 16
+    assert mock_ctx.register_tool.call_count == 17

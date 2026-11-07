@@ -128,6 +128,7 @@ def proposal_to_view(record: Any) -> ProposalView:
         guardian_coverage=str(_get(record, "guardian_coverage", default="") or ""),
         bond_buffer_status=str(_get(record, "bond_buffer_status", default="") or ""),
         bond_buffer_note=str(_get(record, "bond_buffer_note", default="") or ""),
+        propose_command=str(_get(record, "propose_command", default="") or ""),
     )
 
 
@@ -190,6 +191,7 @@ def fund_to_view(fund: Any, proposals: Iterable[Any] | None = None) -> FundView:
         open_proposals=open_views,
         nav_symbol=str(_get(fund, "nav_symbol", "asset_symbol", default="USDC")),
         cooldown_until=_int_or_none(_get(fund, "cooldown_until")),
+        deposits_open=_get(fund, "deposits_open", default=False) is True,
     )
 
 
@@ -473,6 +475,7 @@ def proposal_dict(state: FundState, record: ProposalRecord) -> dict[str, Any]:
         "bond_buffer_status": record.bond_buffer_status,
         "bond_buffer_note": record.bond_buffer_note,
         "capital_symbol": fund.asset,
+        "propose_command": record.propose_command,
     }
 
 
@@ -495,6 +498,7 @@ def fund_dict(state: FundState) -> dict[str, Any]:
         "nav_symbol": f.asset,
         "cooldown_until": f.cooldown_until,
         "open_proposals": [proposal_dict(state, p) for p in state.open_proposals() if p.status != "draft"],
+        "deposits_open": f.open_deposits,
     }
 
 
@@ -719,14 +723,19 @@ class FundTelegramBridge:
     def ship_draft(self, fund: Any, draft_id: str, by_tg_id: int) -> str:
         name = self._name(fund)
         try:
-            record = self.service.ship_draft(name, draft_id, caller_telegram_id=str(by_tg_id))
+            record = self.service.ship_draft(
+                name, draft_id, caller_telegram_id=str(by_tg_id), agent_signs=not self.settings.host_cosigns
+            )
         except RuleViolation as exc:
             if exc.code == "draft_not_ready":
                 raise FundActionError(f"Not ready: {exc.reason}. Ship once the draft shows its legs.") from exc
             raise FundActionError(exc.reason) from exc
         if self.settings.host_cosigns:
             return f"🚀 Shipped #{record.id}. Tap ✍️ Co-sign to sign the proposal in your browser."
-        return f"🚀 Shipped #{record.id}: {record.proposer_agent} proposes it from its own wallet."
+        return (
+            f"🚀 Shipped #{record.id}: {record.proposer_agent} proposes it from its own wallet with the "
+            "Sherwood CLI (the command is on the card)."
+        )
 
     def _sign_url(self, state: FundState, action: str, body: dict[str, Any], host_tg: int) -> str | None:
         secret = self._secret()
@@ -766,14 +775,14 @@ class FundTelegramBridge:
             return None
         if action == "approve_member":
             member = st.member(arg)
-            if member is None or not member.address:
+            if member is None or not member.address or st.fund.open_deposits:
                 return None
             body = {"chainId": st.fund.chain_id, "vault": st.fund.vault, "depositor": member.address}
             return self._sign_url(st, "approve-depositor", body, by_tg_id)
         if action == "approve_agent":
             agent = st.agent(arg)
-            if agent is None:
-                return None
+            if agent is None or not self.settings.host_cosigns:
+                return None  # proposal_signer: agent: the host agent runs `sherwood vault add`, no browser signing
             body = {"chainId": st.fund.chain_id, "vault": st.fund.vault, "agentAddress": agent.address,
                     "agentId": agent.identity_id}
             return self._sign_url(st, "register-agent", body, by_tg_id)
@@ -789,6 +798,8 @@ class FundTelegramBridge:
         for verdict in (check_caller_is_host(st, str(by_tg_id)), check_host_action(st, self._host_actor(st))):
             if not verdict.ok:
                 raise FundActionError(verdict.reason)
+        if st.fund.open_deposits:
+            raise FundActionError("Deposits are open on this fund, nothing to approve: they deposit from the fund card.")
         # The wallet the member linked in /tg/join (app GET /api/tg/link).
         ensure_member_address(self.rt, name, str(tg_id))
         st = self.service.load(name)
@@ -813,6 +824,11 @@ class FundTelegramBridge:
             agent, _body = self.service.approve_agent(name, self._host_actor(st), agent_name, caller_telegram_id=str(by_tg_id))
         except RuleViolation as exc:
             raise FundActionError(exc.reason) from exc
+        if not self.settings.host_cosigns:
+            return (
+                f"✅ {agent.name} approved. The host agent registers it with the Sherwood CLI: "
+                f"/fund-approve {agent.name} shows the command."
+            )
         return f"✅ {agent.name} approved. Sign registerAgent in your browser."
 
     def remove_agent(self, fund: Any, agent_name: str, by_tg_id: int) -> str:
@@ -835,12 +851,13 @@ class FundTelegramBridge:
             return False
         st = self.service.load(name)
         existing = st.member(str(person.tg_id))
-        if existing is not None and (existing.approved or existing.joined_at):
+        if existing is not None and (existing.approved or (existing.joined_at and not st.fund.open_deposits)):
             self._join_cards[key] = now
             return False
-        self.service.request_membership(name, str(person.tg_id), username=person.username or "")
+        member = self.service.request_membership(name, str(person.tg_id), username=person.username or "")
         self._join_cards[key] = now
-        return True
+        # Open deposits: admitted at once (the member card posts), no Approve card for the host.
+        return not member.approved
 
     def leaderboard(self, fund: Any) -> list[dict[str, Any]]:
         return self.service.leaderboard(self._name(fund))
@@ -1107,11 +1124,15 @@ def _draft_request_context(fund: str, claim: Any) -> str:
 
 
 def _shipped_context(fund: str, record: ProposalRecord) -> str:
+    pid = _quote(record.id, 16)
     return (
         "<sherwood-fund-shipped>\n"
-        f"Fund {_quote(fund, 64)}: the host shipped draft {_quote(record.id, 16)} ({_quote(record.topic, 80)}). "
-        "Propose it from your own wallet (prepare/propose-portfolio, sign approve -> clone -> propose in that "
-        f"order), then call fund_set_proposal_status {_quote(record.id, 16)} proposed with onchain_id and tx_hash.\n"
+        f"Fund {_quote(fund, 64)}: the host shipped draft {pid} ({_quote(record.topic, 80)}). "
+        f"{_quote(record.proposer_agent, 64)} proposes it from its own wallet with the Sherwood CLI command on "
+        "the draft card (fund_pending_commands lists it). This chat turn has no terminal: the command runs "
+        "outside the group, in a `hermes -z` one-shot the operator starts or a cron the operator set up in "
+        "approve mode. Do not try to run it here. Once it lands, record it: "
+        f"fund_set_proposal_status {pid} proposed with onchain_id and tx_hash.\n"
         "</sherwood-fund-shipped>"
     )
 

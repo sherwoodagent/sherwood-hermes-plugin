@@ -13,26 +13,30 @@
 name: sherwood-monitor
 title: Sherwood
 repo: https://github.com/sherwoodagent/sherwood-hermes-plugin
-# REPLACE before submitting: the full 40-character commit the v0.7.0 tag points
-# at, from `git rev-parse 'v0.7.0^{commit}'` (lowercase hex). The loader and
+# REPLACE before submitting: the full 40-character commit the v0.8.0 tag points
+# at, from `git rev-parse 'v0.8.0^{commit}'` (lowercase hex). The loader and
 # catalog CI reject anything else: a tag name, a branch or a short sha.
-sha: "<sha of the v0.7.0 tag commit>"
-version: "0.7.0"
+sha: "<sha of the v0.8.0 tag commit>"
+version: "0.8.0"
 description: >-
   Sherwood funds for Hermes on Robinhood Chain (chain 4663, USDG). Monitors your
   Sherwood funds (on-chain events reach the next turn, risk checks run before
   `sherwood proposal create`, `hermes sherwood install-cron` registers four
   watchdog crons and one vote-suggestion cron, settlements are written to
   memory) and runs a fund inside a Telegram group: the agent pitches trades,
-  members back or object, the host approves members and guest Hermes agents,
-  and every proposal gets a live card. Governance is optimistic veto: only
+  members back or object, the host approves members (or deposits are open to
+  anyone) and guest Hermes agents, and every proposal gets a live card. Governance is optimistic veto: only
   Against votes count. An optional XMTP sidecar streams group chat only for
   funds whose XMTP group id is in their ENS record on Base; Robinhood Chain
   funds have none.
   Disclosure: the plugin never signs or sends a transaction and never holds
   member funds. It builds unsigned transactions through the prepare API at
   api.sherwood.sh and posts HMAC-signed links to app.sherwood.sh, where the
-  host's and members' own wallets sign. Network calls: api.sherwood.sh (prepare,
+  host's and members' own wallets sign. With proposal_signer: agent the host
+  is the agent's own wallet: the plugin hands the agent the exact `sherwood`
+  CLI command, which the agent's wallet signs: the agent runs it outside the
+  plugin and the CLI signs with the key it holds (the plugin never reads
+  it). Network calls: api.sherwood.sh (prepare,
   fund-card and price reads), app.sherwood.sh (member-wallet lookup with
   SHERWOOD_TG_API_TOKEN, share-image checks), the Telegram Bot API through
   Hermes' adapter, and one Robinhood Chain RPC (`gas_rpc_url`, default the
@@ -89,6 +93,7 @@ capabilities:
     - fund_approve_member
     - fund_approve_agent
     - fund_remove_agent
+    - fund_pending_commands
   provides_hooks:
     - on_session_start
     - on_session_finalize

@@ -11,10 +11,87 @@ joins as a co-manager. The chat is the fund.
 - Governance: optimistic veto. Only Against votes count. A proposal passes
   unless Against reaches 20% of share supply inside the voting window (1800 s
   on the demo vault).
-- Deposits are restricted: the host approves each member (`approveDepositor`).
+- Deposits are restricted (the default: the host approves each member,
+  `approveDepositor`) or open (`open_deposits`: anyone deposits, no approval
+  step). See "Two postures" below.
 - No new contracts. Strategies are PortfolioStrategy clones through the
   factory; calldata comes from the CLI's `--calldata-only` or the hosted
   prepare API. The plugin never signs.
+
+## Two postures
+
+The factory on Robinhood Chain 4663 opened on 2026-11-06 (live reads at
+block 108,643,768: `ownerOnlyProposals()` false, `depositsRestricted()`
+false, `creationFee()` 0). The plugin supports both the closed posture it
+was built for and the open one.
+
+| | Closed (pre-GA, the defaults) | Open protocol |
+|---|---|---|
+| Setting | `proposal_signer: host` | `proposal_signer: agent` |
+| Who owns the vault | the human host's browser wallet | the Hermes agent's own wallet, the one the `sherwood` CLI holds in `~/.sherwood/config.json` (created with the CLI by hand) |
+| Deposits | restricted (`open_deposits: false`): the host approves each member on `/tg/sign` | open (`fund_setup open_deposits=true`, `openDeposits: true` in `create-fund`): no approval step |
+| Proposals | the agent drafts, the host ships and co-signs on `/tg/sign` | the agent drafts, the host ships; the card shows `sherwood strategy propose portfolio ...` for the proposing agent to run |
+| Guest agents | `/fund-approve <agent>` gives the host a register-agent body / `/tg/sign` link | `/fund-approve <agent>` gives the host agent `sherwood vault add ...` |
+
+The two settings are independent: `open_deposits` is per fund (and the
+chain's `depositsOpen` replaces it once the vault exists: an open read at
+once, a restricted read only after two in a row, because the app reads the
+rules failing closed), `proposal_signer` is per Hermes.
+
+In the open protocol nothing in the plugin sends a transaction either. The
+agent runs the CLI itself, and the CLI's wallet signs. The Telegram toolset
+has no terminal, on purpose (Deployment boundary), so the plugin hands the
+agent the exact command and records the result. It does so for proposing
+and for registering a guest agent only: creating the vault, the agent fee
+and the governor parameters are CLI steps the operator runs by hand.
+
+- **Ship it.** `ship_draft` (the host's 🚀) puts the command on the record
+  (`propose_command`), in the `shipped` event (`data.propose_command`) and on
+  the draft card: `sherwood strategy propose portfolio --vault <vault>
+  --tokens <symbols> --weights <bps, summing to 10000> --amount <max capital,
+  in USDG> --duration <e.g. 6h> --max-drawdown-bps <bps> '--name=<name>'
+  '--description=<thesis>'` (`fund/signed_cli.py`). `--max-drawdown-bps` is
+  the drawdown the rules checked (the CLI's default is 20%); every argument
+  is shell-quoted, so the thesis stays data, and the name and thesis use the
+  attached `--flag=value` form, so text starting with `-` is never read as a
+  flag. Only PortfolioStrategy drafts (1 to 20 symbol + weight legs, each
+  symbol once) ship in this mode. The ship is the plugin's convention for
+  the host's go-ahead, not an on-chain control.
+- **`fund_pending_commands`** lists this agent's shipped, unproposed drafts
+  with their commands (a guest runs its own drafts with its own wallet) and,
+  for the host agent, approved but unregistered guest agents with their
+  `sherwood vault add` commands. Each entry says how to record it:
+  `fund_set_proposal_status <id> proposed` with `onchain_id` and `tx_hash`,
+  or `fund_approve_agent` with `tx_hash`. Guards against proposing twice: a
+  listed propose is stamped `handed_out_at` and held back for 30 minutes
+  (`include_recent=true` to list it again); before listing one it reads the
+  fund card and holds every propose while the vault has an open proposal,
+  when the card or its proposal reads failed (an error, a `warnings` entry
+  for the proposals or the open-proposal count, or a null `proposeGate`), or
+  while a proposal from this agent's wallet is on chain and newer than
+  anything recorded here (an id above the highest recorded one and, when the
+  card gives a created time, created after the ship). That last hold says to
+  record it if it is the draft, else that it predates this fund record, and
+  `include_recent=true` bypasses it (never the open-proposal hold); a command
+  shipped over 24 hours ago is listed
+  as expired. A listing from a chat turn (which cannot run anything) is not
+  stamped, so it never holds back the operator's run.
+- **Guest wallet swaps.** A second `/join-fund` that changes an approved,
+  unregistered agent's wallet or identity resets it to pending; the host
+  approves the new pair, so no `vault add` is built for a pair the host
+  never saw.
+- **Where to run them.** The recording tools are host-authority tools, so
+  Hermes' approval gate applies. Run the commands only in a `hermes -z`
+  one-shot the operator starts for it (no approval prompts) or a cron the
+  operator configured with `approvals.cron_mode: approve`. A cron with
+  `approvals.cron_mode: deny` (the default) must not run them: it cannot
+  record the result. Never in the group chat, never on boot.
+- **CLI version.** No `--chain` is emitted, and the commands need the
+  Sherwood CLI 0.103.0 or later: mainnet is the only network from 0.93.0,
+  0.93.0 shipped without the bond escrow addresses, and 0.103.0 is the
+  release the flags were checked against. `fund_pending_commands` reads
+  `sherwood --version` (read-only) and warns in `cli_warning` when it is
+  older; a failed check is a warning too.
 
 ## Host mode
 
@@ -33,13 +110,17 @@ joins as a co-manager. The chat is the fund.
 2. Add the bot to the Telegram group.
 3. Create the vault. `fund_setup(fund="alpha-fund", ...)` records the fund and,
    while no vault is set, returns the `prepare/create-fund` body
-   (`openDeposits: false`). Sign it, then call `fund_setup` again with `vault`,
-   `governor`, `telegram_chat_id`, `host_telegram_id`, and the per-proposal
-   ceilings `max_capital` / `max_drawdown_bps`.
+   (`openDeposits: false`, or `true` with `open_deposits=true`). Sign it,
+   then call `fund_setup` again with `vault`, `governor`,
+   `telegram_chat_id`, `host_telegram_id`, and the per-proposal ceilings
+   `max_capital` / `max_drawdown_bps`.
 4. Approve members and guest agents: `/fund-approve <telegram_id|address>`
    for depositors, `/fund-approve <agent>` for agents (then
-   `/fund-approve <agent> <tx_hash>` once `registerAgent` lands). Both return
-   the prepare body the host wallet signs.
+   `/fund-approve <agent> <tx_hash>` once `registerAgent` lands). With
+   `proposal_signer: host` both return the prepare body the host wallet
+   signs. With open deposits there is no depositor to approve (the command
+   says so); with `proposal_signer: agent` the agent approval returns the
+   `sherwood vault add` command the host agent runs.
 5. Run the loop: pitch (skill `fund-pitch`), claim and propose
    (`fund-propose`), settle and post receipts (`fund-settle`).
 
@@ -49,9 +130,13 @@ joins as a co-manager. The chat is the fund.
    `fund.agent_identity_id` (its own ERC-8004 identity) and
    `fund.agent_address` (its own scoped wallet).
 2. `/join-fund <fund>` records a join request in the shared fund state.
-3. The host approves: `/fund-approve <agent>`, signs `registerAgent`, then
-   confirms with the tx hash. Only a registered agent can claim or propose.
-4. The guest proposes with its own WOOD bond, like the host.
+3. The host approves: `/fund-approve <agent>`, signs `registerAgent` (on
+   `/tg/sign`, or with `sherwood vault add` under `proposal_signer: agent`),
+   then confirms with the tx hash. Only a registered agent can claim or
+   propose.
+4. The guest proposes with its own WOOD bond, like the host. Under
+   `proposal_signer: agent` its own `fund_pending_commands` lists its
+   shipped drafts, and it runs them with its own CLI wallet.
 
 The host removes an agent with one action (`fund_remove_agent`): its claims
 are dropped and its unproposed drafts cancelled. Proposals already on-chain
@@ -128,7 +213,8 @@ on `fork/she-375-portfolio-loop`), enforced or shown by the core:
 Tools (toolset `sherwood-fund`): `fund_status`, `fund_setup`,
 `fund_claim_topic`, `fund_release_claim`, `fund_draft_proposal`,
 `fund_set_proposal_status`, `fund_record_vote`, `fund_record_settle`,
-`fund_approve_member`, `fund_approve_agent`, `fund_remove_agent`.
+`fund_approve_member`, `fund_approve_agent`, `fund_remove_agent`,
+`fund_pending_commands`.
 
 Slash commands: `/fund`, `/join-fund <fund>`, `/fund-approve`,
 `/fund-agents`, `/leaderboard` (members ranked by the P&L of their settled
@@ -187,12 +273,13 @@ FundService ──events──▶ FundTelegramBridge ──submit()──▶ Tel
 
   | Callable | Service call | Result in chat |
   |---|---|---|
-  | `approve_member_fn` | `applink.ensure_member_address` (the wallet linked in /tg/join, from the app's `GET /api/tg/link`, sherwood-app #152), then `approve_member` (host tg id checked) | toast + a `/tg/sign` link for `approve-depositor`; nothing linked -> `/fund-approve <tg> <address>` |
-  | `approve_agent_fn` | `approve_agent` | toast + a `/tg/sign` link for `register-agent` |
+  | `approve_member_fn` | `applink.ensure_member_address` (the wallet linked in /tg/join, from the app's `GET /api/tg/link`, sherwood-app #152), then `approve_member` (host tg id checked) | toast + a `/tg/sign` link for `approve-depositor`; nothing linked -> `/fund-approve <tg> <address>`; open deposits -> "nothing to approve" (no lookup, no link) |
+  | `approve_agent_fn` | `approve_agent` | toast + a `/tg/sign` link for `register-agent`; agent signer: no link, the toast points at `/fund-approve <agent>` for the CLI command |
+  | `request_membership_fn` | `request_membership` (🎟 Join) | restricted: the host gets an Approve card; open deposits: the member is admitted at once (`member_approved`, the member card) and no card goes to the host |
   | `remove_agent_fn` | `remove_agent` | claims dropped, drafts cancelled |
   | `toggle_backer_fn` | `record_vote(side="back" / "clear")` | social only; card edits in place |
   | `on_draft_requested_fn` | `request_draft`: claims the pitch topic for this agent with `idea_by` | agent context queued; a refusal (cooldown, fund full) is said in chat once |
-  | `ship_draft_fn` | `ship_draft` (host's go-ahead) | toast; agent mode: the agent is told to propose |
+  | `ship_draft_fn` | `ship_draft` (host's go-ahead) | toast; agent mode: the draft card shows the CLI propose command and the host's next chat turn hears where it runs |
   | `host_signing_url_fn` | `portfolio_payload` / `propose_payload` with the host as proposer | `/tg/sign` link (pre-GA host co-sign) |
   | `leaderboard_fn` | `leaderboard` (from settle receipts) | `/leaderboard` card |
   | `wood_usd_fn` | `/sources/prices` WOOD entry (none today -> `None`) | bond line in WOOD only |
@@ -207,16 +294,22 @@ FundService ──events──▶ FundTelegramBridge ──submit()──▶ Tel
   `proposed`/`voting` -> `post_proposal_card` once (serialized per proposal, so
   a burst of events never posts twice), later statuses, `vote` and `tally`
   -> `refresh_proposal_card`; `settled` -> refresh + `post_receipt`;
-  `member_approved` -> the member #N card.
+  `member_approved` -> the member #N card (on an open fund this follows the
+  member's 🎟 Join).
 - **Chain reads.** The 60 s card refresh calls `GET funds/<vault>/tg-card`
   (throttled to one read per 30 s per fund, 10 min backoff on a 404) and
   `apply_chain_card` takes Against %, voting/review windows, guardian coverage,
-  the chain state (review/approved/executed/vetoed) and `proposeGate.cooldownUntil`
-  from it.
+  the chain state (review/approved/executed/vetoed), `proposeGate.cooldownUntil`
+  and `fund.depositsOpen` (the vault's `openDeposits` and not the factory's
+  `depositsRestricted`, which replaces `open_deposits`) from it. The read
+  runs only while a proposal is live on chain, so before that the record
+  field decides.
 - **Signing.** Nothing in the plugin sends a transaction. Members sign in the
-  browser from personal `/tg/*` links; the host signs from `/tg/sign` links
-  (see "Host signing page" in `docs/telegram.md`); the agent signs with its own
-  scoped wallet.
+  browser from personal `/tg/*` links; with `proposal_signer: host` the host
+  signs from `/tg/sign` links (see "Host signing page" in `docs/telegram.md`);
+  the agent signs with its own wallet, and with `proposal_signer: agent` it
+  signs the vault owner's actions too, with the `sherwood` CLI outside the
+  plugin.
 
 `tests/test_fund_telegram_integration.py` runs the whole loop in memory through
 `register()`: join, approve, pitch + 3 🔥, agent draft, draft card, ship,

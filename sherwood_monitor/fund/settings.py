@@ -38,9 +38,11 @@ class FundSettings:
     fund_state_backend: str = "local"  # local | http
     fund_state_dir: str = ""  # local backend root; "" = ~/.hermes/plugins/sherwood-monitor/funds
     fund_state_url: str = ""  # http backend base URL (stub for now)
-    # Who signs propose. `host`: pre-GA beta (factory.ownerOnlyProposals), the host
-    # co-signs the agent's draft from a signing link. `agent`: open protocol, the
-    # agent's own wallet proposes.
+    # Who signs propose. `host`: pre-GA beta (factory.ownerOnlyProposals), the host's
+    # browser wallet owns the vault and co-signs the agent's draft from a signing link.
+    # `agent`: open protocol, the agent's own wallet (the one the Sherwood CLI
+    # holds) owns the vault and proposes; "ship it" and agent approvals hand the agent
+    # the exact CLI command to run (fund/signed_cli.py). The plugin signs in neither.
     proposal_signer: str = "host"
     # Hosts the app-link lookup may call (https only); operator config, never chat or env.
     app_link_hosts: str = "app.sherwood.sh"

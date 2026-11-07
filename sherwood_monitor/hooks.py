@@ -148,17 +148,24 @@ def make_pre_llm_call_hook(
     return hook
 
 
-# Match `sherwood proposal create <sub>` or `sherwood strategy propose <sub>`
+# Match `sherwood proposal create <sub>` or `sherwood strategy propose <sub|template>`
 _SHERWOOD_PROPOSE_RE = re.compile(
     r"\bsherwood\s+(?:strategy\s+propose|proposal\s+create)\s+(\S+)"
 )
+_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _TERMINAL_TOOLS = {"bash", "terminal", "shell"}
 
 StateFetcher = Callable[[str], Awaitable[dict]]
 
 
 def _parse_propose_command(command: str) -> tuple[str, float, str] | None:
-    """Return (subdomain, size_usd, protocol) or None if not a propose command."""
+    """Return (fund, size_usd, protocol) or None if not a propose command.
+
+    The fund is the positional argument, except when the command names its vault
+    with `--vault <0x address>` (or `--vault=<address>`): then the positional is a
+    strategy template (`sherwood strategy propose portfolio --vault 0x..`), not a
+    fund, and the vault address is what the state fetcher reads.
+    """
     m = _SHERWOOD_PROPOSE_RE.search(command)
     if not m:
         return None
@@ -185,6 +192,13 @@ def _parse_propose_command(command: str) -> tuple[str, float, str] | None:
             protocol = tokens[i + 1]
             i += 2
             continue
+        vault = ""
+        if tok == "--vault" and i + 1 < len(tokens):
+            vault = tokens[i + 1]
+        elif tok.startswith("--vault="):
+            vault = tok.partition("=")[2]
+        if _ADDRESS_RE.match(vault):
+            subdomain = vault  # the positional is a strategy template, not a fund
         i += 1
 
     return subdomain, size_usd, protocol

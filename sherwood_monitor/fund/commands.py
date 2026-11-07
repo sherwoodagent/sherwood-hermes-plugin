@@ -19,6 +19,7 @@ from .models import Agent
 from .rules import RuleViolation, check_caller_is_host, check_host_action, is_address, require
 from .runtime import FundRuntime, session_ids
 from .service import FundServiceError
+from .signed_cli import CLI_NOTE, register_agent_command
 from .store import FundNotFound, FundStoreError, scrub_paths
 from .units import UnitsError
 
@@ -111,6 +112,13 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
             agent, body = svc.approve_agent(fund_name, actor, who, tx_hash=tx_hash, caller_telegram_id=user)
             if agent.registered:
                 return f"{agent.name} is registered on the vault: it can claim topics and propose now."
+            if not rt.settings.host_cosigns:
+                # proposal_signer: agent: the vault owner is the host agent's CLI wallet.
+                return (
+                    f"Approved {agent.name}. The host agent registers it with the Sherwood CLI, whose wallet signs, "
+                    f"outside this chat:\n{register_agent_command(state.fund, agent)}\n"
+                    f"{CLI_NOTE}\nThen: /fund-approve {agent.name} <tx_hash>"
+                )
             return (
                 f"Approved {agent.name}. Sign registerAgent from the host wallet to finish:\n"
                 f"POST {svc.tx_builder_url}/prepare/register-agent {json.dumps(body)}\n"
@@ -119,6 +127,11 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
         # Authorize first; only then the credentialed app lookup and its state write.
         require(check_caller_is_host(state, user))
         require(check_host_action(state, actor))
+        if state.fund.open_deposits:
+            return (
+                "Deposits are open on this fund, nothing to approve: anyone can deposit from the "
+                "💰 Deposit or 🎟 Join button on /fund."
+            )
         if not address:
             ensure_member_address(rt, fund_name, who)  # the wallet the member linked in /tg/join, if any
         try:
