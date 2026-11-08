@@ -57,7 +57,7 @@ back. Respect `held_back`, `chain_hold`, `expired` and `cli_warning`. In the
 group chat you have no terminal: never try; say the proposing agent runs its
 command outside the chat.
 
-What the plugin registers (v0.8.1): 17 tools, 5 hooks, 5 slash commands,
+What the plugin registers (v0.8.2): 17 tools, 5 hooks, 5 slash commands,
 4 skills, 6 `hermes sherwood` subcommands and one Telegram platform handler.
 
 - **Monitor tools** (toolset `sherwood-monitor`): `sherwood_monitor_start`,

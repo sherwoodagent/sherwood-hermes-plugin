@@ -178,16 +178,48 @@ the review countdown and the booked coverage). The fund card shows
 after a veto or a settle. A vetoed card says the bond comes back at once; a
 settle receipt says the bond stays in escrow for the 14-day challenge window.
 
-The fund card's NAV and P&L come from the tg-card read (`GET
+The fund card's NAV, P&L and positions come from the tg-card read (`GET
 funds/<vault>/tg-card`). Every read stores a NAV snapshot in the fund state:
-total assets, share price, realized and unrealized P&L, idle assets and the
-read's `asOf`. P&L is share-price based: `(sharePrice - 1)` in bps, since a
-share starts at 1 asset, and +0.0% with no shares outstanding. `/fund` reads
-the chain first when the 30 s throttle allows. Authorization, the pitch flow
-and the other cards never trigger a read. When the read fails, the card shows
-the last snapshot and ends with "Last known NAV, as of HH:MM UTC.", or "NAV
-unavailable" when there has never been a snapshot, never a made-up 0.
-Positions show "none yet": the read has no positions list. Members counts chat
+the vault's cash (`nav.totalAssets`), share supply and decimals, realized and
+unrealized P&L, the read's `asOf`, and the active strategy (`activeProposal`).
+
+- **NAV.** The vault's `totalAssets()` counts only the cash it holds: a
+  strategy takes the capital out at execute. So NAV is that cash plus the
+  strategy's value, taken from the first of these the read has:
+  - `positionValue`, when `positionValueValid`;
+  - the sum of `positions[].investedAmount` (cost);
+  - the executed proposal's `maxCapital`, its cost ceiling (a Generic Call
+    clone has no positions).
+- **At cost.** On Robinhood Chain the PortfolioStrategy template has no
+  `positionValue()`, so the read returns null and a strategy counts at cost.
+  The NAV line then says "(at cost)" and P&L shows n/a.
+- **P&L** is NAV per share against 1, in bps, since a share starts at 1 asset.
+  It is not the read's `sharePriceDecimal`, which is cash-only. It shows
+  +0.0% with no shares outstanding.
+- **Positions.** With no strategy active, the block says "none yet". With one,
+  it lists the strategy's tokens:
+  - One token with a live value shows that value and its P&L.
+  - Otherwise each token shows at cost ("at cost"), because only
+    `investedAmount` is per token. With a live value, a last "Unrealized" row
+    carries the live value minus cost.
+  - A strategy with no positions shows one "Strategy #N … at cost (max
+    capital)" row.
+  - The "Cash" row comes last. It takes the rounding remainder, so the printed
+    rows add up to the printed NAV.
+- **Value unreadable.** The card shows "NAV ≥<cash>" with P&L n/a, "strategy
+  value unreadable" and a notice in two cases:
+  - a strategy is active and none of its value, positions or `maxCapital`
+    could be read;
+  - the read could not read the vault's proposals while redemptions are locked
+    (a proposal is open).
+
+  It does not show the cash alone as a loss.
+
+`/fund` reads the chain first when the 30 s throttle allows. Authorization,
+the pitch flow and the other cards never trigger a read. When the read fails,
+the card shows the last snapshot and ends with "Last known NAV, as of HH:MM
+UTC." With no usable snapshot (never read, a read without a NAV block, or a
+broken value), it shows "NAV unavailable", never a made-up 0. Members counts chat
 members who tapped 🎟 Join. With open deposits, a wallet that deposited from
 the app without joining is not counted, and the read lists no depositors. So
 when the vault has shares outstanding and nobody has joined, the line reads
@@ -213,7 +245,7 @@ Only Against counts. Silence = pass unless Against reaches 20% of shares before 
 [📊 View fund]
 ```
 
-"Size" compares the proposal's max capital with fund NAV.
+"Size" compares the proposal's max capital with fund NAV (cash plus deployed capital); past 999% it says ">999% of NAV".
 
 Callback data is `shfund:<action>:<arg>`, at most 64 bytes, routed by one
 `CallbackQueryHandler(pattern=r"^shfund:")` so Hermes' own buttons keep working:

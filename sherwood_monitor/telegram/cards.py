@@ -102,8 +102,10 @@ def parse_cb(data: str) -> tuple[str, str] | None:
 
 
 def fmt_amount(value: float) -> str:
-    """``3000`` -> ``3,000``; ``12.4`` -> ``12.4``; ``1234.567`` -> ``1,234.57``."""
+    """``3000`` -> ``3,000``; ``12.4`` -> ``12.4``; ``1234.567`` -> ``1,234.57``; not finite -> ``?``."""
     v = float(value or 0)
+    if not math.isfinite(v):
+        return "?"
     if abs(v - round(v)) < 1e-9:
         return f"{int(round(v)):,}"
     return f"{v:,.2f}".rstrip("0").rstrip(".")
@@ -161,12 +163,16 @@ def countdown(ends_at: int | None, now: float) -> str:
     return f"ends in {days}d {hours}h"
 
 
+GOAL_MAX_PCT = 999
+
+
 def goal_bar(max_capital: float, nav: float, cells: int = GOAL_CELLS) -> str:
-    """Proposal size against fund NAV: ``▮▮▮░░░░░░░ 30% of NAV``."""
-    if not nav or nav <= 0:
+    """Proposal size against fund NAV: ``▮▮▮░░░░░░░ 30% of NAV``; past 999% ``>999% of NAV``."""
+    if not nav or not math.isfinite(float(nav)) or nav <= 0 or not math.isfinite(float(max_capital)):
         return ""
     frac = float(max_capital) / float(nav)
-    return f"{bar(frac, cells)} {round(frac * 100):d}% of NAV"
+    pct = round(frac * 100)
+    return f"{bar(frac, cells)} {f'>{GOAL_MAX_PCT}' if pct > GOAL_MAX_PCT else pct}% of NAV"
 
 
 def status_chip(status: str) -> str:
@@ -327,8 +333,14 @@ def render_fund_card(
 ) -> tuple[str, InlineKeyboardMarkup]:
     current = time.time() if now is None else now
     if f.nav_stale and f.nav_as_of is None:
-        # The chain read failed and there is no earlier one: say so, never a made-up 0.
+        # No chain read has given a NAV yet (or the stored one was unusable): never a made-up 0.
         nav_line = "NAV <b>unavailable</b> · P&amp;L <b>n/a</b>"
+    elif f.nav_partial:
+        # A strategy holds capital whose value could not be read: the cash is only a floor.
+        nav_line = f"NAV <b>≥{fmt_amount(round(f.nav, 2))} {esc(f.nav_symbol)}</b> · P&amp;L <b>n/a</b>"
+    elif f.nav_at_cost:
+        # A strategy counted at what it invested: the market move is unknown, so no P&L.
+        nav_line = f"NAV <b>{fmt_amount(round(f.nav, 2))} {esc(f.nav_symbol)}</b> (at cost) · P&amp;L <b>n/a</b>"
     else:
         nav_line = (
             f"NAV <b>{fmt_amount(round(f.nav, 2))} {esc(f.nav_symbol)}</b>"
@@ -338,7 +350,10 @@ def render_fund_card(
     if f.positions:
         for pos in f.positions:
             pnl = f" ({fmt_pct(pos.pnl_bps, signed=True)})" if pos.pnl_bps is not None else ""
-            lines.append(f"• {esc(pos.symbol)} {fmt_amount(round(pos.value, 2))} {esc(f.nav_symbol)}{pnl}")
+            note = f" {esc(pos.note)}" if pos.note else ""
+            lines.append(f"• {esc(pos.symbol)} {fmt_amount(round(pos.value, 2))} {esc(f.nav_symbol)}{note}{pnl}")
+    elif f.nav_partial:
+        lines.append("• strategy value unreadable")
     else:
         lines.append("• none yet")
     if f.open_proposals:
@@ -356,7 +371,9 @@ def render_fund_card(
     lines.append("")
     agents = ", ".join(esc(a) for a in f.agents) if f.agents else "none"
     lines.append(f"{members_label(f)} · Agents {agents}")
-    notices = [n for n in (nav_notice(f, current), notice) if n]
+    partial = "NAV counts the vault's cash only: the active strategy's value could not be read." if (
+        f.nav_partial and not (f.nav_stale and f.nav_as_of is None)) else None
+    notices = [n for n in (nav_notice(f, current), partial, notice) if n]
     if notices:
         lines.append("")
         lines += [f"<i>{esc(n)}</i>" for n in notices]
@@ -388,9 +405,12 @@ def nav_notice(f: FundView, now: float) -> str | None:
     if not f.nav_stale:
         return None
     if f.nav_as_of is None:
-        return "NAV unavailable: the chain read failed. Try /fund again in a minute."
-    when = datetime.fromtimestamp(int(f.nav_as_of), tz=timezone.utc)
-    today = datetime.fromtimestamp(int(now), tz=timezone.utc).date()
+        return "NAV unavailable: no chain read has returned it yet. Try /fund again in a minute."
+    try:
+        when = datetime.fromtimestamp(int(f.nav_as_of), tz=timezone.utc)
+        today = datetime.fromtimestamp(int(now), tz=timezone.utc).date()
+    except (OverflowError, OSError, ValueError):  # a time no calendar holds: say last known, no time
+        return "Last known NAV."
     stamp = when.strftime("%H:%M") if when.date() == today else f"{when.strftime('%b')} {when.day} {when.strftime('%H:%M')}"
     return f"Last known NAV, as of {stamp} UTC."
 

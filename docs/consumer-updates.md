@@ -1,5 +1,39 @@
 # Consumer-repo updates for v0.8.1
 
+## Next: v0.8.2 (tag pending)
+
+The release workflow tags `v0.8.2` on the merge of the 0.8.2 release PR. Once
+it does, the consumer docs move their install pin to that sha, with the same
+edits as the 0.8.1 PRs below. Nothing else in the consumer docs changes. What
+0.8.2 changes for consumers:
+
+- **NAV includes deployed capital after execute.** The vault's `totalAssets()`
+  counts only the cash it holds: a PortfolioStrategy takes the capital out at
+  execute. 0.8.1 therefore showed, for example, "NAV 60 USDG · P&L -40.0%" for
+  a 100 USDG fund with 40 deployed. The card now adds the strategy's value:
+  its valid `positionValue`, else what it invested, else, for a strategy with
+  no positions such as a Generic Call clone, the proposal's `maxCapital`. On
+  Robinhood Chain the PortfolioStrategy has no `positionValue()`, so the
+  usual card there reads "NAV 100 USDG (at cost) · P&L n/a". When the read
+  cannot see the strategy at all, the card shows "NAV ≥<cash> · P&L n/a"
+  with a notice, never the cash alone as a loss. P&L is NAV per share
+  against 1.
+- **Positions block.** While a strategy is active, the card lists its tokens:
+  live value and P&L for one token with a live value, otherwise each "at cost"
+  (plus an "Unrealized" row when the value is live). A "Cash" row comes last
+  and absorbs rounding, so the rows add up to the NAV. "none yet" only shows
+  with no strategy.
+- **Hardening.** A broken read can no longer break the card or replace a newer
+  snapshot. That covers a NaN or millisecond `asOf`, a total too large to
+  print, and a read without a NAV block, which shows "NAV unavailable" rather
+  than 0. The older-read check compares blocks.
+- **Size bar cap.** A proposal's "Size … of NAV" bar says ">999%" instead of
+  printing absurd percentages.
+- **Unchanged:** tools, hooks, slash commands, `requires_env`, crons,
+  `MIN_CLI_VERSION` (`0.71.0`), and the network calls (the same tg-card read).
+
+## v0.8.1
+
 The `v0.8.1` tag points at `cedb3a9dee16ec7a8afc80c55374851b471d8230` (the
 merge of #33): `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.1 --jq .sha`.
 

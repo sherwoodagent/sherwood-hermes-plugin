@@ -80,9 +80,10 @@ def test_the_live_read_becomes_the_nav_snapshot(tmp_path, clock):
     assert nav == NavSnapshot(
         total_assets="100000000", total_assets_decimal="100", total_supply="100000000000000",
         share_price_decimal="1", idle_assets="100000000", realized_pnl_decimal="0", unrealized_pnl_decimal=None,
-        as_of=float(AS_OF), as_of_block="108757783", read_at=clock(),
+        as_of=float(AS_OF), as_of_block="108757783", read_at=clock(), asset_decimals=6, share_decimals=12,
     )
     assert nav.nav == 100 and nav.pnl_bps == 0 and nav.shares_outstanding
+    assert not nav.active_proposal_id and nav.position_rows() == []  # cash only: "none yet"
     # Persisted in the fund JSON, and read back the same.
     on_disk = json.loads((tmp_path / "funds" / "alpha-fund.json").read_text())
     assert on_disk["nav"]["total_assets_decimal"] == "100" and on_disk["schema_version"] == 1
@@ -125,7 +126,7 @@ def test_a_cached_read_of_an_older_block_never_replaces_a_newer_snapshot(tmp_pat
     svc.apply_chain_card("alpha-fund", older)
     assert svc.load("alpha-fund").nav.total_assets_decimal == "100"
     newer = card_with(asOf={"block": "108757800", "timestamp": str(AS_OF + 30)},
-                      nav={**LIVE["data"]["nav"], "totalAssetsDecimal": "101.5", "sharePriceDecimal": "1.015"})
+                      nav={**LIVE["data"]["nav"], "totalAssets": "101500000", "totalAssetsDecimal": "101.5"})
     svc.apply_chain_card("alpha-fund", newer)
     assert svc.load("alpha-fund").nav.total_assets_decimal == "101.5"
 
@@ -137,10 +138,12 @@ def test_the_view_carries_nav_pnl_and_supply(tmp_path, clock):
     svc = make_service(tmp_path, clock)
     view = fund_to_view(fund_dict(svc.load("alpha-fund")))
     assert (view.nav, view.pnl_bps, view.nav_as_of, view.nav_stale, view.shares_outstanding) == (0, 0, None, False, False)
-    svc.apply_chain_card("alpha-fund", card_with(nav={**LIVE["data"]["nav"], "sharePriceDecimal": "1.0123"}))
+    # P&L is NAV per share against 1 (101.23 USDG over 100 shares), not the read's cash-only sharePriceDecimal.
+    svc.apply_chain_card("alpha-fund", card_with(nav={**LIVE["data"]["nav"], "totalAssets": "101230000",
+                                                      "sharePriceDecimal": "1"}))
     st = svc.load("alpha-fund")
     view = fund_to_view(fund_dict(st))
-    assert (view.nav, view.pnl_bps, view.nav_as_of, view.nav_stale, view.shares_outstanding) == (100.0, 123, AS_OF, False, True)
+    assert (view.nav, view.pnl_bps, view.nav_as_of, view.nav_stale, view.shares_outstanding) == (101.23, 123, AS_OF, False, True)
     assert view.nav_symbol == "USDG" and view.deposits_open and view.positions == ()
     # Only the fund card's own read flags a snapshot stale: a failed read, or an old snapshot.
     assert fund_to_view(fund_dict(st, chain_failed=True)).nav_stale

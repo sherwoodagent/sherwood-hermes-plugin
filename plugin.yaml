@@ -1,6 +1,6 @@
 manifest_version: 2
 name: sherwood-monitor
-version: "0.8.1"
+version: "0.8.2"
 description: >-
   Bridges Sherwood fund events into Hermes (on-chain events; XMTP too for
   funds whose XMTP group is in Base's ENS record), and runs a group-chat fund:

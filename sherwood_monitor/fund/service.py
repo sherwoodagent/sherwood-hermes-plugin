@@ -29,10 +29,12 @@ from .models import (
     FundState,
     Leg,
     Member,
+    NavPosition,
     NavSnapshot,
     ProposalRecord,
     Review,
     SettleReceipt,
+    plausible_timestamp,
 )
 from .rules import RuleViolation, require
 from .signed_cli import propose_portfolio_command
@@ -742,9 +744,10 @@ class FundService:
         vetoThresholdBps; `fund.depositsOpen` (the vault's openDeposits and not
         the factory's depositsRestricted) replaces `open_deposits`: `true` at
         once, `false` only after two reads in a row (the app's rule read fails
-        closed). `nav` / `pnl` / `asOf` become the fund's NAV snapshot (what
-        the Telegram fund card shows), unless the stored one is from a later
-        block. Settles stay with `record_settle` (it needs the P&L).
+        closed). `nav` / `pnl` / `asOf` / `activeProposal` become the fund's
+        NAV snapshot (what the Telegram fund card shows: vault cash plus the
+        active strategy's value), unless the stored one is from a later block.
+        Settles stay with `record_settle` (it needs the P&L).
         """
         data = card.get("data", card) if isinstance(card, dict) else {}
         props = data.get("proposals") or {}
@@ -777,11 +780,8 @@ class FundService:
                 for m in state.members:
                     if m.address and m.address.lower() in deposit_order:
                         m.deposit_no = deposit_order[m.address.lower()]
-                if nav is not None:
-                    old = state.nav
-                    # A cached read of an older block never replaces a newer snapshot.
-                    if old is None or not (old.as_of and nav.as_of and nav.as_of < old.as_of):
-                        state.nav = nav
+                if nav is not None and _newer_or_same(state.nav, nav):
+                    state.nav = nav  # a cached read of an older block never replaces a newer one
 
             self.backend.update(fund, fund_mutate)
         state = self.backend.load(fund)
@@ -1018,22 +1018,26 @@ def _deposit_order(members: Any) -> dict[str, int]:
 
 
 def _nav_snapshot(data: dict[str, Any], now: float) -> NavSnapshot | None:
-    """The tg-card's `nav`, `pnl` and `asOf` blocks as a NavSnapshot stored at `now`.
+    """The tg-card's `nav`, `pnl`, `asOf` and `activeProposal` blocks as a NavSnapshot stored at `now`.
 
-    None when the read has no readable total assets (`nav.totalAssetsDecimal`, or
-    `nav.totalAssets` with `fund.assetDecimals`): a card without NAV leaves the
-    stored snapshot alone. Other fields are kept when they parse, else left None.
+    None when the read has no readable total assets (`nav.totalAssets` with
+    `fund.assetDecimals`, or `nav.totalAssetsDecimal`), or when a value would break the card
+    (a non-finite NAV): a card like that leaves the stored snapshot alone. Base units win
+    over the read's decimal text when both are there. `activeProposal` (an Executed
+    strategy) carries the capital `totalAssets` no longer counts: `positionValue` /
+    `positionValueValid` and `positions[]` (`investedAmount` per token, in asset units).
     """
     nav = data.get("nav")
     if not isinstance(nav, dict):
         return None
     fund_info = data.get("fund") if isinstance(data.get("fund"), dict) else {}
+    asset_decimals = _decimals(fund_info.get("assetDecimals"))
+    share_decimals = _decimals(fund_info.get("shareDecimals"))
     total = _base_units(nav.get("totalAssets"))
-    total_decimal = _decimal_text(nav.get("totalAssetsDecimal"))
-    if total_decimal is None and total is not None:
-        decimals = _opt_int(fund_info.get("assetDecimals"))
-        if decimals is not None and 0 <= decimals <= 36:
-            total_decimal = format_units(total, decimals)
+    if total is not None and asset_decimals is not None:
+        total_decimal: str | None = format_units(total, asset_decimals)
+    else:
+        total_decimal = _decimal_text(nav.get("totalAssetsDecimal"))
     if total_decimal is None:
         return None
     supply = _base_units(nav.get("totalSupply"))
@@ -1043,7 +1047,35 @@ def _nav_snapshot(data: dict[str, Any], now: float) -> NavSnapshot | None:
     as_of = data.get("asOf") if isinstance(data.get("asOf"), dict) else {}
     idle = _base_units(nav.get("idleAssets"))
     block = _base_units(as_of.get("block"))
-    return NavSnapshot(
+    active = data.get("activeProposal") if isinstance(data.get("activeProposal"), dict) else None
+    active_id = ""
+    position_value: int | None = None
+    valid: bool | None = None
+    positions: list[NavPosition] = []
+    max_capital: int | None = None
+    if active is not None:
+        active_id = str(active.get("id") or "").strip() or "?"
+        max_capital = _proposal_max_capital(data, active_id)
+        position_value = _base_units(active.get("positionValue"))
+        valid = active.get("positionValueValid") if isinstance(active.get("positionValueValid"), bool) else None
+        for row in active.get("positions") if isinstance(active.get("positions"), list) else []:
+            invested = _base_units(row.get("investedAmount")) if isinstance(row, dict) else None
+            if invested is None:
+                continue  # an unreadable row: the rest still price the strategy at cost
+            positions.append(NavPosition(
+                token=str(row.get("token") or ""),
+                symbol=str(row.get("symbol") or ""),
+                invested=str(invested),
+                token_amount=str(_base_units(row.get("tokenAmount")) or 0),
+                decimals=_decimals(row.get("decimals")),
+                target_weight_bps=_opt_int(row.get("targetWeightBps")) or 0,
+            ))
+    elif fund_info.get("redemptionsLocked") is True and any(
+            "the vault's proposals" in str(w).lower() for w in (data.get("warnings") or [])):
+        # The read could not read the proposals while one is open (redemptions lock from propose
+        # to settle): an executed strategy may hold capital we cannot see, so the cash is a floor.
+        active_id = "?"
+    snap = NavSnapshot(
         total_assets="" if total is None else str(total),
         total_assets_decimal=total_decimal,
         total_supply="" if supply is None else str(supply),
@@ -1051,10 +1083,49 @@ def _nav_snapshot(data: dict[str, Any], now: float) -> NavSnapshot | None:
         idle_assets=None if idle is None else str(idle),
         realized_pnl_decimal=_decimal_text(pnl.get("realizedDecimal")),
         unrealized_pnl_decimal=_decimal_text(pnl.get("unrealizedDecimal")),
-        as_of=_opt_float(as_of.get("timestamp")),
+        as_of=plausible_timestamp(as_of.get("timestamp")),
         as_of_block="" if block is None else str(block),
         read_at=float(now),
+        asset_decimals=asset_decimals,
+        share_decimals=share_decimals,
+        active_proposal_id=active_id,
+        position_value=None if position_value is None else str(position_value),
+        position_value_valid=valid,
+        positions=positions,
+        active_max_capital=None if max_capital is None else str(max_capital),
     )
+    try:
+        return snap.check()
+    except (ValueError, ArithmeticError) as exc:
+        _log.warning("tg-card NAV not stored: %s", exc)
+        return None
+
+
+def _proposal_max_capital(data: dict[str, Any], proposal_id: str) -> int | None:
+    """`maxCapital` of proposal `proposal_id` in the read's `proposals.open` / `recent` (asset base units).
+
+    The read exposes no pulled amount: execute moves at most the effective max capital (maxCapital,
+    scaled down when guardian coverage is partial), so this is the ceiling of what went out.
+    """
+    props = data.get("proposals") if isinstance(data.get("proposals"), dict) else {}
+    for key in ("open", "recent"):
+        for row in props.get(key) or []:
+            if isinstance(row, dict) and str(row.get("id", "")).strip() == proposal_id:
+                return _base_units(row.get("maxCapital")) or None
+    return None
+
+
+def _newer_or_same(old: NavSnapshot | None, new: NavSnapshot) -> bool:
+    """Whether `new` may replace `old`: not when both name a block and new's is lower (a cached read)."""
+    if old is None:
+        return True
+    old_block, new_block = _base_units(old.as_of_block), _base_units(new.as_of_block)
+    return old_block is None or new_block is None or new_block >= old_block
+
+
+def _decimals(value: Any) -> int | None:
+    n = _opt_int(value)
+    return n if n is not None and 0 <= n <= 36 else None
 
 
 def _base_units(value: Any) -> int | None:

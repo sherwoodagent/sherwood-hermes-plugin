@@ -1,7 +1,7 @@
-# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.1)
+# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.2)
 
 This is the disclosure for the Nous Hermes hackathon entry and for the Hermes
-plugin catalog (rule 13). It describes what the plugin does at v0.8.1, who
+plugin catalog (rule 13). It describes what the plugin does at v0.8.2, who
 signs what, what it reads, and what does not work yet.
 
 ## What it is
