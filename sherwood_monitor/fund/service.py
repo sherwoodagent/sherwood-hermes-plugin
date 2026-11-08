@@ -37,6 +37,13 @@ from .models import (
     plausible_timestamp,
 )
 from .rules import RuleViolation, require
+from .generic_call import (
+    generic_call_legs,
+    preview_generic_call,
+    propose_generic_call_command,
+    validate_generic_call_plan,
+    write_generic_call_plan,
+)
 from .signed_cli import propose_portfolio_command
 from .store import FundNotFound, FundStateBackend, FundStoreError, validate_fund_name
 from .txbuilder import DEFAULT_TX_BUILDER_URL, TxBuilderError, build_propose_body, build_propose_portfolio_body
@@ -454,6 +461,7 @@ class FundService:
         quote_usd_per_wood: str = "",
         bond_buffer_status: str = "",
         bond_buffer_note: str = "",
+        generic_call: dict[str, Any] | None = None,
     ) -> DraftResult:
         """Check every rule, record the draft, consume the claim, return the prepare payload."""
         now = self.clock()
@@ -462,8 +470,13 @@ class FundService:
 
         def mutate(state: FundState) -> DraftResult:
             state.claims = rules.active_claims(state, now)
+            plan: dict[str, Any] = {}
+            use_legs = legs
+            if generic_call:
+                plan = validate_generic_call_plan(generic_call, state.fund)
+                use_legs = generic_call_legs(max_capital)
             require(rules.check_draft(
-                state, agent, topic, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps, legs=legs, now=now
+                state, agent, topic, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps, legs=use_legs, now=now
             ))
             proposer = state.agent(agent)
             assert proposer is not None
@@ -472,7 +485,8 @@ class FundService:
                 id=f"p-{state.next_proposal_seq}",
                 proposer_agent=proposer.name,
                 thesis=thesis.strip(),
-                legs=legs,
+                legs=use_legs,
+                generic_call=plan,
                 max_capital=str(max_capital),
                 max_drawdown_bps=max_drawdown_bps,
                 bond_wood=str(bond_quote_wood or 0),
@@ -491,7 +505,12 @@ class FundService:
             state.proposals.append(record)
             state.claims = [c for c in state.claims if c.agent.lower() != proposer.name.lower()]
             bond = _bond_section(state, proposer, max_capital, bond_quote_wood, wood_balance)
-            if is_portfolio(record):
+            if plan:
+                prepare = preview_generic_call(
+                    state.fund, plan, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps,
+                    strategy_duration=strategy_duration,
+                )
+            elif is_portfolio(record):
                 prepare = self.portfolio_payload(state.fund, record, proposer=proposer.address, metadata_uri=metadata_uri)
             else:
                 prepare = self.propose_payload(state.fund, record, strategy=strategy, metadata_uri=metadata_uri)
@@ -525,8 +544,19 @@ class FundService:
             if not record.legs or int(record.max_capital or 0) <= 0:
                 raise RuleViolation(rules.deny("draft_not_ready", f"{record.proposer_agent} is still building {record.id}"))
             require(rules.check_cooldown(state, now))
+            if record.generic_call and not agent_signs:
+                raise RuleViolation(rules.deny(
+                    "draft_not_ready",
+                    "Generic Call is proposed with `sherwood strategy propose generic-call` under proposal_signer: agent. "
+                    "proposal_signer is host, which co-signs prepare/propose for a portfolio or raw calls, and there is no "
+                    "prepare route for this template. The draft stays a draft.",
+                ))
             if agent_signs:
-                record.propose_command = propose_portfolio_command(state.fund, record)
+                if record.generic_call:
+                    path = write_generic_call_plan(self.backend, state.fund.name, record)
+                    record.propose_command = propose_generic_call_command(state.fund, record, path)
+                else:
+                    record.propose_command = propose_portfolio_command(state.fund, record)
                 record.handed_out_at = None  # a fresh ship is listed again at once
             record.shipped_at = now
             record.shipped_by = str(caller_telegram_id or "")

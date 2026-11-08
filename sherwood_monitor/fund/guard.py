@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..session import current_caller
 from . import authz, rules
+from .rules import RuleViolation
 from .runtime import FundRuntime
 from .store import FundNotFound, default_state_dir, scrub_paths
 from .tools import GUARD_ERRORS, parse_draft_args
@@ -132,6 +133,8 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
                 legs=d.legs,
                 now=rt.service.clock(),
             )
+        except RuleViolation as exc:
+            return f"fund draft blocked ({exc.code}): {exc.reason}"
         except GUARD_ERRORS as exc:
             return f"fund draft blocked: cannot verify it against fund state ({exc})"
         if verdict.ok:

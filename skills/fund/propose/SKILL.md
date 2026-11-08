@@ -40,7 +40,22 @@ downside.
 Only with `proposal_signer: host`: a raw-calldata draft (legs with
 `target`, `data`, `value` and a `cap` each, from the CLI's
 `--calldata-only`) also works; the host co-signs it. With
-`proposal_signer: agent` only symbol + weight legs ship.
+`proposal_signer: agent`, symbol + weight legs or a generic-call plan ship.
+Raw calldata legs do not.
+
+- **Generic Call** (`template: "generic-call"`, `calls`, no `legs`):
+  `executeCalls`, `settleCalls`, `settlePatches`, `sweepTokens`. Each call is
+  `{target, data}` or `{target, signature, args}`; `value` must be 0. The
+  draft's `prepare` is an unsigned preview (`signed` false,
+  `execution_acceptance` false): chain, template address from the CLI address
+  book, targets, selectors, pull amount, limits, and the exit. It is not
+  `simulate_batch` and not acceptance. A non-core clone is unaudited: the
+  guardian fleet does not Approve it unattended, so execute can stay blocked
+  and the vault locked until a guardian Approves or the proposal is cancelled.
+  Needs the Sherwood CLI 0.104.0 or later and `proposal_signer: agent` (the
+  host signer has no prepare route; the draft stays a draft). A plan on this
+  fund's chain does not make a protocol from another chain executable here.
+  Do not quote a yield.
 
 ## The bond
 
@@ -69,8 +84,10 @@ Only with `proposal_signer: host`: a raw-calldata draft (legs with
 
 ## Order of calls (`proposal_signer: agent`, the open protocol)
 
-1. `fund_status`, then `fund_draft_proposal` with symbol + `weight_bps`
-   legs. The draft card posts in the group.
+1. `fund_status` (use `scope` for the chain, the vault, and which templates
+   `sherwood strategy list` actually printed), then `fund_draft_proposal`
+   with symbol + `weight_bps` legs or a generic-call `calls` plan. The draft
+   card posts in the group.
 2. Wait for the host's 🚀 Ship it. Never propose a draft the host has not
    shipped: shipping is the go-ahead (the plugin's rule; nothing on chain
    enforces it, so it is on you).

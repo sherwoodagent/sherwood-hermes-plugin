@@ -343,6 +343,10 @@ class ProposalRecord:
     # "" otherwise. fund_pending_commands stamps handed_out_at when it lists it.
     propose_command: str = ""
     handed_out_at: float | None = None
+    # Generic Call plan ({executeCalls, settleCalls, settlePatches, sweepTokens}), when this
+    # draft is one. Empty for a portfolio or a raw-calldata draft. The CLI compiles it; the
+    # plugin does not treat the stored plan as execution acceptance.
+    generic_call: dict[str, Any] = field(default_factory=dict)
     created_at: float = 0
     updated_at: float = 0
 
@@ -364,6 +368,8 @@ class ProposalRecord:
         for key in ("max_capital", "bond_wood"):
             if key in d:
                 d[key] = str(d[key])
+        plan = d.get("generic_call")
+        d["generic_call"] = plan if isinstance(plan, dict) else {}
         return cls(**d)
 
 
