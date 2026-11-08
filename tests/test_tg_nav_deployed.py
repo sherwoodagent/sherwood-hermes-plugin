@@ -29,6 +29,7 @@ from tests.fund_helpers import Clock, fund, host_agent  # noqa: E402
 
 LIVE = load_fixture("tg_card_open_usdg_100")
 EXECUTED = load_fixture("tg_card_executed_usdg_synthetic")
+GENERIC = load_fixture("tg_card_executed_generic_call_synthetic")
 AS_OF = 1794091159
 EXEC_AS_OF = AS_OF + 3600  # 23:39:19 UTC
 
@@ -73,7 +74,7 @@ def test_the_executed_read_counts_deployed_capital_and_lists_positions(svc, cloc
         "• TSLA 24 USDG at cost\n"
         "• NVDA 16 USDG at cost\n"
         "• Unrealized 0.6 USDG (+1.5%)\n"
-        "• USDG 60 USDG\n"
+        "• Cash 60 USDG\n"
         "\n"
         "Members 0 (depositors haven't tapped 🎟 Join yet) · Agents alpha"
     )
@@ -83,14 +84,21 @@ def test_the_position_rows_add_up_to_the_nav(svc, clock):
     for read in (EXECUTED, executed(positionValueValid=False), executed(positions=[executed()["data"]["activeProposal"]["positions"][0]])):
         svc.apply_chain_card("alpha-fund", read)
         view = fund_to_view(fund_dict(svc.load("alpha-fund")))
-        assert math.isclose(sum(p.value for p in view.positions), view.nav)
+        assert math.isclose(sum(p.value for p in view.positions), round(view.nav, 2))
 
 
-def test_an_unpriced_strategy_counts_at_cost(svc, clock):
-    svc.apply_chain_card("alpha-fund", executed(positionValueValid=False))
+@pytest.mark.parametrize("active", [
+    dict(positionValueValid=False),
+    # Robinhood Chain today: the PortfolioStrategy template has no positionValue(), so the read's
+    # call fails soft and both fields come back null (tg-card.ts .catch(() => null)).
+    dict(positionValue=None, positionValueValid=None),
+])
+def test_a_strategy_without_a_live_value_counts_at_cost_and_says_so(svc, clock, active):
+    svc.apply_chain_card("alpha-fund", executed(**active))
     t = card(svc, clock)
-    assert "NAV <b>100 USDG</b> · P&amp;L <b>+0.0%</b>" in t
-    assert "• TSLA 24 USDG at cost\n• NVDA 16 USDG at cost\n• USDG 60 USDG\n" in t and "Unrealized" not in t
+    # At cost the market move is unknown: no P&L, rather than a flat +0.0% whatever the market did.
+    assert "NAV <b>100 USDG</b> (at cost) · P&amp;L <b>n/a</b>" in t
+    assert "• TSLA 24 USDG at cost\n• NVDA 16 USDG at cost\n• Cash 60 USDG\n" in t and "Unrealized" not in t
 
 
 def test_a_one_token_strategy_shows_its_live_value(svc, clock):
@@ -98,18 +106,42 @@ def test_a_one_token_strategy_shows_its_live_value(svc, clock):
                                                           "investedAmount": "40000000", "symbol": None}])
     svc.apply_chain_card("alpha-fund", one)
     t = card(svc, clock)
-    assert "• 0xa1a1…a1a1 40.6 USDG (+1.5%)\n• USDG 60 USDG\n" in t  # no symbol: the short token address
+    assert "• 0xa1a1…a1a1 40.6 USDG (+1.5%)\n• Cash 60 USDG\n" in t  # no symbol: the short token address
 
 
 def test_a_strategy_whose_value_cannot_be_read_is_a_floor_not_a_loss(svc, clock):
-    """activeProposal present, positionValue and positions both failed soft: the cash is not the NAV."""
-    svc.apply_chain_card("alpha-fund", executed(positionValue=None, positionValueValid=None, positions=None))
+    """activeProposal present; positionValue, positions and the proposal row (its maxCapital) all
+    unreadable: the cash is not the NAV."""
+    c = executed(positionValue=None, positionValueValid=None, positions=None)
+    c["data"]["proposals"] = {"count": "1", "open": [], "recent": []}
+    svc.apply_chain_card("alpha-fund", c)
     snap = svc.load("alpha-fund").nav
     assert snap.nav_partial and snap.pnl_bps == 0
     t = card(svc, clock)
     assert "NAV <b>≥60 USDG</b> · P&amp;L <b>n/a</b>" in t and "-40" not in t
     assert "• strategy value unreadable" in t
     assert t.endswith("<i>NAV counts the vault's cash only: the active strategy's value could not be read.</i>")
+
+
+def test_a_generic_call_strategy_counts_at_its_max_capital(svc, clock):
+    """SYNTHETIC fixture: a Generic Call clone (#2) pulled 5 of 100 USDG. The read returns
+    positionValue and positions null (the clone has neither function); the executed proposal's
+    maxCapital is the cost. 0.8.2's first head rendered "NAV ≥95"; 0.8.1 "NAV 95 · -5.0%"."""
+    svc.apply_chain_card("alpha-fund", GENERIC)
+    snap = svc.load("alpha-fund").nav
+    assert (snap.active_proposal_id, snap.active_max_capital, snap.positions) == ("2", "5000000", [])
+    assert snap.at_cost and not snap.nav_partial and snap.nav == 100
+    t = card(svc, clock)
+    assert "NAV <b>100 USDG</b> (at cost) · P&amp;L <b>n/a</b>" in t and "-5.0%" not in t
+    assert "<b>Positions</b>\n• Strategy #2 5 USDG at cost (max capital)\n• Cash 95 USDG\n" in t
+
+
+def test_a_generic_call_without_its_proposal_row_is_a_floor(svc, clock):
+    c = copy.deepcopy(GENERIC)
+    c["data"]["proposals"] = {"count": "2", "open": [], "recent": []}  # the row (and its maxCapital) unread
+    svc.apply_chain_card("alpha-fund", c)
+    t = card(svc, clock)
+    assert "NAV <b>≥95 USDG</b> · P&amp;L <b>n/a</b>" in t and "• strategy value unreadable" in t
 
 
 def test_a_draft_is_sized_against_the_whole_nav(svc, clock):

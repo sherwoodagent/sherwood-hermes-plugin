@@ -197,6 +197,7 @@ def fund_to_view(fund: Any, proposals: Iterable[Any] | None = None) -> FundView:
         nav_as_of=_int_or_none(_get(fund, "nav_as_of")),
         nav_stale=_get(fund, "nav_stale", default=False) is True,
         nav_partial=_get(fund, "nav_partial", default=False) is True,
+        nav_at_cost=_get(fund, "nav_at_cost", default=False) is True,
         shares_outstanding=_get(fund, "shares_outstanding", default=False) is True,
     )
 
@@ -534,7 +535,7 @@ def _nav_fields(state: FundState, *, now: float | None, chain_failed: bool) -> d
     fields: dict[str, Any] | None = None
     if snap is not None:
         try:
-            fields = _snapshot_fields(snap, state.fund.asset)
+            fields = _snapshot_fields(snap)
         except (ArithmeticError, TypeError, ValueError) as exc:  # a bad stored value never breaks a lookup
             _log.warning("fund %s: stored NAV snapshot ignored: %s", state.fund.name, exc)
     if snap is None or fields is None:
@@ -545,11 +546,11 @@ def _nav_fields(state: FundState, *, now: float | None, chain_failed: bool) -> d
     return fields
 
 
-def _snapshot_fields(snap: Any, asset: str) -> dict[str, Any]:
+def _snapshot_fields(snap: Any) -> dict[str, Any]:
     nav, taken_at = float(snap.nav), float(snap.taken_at)
     if not (math.isfinite(nav) and math.isfinite(taken_at)):
         raise ValueError("non-finite NAV or time")
-    rows = [dict(r, symbol=asset) if r.get("cash") else r for r in snap.position_rows()]
+    rows = snap.position_rows()
     if not all(math.isfinite(r["value"]) for r in rows):
         raise ValueError("non-finite position value")
     return {
@@ -557,9 +558,21 @@ def _snapshot_fields(snap: Any, asset: str) -> dict[str, Any]:
         "pnl_bps": snap.pnl_bps,
         "nav_as_of": int(taken_at) or None,
         "nav_partial": snap.nav_partial,
+        "nav_at_cost": snap.at_cost,
         "shares_outstanding": snap.shares_outstanding,
-        "positions": [{k: v for k, v in r.items() if k != "cash"} for r in rows],
+        "positions": _card_rows(rows, nav),
     }
+
+
+def _card_rows(rows: list[dict[str, Any]], nav: float) -> list[dict[str, Any]]:
+    """Position rows as the card prints them (2 decimals). The vault's cash row, last, is
+    labelled "Cash" and takes the rounding remainder, so the printed rows add up to the
+    printed NAV (three 13.333333 rows and 60 cash: 13.33 x 3 + 60.01 = 100)."""
+    out = [{k: v for k, v in r.items() if k != "cash"} for r in rows if not r.get("cash")]
+    if any(r.get("cash") for r in rows):
+        shown = sum(round(r["value"], 2) for r in out)
+        out.append({"symbol": "Cash", "value": round(round(nav, 2) - shown, 2)})
+    return out
 
 
 def _receipt_symbol(record: ProposalRecord | None) -> str:

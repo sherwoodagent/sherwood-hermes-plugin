@@ -132,6 +132,8 @@ class FundView:
     nav_stale: bool = False
     # A strategy is active and its value could not be read: NAV is the vault's cash only (a floor).
     nav_partial: bool = False
+    # A strategy is active and counted at what it invested (no live value): NAV says "(at cost)", P&L n/a.
+    nav_at_cost: bool = False
     # The same read says the vault has shares outstanding: someone deposited, joined or not.
     shares_outstanding: bool = False
 

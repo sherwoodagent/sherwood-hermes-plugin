@@ -184,20 +184,36 @@ the vault's cash (`nav.totalAssets`), share supply and decimals, realized and
 unrealized P&L, the read's `asOf`, and the active strategy (`activeProposal`).
 
 - **NAV.** The vault's `totalAssets()` counts only the cash it holds: a
-  PortfolioStrategy takes the capital out at execute. So NAV is that cash plus
-  the strategy's `positionValue` when `positionValueValid`, else what it
-  invested (the sum of `positions[].investedAmount`).
+  strategy takes the capital out at execute. So NAV is that cash plus the
+  strategy's value, taken from the first of these the read has:
+  - `positionValue`, when `positionValueValid`;
+  - the sum of `positions[].investedAmount` (cost);
+  - the executed proposal's `maxCapital`, its cost ceiling (a Generic Call
+    clone has no positions).
+- **At cost.** On Robinhood Chain the PortfolioStrategy template has no
+  `positionValue()`, so the read returns null and a strategy counts at cost.
+  The NAV line then says "(at cost)" and P&L shows n/a.
 - **P&L** is NAV per share against 1, in bps, since a share starts at 1 asset.
   It is not the read's `sharePriceDecimal`, which is cash-only. It shows
   +0.0% with no shares outstanding.
 - **Positions.** With no strategy active, the block says "none yet". With one,
-  it lists the strategy's tokens. One token shows its live value and P&L.
-  Several tokens show each at cost ("at cost"), because only `investedAmount`
-  is per token. A last "Unrealized" row then carries the live value minus
-  cost. The vault's cash comes last, so the rows add up to NAV.
-- **Value unreadable.** If a strategy is active and neither its value nor its
-  positions could be read, the card shows "NAV ≥<cash>" with P&L n/a and a
-  notice. It never shows the cash alone as a loss.
+  it lists the strategy's tokens:
+  - One token with a live value shows that value and its P&L.
+  - Otherwise each token shows at cost ("at cost"), because only
+    `investedAmount` is per token. With a live value, a last "Unrealized" row
+    carries the live value minus cost.
+  - A strategy with no positions shows one "Strategy #N … at cost (max
+    capital)" row.
+  - The "Cash" row comes last. It takes the rounding remainder, so the printed
+    rows add up to the printed NAV.
+- **Value unreadable.** The card shows "NAV ≥<cash>" with P&L n/a, "strategy
+  value unreadable" and a notice in two cases:
+  - a strategy is active and none of its value, positions or `maxCapital`
+    could be read;
+  - the read could not read the vault's proposals while redemptions are locked
+    (a proposal is open).
+
+  It does not show the cash alone as a loss.
 
 `/fund` reads the chain first when the 30 s throttle allows. Authorization,
 the pitch flow and the other cards never trigger a read. When the read fails,

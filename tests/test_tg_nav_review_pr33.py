@@ -72,7 +72,7 @@ def test_an_active_strategy_counts_its_capital_and_shows_its_position(tmp_path):
     t = card_text(svc, clock)
     assert "NAV <b>100.5 USDG</b> · P&amp;L <b>+0.5%</b>" in t
     # One token: its live value and P&L (40.5 / 40 = +125 bps, printed half-even as +1.2%), then the cash.
-    assert "<b>Positions</b>\n• TSLA 40.5 USDG (+1.2%)\n• USDG 60 USDG\n" in t
+    assert "<b>Positions</b>\n• TSLA 40.5 USDG (+1.2%)\n• Cash 60 USDG\n" in t
     assert "none yet" not in t
 
 

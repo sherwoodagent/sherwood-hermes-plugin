@@ -1,0 +1,144 @@
+{
+  "success": true,
+  "data": {
+    "vault": "0x2fD6056d9326e07Eec9Ba4499078C328E4F38b4A",
+    "chainId": 4663,
+    "asOf": {
+      "block": "108829783",
+      "timestamp": "1794098359",
+      "iso": "2026-11-08T00:39:19.000Z"
+    },
+    "fund": {
+      "address": "0x2fD6056d9326e07Eec9Ba4499078C328E4F38b4A",
+      "asset": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
+      "assetSymbol": "USDG",
+      "assetDecimals": 6,
+      "totalAssets": "95000000",
+      "totalSupply": "100000000000000",
+      "shareDecimals": 12,
+      "owner": "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407",
+      "governor": "0x52f0280ee76517A273038590C46E2fB2b6b9C7CE",
+      "redemptionsLocked": true,
+      "paused": false,
+      "agentFeeBps": "500",
+      "openDeposits": true,
+      "depositsRestricted": false,
+      "depositsOpen": true,
+      "ownerOnlyProposals": false
+    },
+    "nav": {
+      "totalAssets": "95000000",
+      "totalAssetsDecimal": "95",
+      "totalSupply": "100000000000000",
+      "sharePrice": "950000",
+      "sharePriceDecimal": "0.95",
+      "idleAssets": "95000000"
+    },
+    "pnl": {
+      "realized": "0",
+      "realizedDecimal": "0",
+      "unrealized": null,
+      "unrealizedDecimal": null
+    },
+    "activeProposal": {
+      "id": "2",
+      "strategy": "0x6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c",
+      "positionValue": null,
+      "positionValueValid": null,
+      "positions": null
+    },
+    "proposals": {
+      "count": "2",
+      "open": [
+        {
+          "id": "2",
+          "state": "Executed",
+          "proposer": "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407",
+          "strategy": "0x6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c",
+          "metadataURI": "",
+          "votesAgainst": "0",
+          "votableSupply": "100000000000000",
+          "againstBps": 0,
+          "vetoThresholdBps": 2000,
+          "vetoThresholdReached": false,
+          "voteEnd": "1794095959",
+          "voteEndIso": null,
+          "secondsToVoteEnd": 0,
+          "reviewEnd": "1794097699",
+          "executeBy": "1794184159",
+          "executedAt": "1794097759",
+          "strategyDuration": "86400",
+          "maxCapital": "5000000",
+          "maxDrawdownBps": 1000,
+          "proposerBondWood": "0",
+          "requiredCoverage": "1750000",
+          "review": null,
+          "nextAction": null
+        }
+      ],
+      "recent": [
+        {
+          "id": "2",
+          "state": "Executed",
+          "proposer": "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407",
+          "strategy": "0x6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c6c",
+          "metadataURI": "",
+          "votesAgainst": "0",
+          "votableSupply": "100000000000000",
+          "againstBps": 0,
+          "vetoThresholdBps": 2000,
+          "vetoThresholdReached": false,
+          "voteEnd": "1794095959",
+          "voteEndIso": null,
+          "secondsToVoteEnd": 0,
+          "reviewEnd": "1794097699",
+          "executeBy": "1794184159",
+          "executedAt": "1794097759",
+          "strategyDuration": "86400",
+          "maxCapital": "5000000",
+          "maxDrawdownBps": 1000,
+          "proposerBondWood": "0",
+          "requiredCoverage": "1750000",
+          "review": null,
+          "nextAction": null
+        }
+      ]
+    },
+    "settlements": {
+      "available": true,
+      "complete": true,
+      "fromBlock": "81707343",
+      "toBlock": "108757783",
+      "items": []
+    },
+    "members": {
+      "available": true,
+      "approved": [],
+      "truncated": false,
+      "checked": []
+    },
+    "agents": [
+      "0x6A006B1de90362b31DA41CA0ebBDD8248E8EF407"
+    ],
+    "governor": {
+      "votingPeriod": "1800",
+      "vetoThresholdBps": "2000",
+      "executionWindow": "86400",
+      "cooldownPeriod": "3600"
+    },
+    "proposeGate": {
+      "openProposals": "1",
+      "cooldownUntil": "0",
+      "cooldownUntilIso": null,
+      "secondsToCooldownEnd": 0,
+      "ready": false
+    },
+    "warnings": []
+  },
+  "meta": {
+    "command": "funds.tgCard",
+    "chainId": 4663,
+    "timestamp": "2026-11-08T00:39:20.146Z"
+  },
+  "_synthetic": "Built from tg_card_open_usdg_100.json in the tg-card.ts shape: a Generic Call proposal (#2, maxCapital 5 USDG) executed and pulled 5 USDG; the clone has no positionValue() / getAllocations(), so the read returns nulls for both."
+}

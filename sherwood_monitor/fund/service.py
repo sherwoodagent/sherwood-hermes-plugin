@@ -1052,8 +1052,10 @@ def _nav_snapshot(data: dict[str, Any], now: float) -> NavSnapshot | None:
     position_value: int | None = None
     valid: bool | None = None
     positions: list[NavPosition] = []
+    max_capital: int | None = None
     if active is not None:
         active_id = str(active.get("id") or "").strip() or "?"
+        max_capital = _proposal_max_capital(data, active_id)
         position_value = _base_units(active.get("positionValue"))
         valid = active.get("positionValueValid") if isinstance(active.get("positionValueValid"), bool) else None
         for row in active.get("positions") if isinstance(active.get("positions"), list) else []:
@@ -1068,6 +1070,11 @@ def _nav_snapshot(data: dict[str, Any], now: float) -> NavSnapshot | None:
                 decimals=_decimals(row.get("decimals")),
                 target_weight_bps=_opt_int(row.get("targetWeightBps")) or 0,
             ))
+    elif fund_info.get("redemptionsLocked") is True and any(
+            "the vault's proposals" in str(w).lower() for w in (data.get("warnings") or [])):
+        # The read could not read the proposals while one is open (redemptions lock from propose
+        # to settle): an executed strategy may hold capital we cannot see, so the cash is a floor.
+        active_id = "?"
     snap = NavSnapshot(
         total_assets="" if total is None else str(total),
         total_assets_decimal=total_decimal,
@@ -1085,12 +1092,27 @@ def _nav_snapshot(data: dict[str, Any], now: float) -> NavSnapshot | None:
         position_value=None if position_value is None else str(position_value),
         position_value_valid=valid,
         positions=positions,
+        active_max_capital=None if max_capital is None else str(max_capital),
     )
     try:
         return snap.check()
     except (ValueError, ArithmeticError) as exc:
         _log.warning("tg-card NAV not stored: %s", exc)
         return None
+
+
+def _proposal_max_capital(data: dict[str, Any], proposal_id: str) -> int | None:
+    """`maxCapital` of proposal `proposal_id` in the read's `proposals.open` / `recent` (asset base units).
+
+    The read exposes no pulled amount: execute moves at most the effective max capital (maxCapital,
+    scaled down when guardian coverage is partial), so this is the ceiling of what went out.
+    """
+    props = data.get("proposals") if isinstance(data.get("proposals"), dict) else {}
+    for key in ("open", "recent"):
+        for row in props.get(key) or []:
+            if isinstance(row, dict) and str(row.get("id", "")).strip() == proposal_id:
+                return _base_units(row.get("maxCapital")) or None
+    return None
 
 
 def _newer_or_same(old: NavSnapshot | None, new: NavSnapshot) -> bool:

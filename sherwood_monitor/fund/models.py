@@ -511,6 +511,9 @@ class NavSnapshot:
     position_value: str | None = None  # the strategy's live value, asset base units
     position_value_valid: bool | None = None  # its oracle prices were good
     positions: list[NavPosition] = field(default_factory=list)
+    # The executed proposal's maxCapital (asset base units, from the read's proposals list): what a
+    # strategy with no positions and no live value (a Generic Call clone) is counted at.
+    active_max_capital: str | None = None
 
     # -- derived -------------------------------------------------------------------------
     @property
@@ -528,19 +531,31 @@ class NavSnapshot:
 
     @property
     def deployed_units(self) -> int | None:
-        """Capital the active strategy holds: its live value, else its cost; 0 with no strategy;
-        None when a strategy is active but neither figure was readable."""
+        """Capital the active strategy holds: its live value, else its cost (the positions'
+        `investedAmount`, else the proposal's maxCapital); 0 with no strategy; None when a
+        strategy is active and none of those was readable."""
         if not self.active_proposal_id:
             return 0
         live = self.live_value_units
         if live is not None:
             return live
-        return self.invested_units if self.positions else None
+        if self.positions:
+            return self.invested_units
+        return _units(self.active_max_capital) or None
 
     @property
     def nav_partial(self) -> bool:
-        """A strategy is active and its value is unknown: NAV would be the vault's cash only."""
+        """A strategy is active and its value is unknown: NAV would be the vault's cash only.
+        Also set when the read could not read the proposals while one is open (`active_proposal_id`
+        "?" with no positions)."""
         return self.deployed_units is None
+
+    @property
+    def at_cost(self) -> bool:
+        """A strategy is active and counted at what it invested: no valid live value. On Robinhood
+        Chain the PortfolioStrategy has no `positionValue()`, so this is the usual case there."""
+        return (bool(self.active_proposal_id) and self.live_value_units is None
+                and bool(self.positions or _units(self.active_max_capital)))
 
     @property
     def nav(self) -> Decimal:
@@ -609,10 +624,15 @@ class NavSnapshot:
         else:
             for p in self.positions:
                 rows.append({"symbol": p.label, "value": (_units(p.invested) or 0) / scale, "note": "at cost"})
+            strategy = f"Strategy #{self.active_proposal_id}"
             if live is not None and self.positions:
                 rows.append({"symbol": "Unrealized", "value": (live - cost) / scale, "pnl_bps": _ratio_bps(live, cost)})
             elif live is not None:
-                rows.append({"symbol": "Strategy", "value": live / scale})
+                rows.append({"symbol": strategy, "value": live / scale})
+            elif not self.positions and _units(self.active_max_capital):
+                # No positions, no live value (a Generic Call clone): the cap it could pull.
+                rows.append({"symbol": strategy, "value": (_units(self.active_max_capital) or 0) / scale,
+                             "note": "at cost (max capital)"})
         cash = self.cash_units
         if cash and rows:
             rows.append({"symbol": "", "value": cash / scale, "cash": True})
@@ -629,7 +649,7 @@ class NavSnapshot:
                 d[key] = "" if d.get(key) is None else str(d[key])
             d["total_assets_decimal"] = str(d.get("total_assets_decimal") or "0")
             for key in ("share_price_decimal", "idle_assets", "realized_pnl_decimal", "unrealized_pnl_decimal",
-                        "position_value"):
+                        "position_value", "active_max_capital"):
                 if d.get(key) is not None:
                     d[key] = str(d[key])
             if d.get("as_of") is not None:

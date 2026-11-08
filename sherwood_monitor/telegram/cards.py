@@ -338,6 +338,9 @@ def render_fund_card(
     elif f.nav_partial:
         # A strategy holds capital whose value could not be read: the cash is only a floor.
         nav_line = f"NAV <b>≥{fmt_amount(round(f.nav, 2))} {esc(f.nav_symbol)}</b> · P&amp;L <b>n/a</b>"
+    elif f.nav_at_cost:
+        # A strategy counted at what it invested: the market move is unknown, so no P&L.
+        nav_line = f"NAV <b>{fmt_amount(round(f.nav, 2))} {esc(f.nav_symbol)}</b> (at cost) · P&amp;L <b>n/a</b>"
     else:
         nav_line = (
             f"NAV <b>{fmt_amount(round(f.nav, 2))} {esc(f.nav_symbol)}</b>"
