@@ -287,6 +287,40 @@ def test_a_member_cannot_ship_and_the_host_signer_leaves_the_draft(agent_ctx, tm
     assert host_svc.load("alpha-fund").proposal(drafted["proposal"]["id"]).shipped_at is None
 
 
+def test_the_host_signer_refuses_a_generic_call_draft_and_keeps_the_slot_free(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, HOST_CFG)  # proposal_signer defaults to host
+    assert ctx.call_tool("fund_setup", SETUP)["created"]
+    hook = ctx.hooks["pre_tool_call"][0]
+    ctx.call_tool("fund_claim_topic", {"topic": "custom route"})
+    args = {
+        "topic": "custom route", "thesis": "a custom call", "template": "generic-call", "calls": plan(),
+        "max_capital": "100", "max_drawdown_bps": 1000, "strategy_duration_seconds": 3600,
+    }
+    blocked = asyncio.run(hook(tool_name="fund_draft_proposal", args=args))
+    assert blocked["action"] == "block" and "agent_signer_only" in blocked["message"]
+    assert "proposal_signer: agent" in blocked["message"]
+    drafted = ctx.call_tool("fund_draft_proposal", args)
+    assert drafted["ok"] is False and drafted["code"] == "agent_signer_only"
+    assert "no prepare route" in drafted["error"]
+    status = ctx.call_tool("fund_status")
+    assert status["open_proposals"] == []  # nothing holds the open-proposal slot
+    # The claim is still the agent's, so it can draft the topic as a portfolio instead.
+    assert [c["topic"] for c in status["claims"]] == ["custom route"]
+
+
+def test_a_service_draft_under_the_host_signer_is_refused(tmp_path):
+    svc = _service(tmp_path, signer="host")
+    svc.create_fund(fund(), Agent(name="alpha", identity_id="101", address=HOST_ADDR))
+    svc.claim_topic("alpha-fund", "alpha", "custom route")
+    with pytest.raises(RuleViolation) as exc:
+        svc.draft_proposal(
+            "alpha-fund", "alpha", topic="custom route", thesis="t", legs=[], max_capital=100_000_000,
+            max_drawdown_bps=1000, strategy_duration=3600, generic_call=plan(),
+        )
+    assert exc.value.code == "agent_signer_only"
+    assert svc.load("alpha-fund").proposals == []
+
+
 def test_pending_generic_call_needs_cli_0_104_and_a_card_timeout_holds_it(agent_ctx, tmp_path, monkeypatch):
     drafted = _draft(agent_ctx, plan())
     _service(tmp_path).ship_draft("alpha-fund", drafted["proposal"]["id"], caller_telegram_id="900", agent_signs=True)

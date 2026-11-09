@@ -66,6 +66,21 @@ EXIT_NOTE = (
     "The CLI warns never to leave a patched sell's minimum at zero. This preview does not prove the "
     "calls return the asset."
 )
+# proposal_signer: host co-signs prepare/propose for a portfolio or raw calls from a signing link.
+# There is no prepare route for this template, so a Generic Call draft could never ship there.
+HOST_SIGNER_REFUSAL = (
+    "Generic Call is proposed with `sherwood strategy propose generic-call` under proposal_signer: agent. "
+    "This fund's proposal_signer is host, which co-signs prepare/propose for a portfolio or raw calls, and "
+    "there is no prepare route for this template"
+)
+
+
+def require_agent_signer(proposal_signer: str) -> None:
+    """A Generic Call draft only makes sense where the agent's own CLI wallet proposes it."""
+    if proposal_signer != "agent":
+        _fail("agent_signer_only", HOST_SIGNER_REFUSAL + ", so no draft was recorded and the topic stays free.")
+
+
 QUOTE_FLOOR_NOTE = (
     "raw balance at settle, no price floor; frozen at propose, not a live quote; unsafe as a sell minimum"
 )

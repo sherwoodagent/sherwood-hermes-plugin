@@ -38,7 +38,9 @@ from .models import (
 )
 from .rules import RuleViolation, require
 from .generic_call import (
+    HOST_SIGNER_REFUSAL,
     generic_call_legs,
+    require_agent_signer,
     preview_generic_call,
     propose_generic_call_command,
     validate_generic_call_plan,
@@ -483,6 +485,7 @@ class FundService:
             plan: dict[str, Any] = {}
             use_legs = legs
             if generic_call:
+                require_agent_signer(self.proposal_signer)
                 plan = validate_generic_call_plan(generic_call, state.fund, pull_amount=max_capital)
                 use_legs = generic_call_legs(max_capital)
             require(rules.check_draft(
@@ -555,12 +558,7 @@ class FundService:
                 raise RuleViolation(rules.deny("draft_not_ready", f"{record.proposer_agent} is still building {record.id}"))
             require(rules.check_cooldown(state, now))
             if record.generic_call and not agent_signs:
-                raise RuleViolation(rules.deny(
-                    "draft_not_ready",
-                    "Generic Call is proposed with `sherwood strategy propose generic-call` under proposal_signer: agent. "
-                    "proposal_signer is host, which co-signs prepare/propose for a portfolio or raw calls, and there is no "
-                    "prepare route for this template. The draft stays a draft.",
-                ))
+                raise RuleViolation(rules.deny("draft_not_ready", HOST_SIGNER_REFUSAL + ". The draft stays a draft."))
             if agent_signs:
                 if record.generic_call:
                     path = write_generic_call_plan(self.backend, state.fund.name, record)

@@ -52,8 +52,10 @@ Raw calldata legs do not.
   `simulate_batch` and not acceptance. A non-core clone is unaudited: the
   guardian fleet does not Approve it unattended, so execute can stay blocked
   and the vault locked until a guardian Approves or the proposal is cancelled.
-  Needs the Sherwood CLI 0.104.0 or later and `proposal_signer: agent` (the
-  host signer has no prepare route; the draft stays a draft). A plan on this
+  Needs the Sherwood CLI 0.104.0 or later and `proposal_signer: agent`. Under
+  `proposal_signer: host` there is no prepare route for this template, so
+  `fund_draft_proposal` refuses it (`agent_signer_only`) and records nothing:
+  draft the topic as a portfolio, or release the claim. A plan on this
   fund's chain does not make a protocol from another chain executable here.
   Do not quote a yield.
 

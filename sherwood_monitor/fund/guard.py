@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ..session import current_caller
 from . import authz, rules
+from .generic_call import require_agent_signer
 from .rules import RuleViolation
 from .runtime import FundRuntime
 from .store import FundNotFound, default_state_dir, scrub_paths
@@ -124,6 +125,8 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
             fund = rt.fund_for((args or {}).get("fund"))
             state = rt.service.load(fund)
             d = parse_draft_args(args or {}, state)
+            if d.generic_call:
+                require_agent_signer(rt.service.proposal_signer)
             verdict = rules.check_draft(
                 state,
                 rt.agent_name(),

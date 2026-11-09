@@ -833,8 +833,10 @@ class FundTelegramBridge:
                 name, draft_id, caller_telegram_id=str(by_tg_id), agent_signs=not self.settings.host_cosigns
             )
         except RuleViolation as exc:
-            if exc.code == "draft_not_ready":
+            if exc.code == "draft_not_ready" and "still building" in exc.reason:
                 raise FundActionError(f"Not ready: {exc.reason}. Ship once the draft shows its legs.") from exc
+            if exc.code == "draft_not_ready":
+                raise FundActionError(f"Not ready: {exc.reason}") from exc
             raise FundActionError(exc.reason) from exc
         if self.settings.host_cosigns:
             return f"🚀 Shipped #{record.id}. Tap ✍️ Co-sign to sign the proposal in your browser."
