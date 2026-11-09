@@ -956,6 +956,18 @@ def test_nav_100_with_40_invested_is_at_cost_not_a_loss(tmp_path):
     assert stale["nav_stale"] is True and stale["nav_partial"] is True and stale["pnl_bps"] == 0
 
 
+# -- the pitch skill keeps the official stock-token list (M7) ----------------------------------------
+
+
+def test_the_pitch_skill_keeps_the_stock_token_list_rule_beside_generic_call():
+    text = (Path(__file__).parent.parent / "skills" / "fund" / "pitch" / "SKILL.md").read_text()
+    instrument = " ".join(text.split("**The instrument.**", 1)[1].split("- **The number.**", 1)[0].split())
+    assert "only assets on the Robinhood Chain stock-token list" in instrument
+    assert "say so and stop: we do not trade it" in instrument
+    assert "generic-call" in instrument
+    assert "Don't pitch tokens off the stock-token list" in text
+
+
 # -- register() in an empty home (an import check, not a cold install) ---------------------------
 
 
