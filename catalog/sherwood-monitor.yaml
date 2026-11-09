@@ -60,7 +60,10 @@ description: >-
   own key from it) and SHERWOOD_AGENT_ADDRESS. The plugin reads no file
   outside its own data. Writes fund state and stream/watchdog state under
   ~/.hermes/plugins/sherwood-monitor/ and the XMTP database under
-  ~/.hermes/xmtp/. Install runs `npm ci` in xmtp_sidecar/, which downloads
+  ~/.hermes/xmtp/. The optional XMTP sidecar is built with `npm ci && npm
+  run build` in xmtp_sidecar/: setup.py tries it in Hermes' dependency
+  workspace copy when npm is on PATH, and the README tells the operator to run
+  it in $HERMES_HOME/plugins/sherwood-monitor/xmtp_sidecar. `npm ci` downloads
   @xmtp/node-bindings (a native binary) from the npm registry, pinned by
   package-lock.json integrity hashes. No telemetry.
 maintainer: Sherwood

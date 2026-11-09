@@ -8,8 +8,10 @@ import logging
 import threading
 from datetime import datetime, timezone
 from functools import partial
+from importlib import metadata as _metadata
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from .bgloop import BackgroundLoop
 from .cli import register_cli
@@ -52,9 +54,42 @@ def _plugin_root() -> Path:
     return Path.home() / ".hermes" / "plugins" / "sherwood-monitor"
 
 
+def _sidecar_built(directory: Path) -> bool:
+    return (directory / "dist" / "index.js").is_file()
+
+
+def _installed_source_dir() -> Path | None:
+    """The directory the ``sherwood-monitor`` package is installed editable from, if it is.
+
+    Hermes loads the plugin from ``$HERMES_HOME/plugins/sherwood-monitor/`` but installs its
+    Python package, editable, from a copy in its dependency workspace; ``setup.py`` builds the
+    sidecar in that copy when npm is on PATH. The install record (PEP 610 ``direct_url.json``,
+    read through ``importlib.metadata``) names the copy. None when there is no such record.
+    """
+    try:
+        raw = _metadata.distribution("sherwood-monitor").read_text("direct_url.json") or ""
+        info = json.loads(raw) if raw else {}
+    except Exception:
+        return None
+    if not isinstance(info, dict) or not (info.get("dir_info") or {}).get("editable"):
+        return None
+    url = urlparse(str(info.get("url") or ""))
+    if url.scheme != "file" or not url.path:
+        return None
+    return Path(unquote(url.path))
+
+
 def _sidecar_dir() -> Path:
-    """Default sidecar location: alongside this package."""
-    return Path(__file__).parent.parent / "xmtp_sidecar"
+    """Where the XMTP sidecar is: the plugin's own ``xmtp_sidecar/`` when it is built there,
+    else the build ``setup.py`` made in the copy Hermes installed the package from, else the
+    plugin's own directory (where preflight says to build it by hand)."""
+    own = Path(__file__).parent.parent / "xmtp_sidecar"
+    if _sidecar_built(own):
+        return own
+    source = _installed_source_dir()
+    if source is not None and _sidecar_built(source / "xmtp_sidecar"):
+        return source / "xmtp_sidecar"
+    return own
 
 
 def _monitor_private_key() -> str | None:

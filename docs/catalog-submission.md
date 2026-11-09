@@ -161,10 +161,23 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   `config_schema`, not prompted). The catalog schema has no optional-env
   list, so the entry's `capabilities.requires_env` mirrors `requires_env`
   only.
-- **Rule 17 (no unscannable payloads).** Nothing binary is committed. The
-  install runs `npm ci` in `xmtp_sidecar/`, which downloads
-  `@xmtp/node-bindings` (native) from the npm registry, pinned by
+- **Rule 17 (no unscannable payloads).** Nothing binary is committed.
+  Building the optional XMTP sidecar runs `npm ci` in `xmtp_sidecar/`, which
+  downloads `@xmtp/node-bindings` (native) from the npm registry, pinned by
   `package-lock.json` integrity hashes. That is disclosed.
+- **Where the sidecar is built.** Hermes offers a Node install only for a
+  root `package.json`, and this plugin has none. It installs the Python
+  package editable from a copy of the plugin in its dependency workspace
+  (`$HERMES_HOME/installs/<key>/environments/<id>/workspace/plugin-sources/sherwood-monitor-*`).
+  `setup.py` tries `npm ci && npm run build` there when npm is on PATH, and
+  uv does not show that output. The plugin is loaded from
+  `$HERMES_HOME/plugins/sherwood-monitor/`, so `_sidecar_dir()` uses a build
+  in that directory first. Otherwise it uses the copy named by the package's
+  install record (PEP 610 `direct_url.json`, read with `importlib.metadata`;
+  `tests/test_sidecar_dir.py`). With no build in either place, preflight
+  says to build in the plugin directory, and the README's "Build the XMTP
+  sidecar" does that. The cold install of 0.8.3 ran with npm off PATH, so a
+  build under Hermes is not verified end to end.
 - **Rule 12 (approvals).** The fund guard returns Hermes' approval shape for
   host actions with a per-action `rule_key`; it never auto-approves.
 
