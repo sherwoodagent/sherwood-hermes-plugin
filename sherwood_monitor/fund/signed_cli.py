@@ -164,11 +164,33 @@ def cli_version_warning(sherwood_bin: str, min_version: str = MIN_CLI_FOR_COMMAN
             f"could not read `{sherwood_bin} --version`; these commands need the Sherwood CLI "
             f"{min_version} or later"
         )
+    reasons = _cli_shortfalls(version, min_version)
     return (
         f"the installed Sherwood CLI is {version}, below {min_version}: upgrade it before running these "
-        "commands (older releases target another network, lack the bond escrow on the propose path, "
-        "or cannot propose generic-call)"
+        f"commands ({'; '.join(reasons)})"
     )
+
+
+# What each floor means for the commands this module builds, oldest first: (the release that
+# fixed it, what a CLI below it lacks). Only the ones below the installed version are named.
+_CLI_MILESTONES = (
+    ("0.93.0", "it targets another network: Robinhood Chain mainnet is the only network from 0.93.0"),
+    ("0.103.0", "it predates 0.103.0, the release the propose flags and bond escrow were checked against "
+                "(0.93.0 shipped without the bond escrow addresses)"),
+    ("0.104.0", "it cannot propose generic-call, which 0.104.0 added"),
+)
+
+
+def _cli_shortfalls(version: str, min_version: str) -> list[str]:
+    """What an installed ``version`` below ``min_version`` lacks, naming only what applies to it."""
+    from ..preflight import _parse_version
+
+    try:
+        have, need = _parse_version(version), _parse_version(min_version)
+    except ValueError:
+        return [f"this plugin was checked against {min_version}"]
+    reasons = [text for fixed, text in _CLI_MILESTONES if have < _parse_version(fixed) <= need]
+    return reasons or [f"this plugin was checked against {min_version}"]
 
 
 __all__ = [

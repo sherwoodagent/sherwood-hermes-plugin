@@ -346,7 +346,11 @@ def test_the_settlement_block_names_the_skill_the_way_hermes_resolves_it():
     """Hermes registers the pack as sherwood-monitor:sherwood-agent; remember-settlement is a file in it."""
     from pathlib import Path
 
-    from sherwood_monitor.hooks import SETTLEMENT_SKILL, SETTLEMENT_SKILL_FILE, _format_settlement_block
+    from sherwood_monitor.hooks import (
+        SETTLEMENT_SKILL,
+        SETTLEMENT_SKILL_FILE,
+        _format_settlement_block,
+    )
 
     block = _format_settlement_block({"fund": "alpha", "action": "settle", "proposal_id": "1", "tx_hash": "0x1"})
     assert 'skill_view name="sherwood-monitor:sherwood-agent"' in block

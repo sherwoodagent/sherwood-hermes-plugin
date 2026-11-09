@@ -1061,6 +1061,24 @@ def test_a_failed_version_check_names_the_generic_call_floor(monkeypatch):
     assert "0.104.0" in warning and "0.103.0" not in warning
 
 
+@pytest.mark.parametrize("installed,floor,names,not_names", [
+    ("0.103.0", "0.104.0", ["generic-call"], ["another network", "bond escrow"]),  # the cold-install case
+    ("0.95.0", "0.103.0", ["bond escrow"], ["another network", "generic-call"]),
+    ("0.88.2", "0.103.0", ["another network", "bond escrow"], ["generic-call"]),
+    ("0.88.2", "0.104.0", ["another network", "bond escrow", "generic-call"], []),
+])
+def test_the_cli_warning_names_only_what_the_installed_version_lacks(monkeypatch, installed, floor, names, not_names):
+    from sherwood_monitor.fund import signed_cli
+
+    fake_version(monkeypatch, installed)
+    warning = signed_cli.cli_version_warning("sherwood", floor)
+    assert warning and installed in warning and floor in warning
+    for name in names:
+        assert name in warning, (name, warning)
+    for name in not_names:
+        assert name not in warning, (name, warning)
+
+
 def test_a_relative_state_dir_still_hands_out_an_absolute_plan_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     rec = ProposalRecord(id="p-1", proposer_agent="alpha", thesis="t", generic_call=plan())
