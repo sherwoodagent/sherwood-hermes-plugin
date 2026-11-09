@@ -50,8 +50,10 @@ Raw calldata legs do not.
   `execution_acceptance` false): chain, template address from the CLI address
   book, targets, selectors, pull amount, limits, and the exit. It is not
   `simulate_batch` and not acceptance. A non-core clone is unaudited: the
-  guardian fleet does not Approve it unattended, so execute can stay blocked
-  and the vault locked until a guardian Approves or the proposal is cancelled.
+  guardian fleet abstains (UNAUDITED_TEMPLATE) and does not Approve it
+  unattended, so execute stays blocked (it reverts
+  `InsufficientApproveCoverage`) and the vault stays locked until a guardian
+  operator allows it or the proposal is cancelled.
   Needs the Sherwood CLI 0.104.0 or later and `proposal_signer: agent`. Under
   `proposal_signer: host` there is no prepare route for this template, so
   `fund_draft_proposal` refuses it (`agent_signer_only`) and records nothing:

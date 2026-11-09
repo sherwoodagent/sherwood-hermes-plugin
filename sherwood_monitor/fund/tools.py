@@ -759,7 +759,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         if proposals or registrations:
             floor = (
                 MIN_CLI_FOR_GENERIC_CALL
-                if any("propose generic-call" in p["command"] for p in proposals)
+                if any("propose generic-call" in str(p["command"]) for p in proposals)
                 else signed_cli.MIN_CLI_FOR_COMMANDS
             )
             warning = signed_cli.cli_version_warning(rt.sherwood_bin, floor)

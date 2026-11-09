@@ -272,7 +272,7 @@ def _compile_call(call: Any, where: str, fund: Fund, binding: Binding) -> tuple[
             stored["args"] = args
     else:
         _fail("bad_calldata", f"{where} needs 0x data, or a signature with args")
-    if fn is not None:
+    if fn is not None and isinstance(signature, str):
         stored["signature"] = signature.strip()
     if note and note.strip():
         stored["note"] = note.strip()[:300]
@@ -358,10 +358,10 @@ def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) ->
         if extra:
             _fail("bad_plan", f"{where} has unknown field(s): {', '.join(extra)}. Allowed: {', '.join(_PATCH_KEYS)}")
         token, token_key = _token_ref(patch.get("token"), f"{where} token", fund, code="bad_plan")
-        stored: dict[str, Any] = {}
+        scales: dict[str, Any] = {}
         for scale in ("mulNum", "mulDen"):
             if scale in patch:
-                stored[scale] = _scale(patch[scale], f"{where} {scale}")
+                scales[scale] = _scale(patch[scale], f"{where} {scale}")
         if "callIndex" not in patch:
             _fail("bad_plan", f"{where} callIndex is missing")
         call_index = _json_index(patch["callIndex"], f"{where} callIndex")
@@ -403,14 +403,14 @@ def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) ->
                 f"{where} writes word {word_index} of settle call {call_index} (selector 0x{data[:4].hex()}), an "
                 f"address word; words below {guarded} cannot be patched",
             )
-        mul_num = int(stored.get("mulNum", 0))
-        mul_den = int(stored.get("mulDen", 0))
+        mul_num = int(scales.get("mulNum", 0))
+        mul_den = int(scales.get("mulDen", 0))
         if (mul_num == 0) != (mul_den == 0):
             _fail("bad_plan", f"{where} must set mulNum and mulDen both, or neither (a half-set scale is rejected)")
         if (call_index, word_index) in patched:
             _fail("bad_plan", f"{where} writes word {word_index} of settle call {call_index}, which another patch already writes")
         patched.add((call_index, word_index))
-        plan["settlePatches"].append({"callIndex": call_index, **position, "token": token, **stored})
+        plan["settlePatches"].append({"callIndex": call_index, **position, "token": token, **scales})
     asset_swept = bool(sweeps & {asset_key, _PLACEHOLDER_ASSET} - {None})
     if not plan["settleCalls"] and not asset_swept:
         _fail(

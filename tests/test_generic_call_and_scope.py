@@ -1028,6 +1028,12 @@ def test_the_pitch_skill_keeps_the_stock_token_list_rule_beside_generic_call():
     assert "Don't pitch tokens off the stock-token list" in text
 
 
+def test_the_propose_skill_names_the_revert_and_does_not_hedge():
+    text = " ".join((Path(__file__).parent.parent / "skills" / "fund" / "propose" / "SKILL.md").read_text().split())
+    assert "execute stays blocked" in text and "InsufficientApproveCoverage" in text
+    assert "can stay blocked" not in text
+
+
 # -- register() in an empty home (an import check, not a cold install) ---------------------------
 
 
