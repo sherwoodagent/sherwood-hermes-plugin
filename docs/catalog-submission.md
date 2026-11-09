@@ -10,16 +10,16 @@ Opening the catalog PR is part of the hackathon entry: it is held for the
 maintainer's go-ahead, and the repo owner (or a major contributor) must be the
 one who submits it (catalog rule 5).
 
-## 1. Wait for the v0.8.3 tag
+## 1. Wait for the v0.8.4 tag
 
 Merging the release PR into `main` runs `.github/workflows/release.yml`. When
 `pyproject.toml` carries a version with no matching tag, it creates the
-`v0.8.3` tag on exactly the commit that triggered the run (the merge commit:
+`v0.8.4` tag on exactly the commit that triggered the run (the merge commit:
 `target_commitish: ${{ github.sha }}`) and a GitHub release. Nobody tags by
 hand.
 
 ```bash
-gh release view v0.8.3 -R sherwoodagent/sherwood-hermes-plugin
+gh release view v0.8.4 -R sherwoodagent/sherwood-hermes-plugin
 ```
 
 ## 2. Resolve the commit to pin
@@ -27,28 +27,26 @@ gh release view v0.8.3 -R sherwoodagent/sherwood-hermes-plugin
 The catalog pins a full 40-character commit, never a tag name.
 
 ```bash
-SHA=$(gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.3 --jq .sha)
+SHA=$(gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.4 --jq .sha)
 echo "$SHA"    # 40 lowercase hex chars
 ```
 
-For v0.8.3 this is `5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3` (the merge of #36).
-
-From a local clone, `git fetch --tags origin && git rev-parse 'v0.8.3^{commit}'`
+From a local clone, `git fetch --tags origin && git rev-parse 'v0.8.4^{commit}'`
 gives the same value (`^{commit}` matters if the tag is ever annotated: a bare
 `rev-parse` would return the tag object).
 
 ### Publish the install command with the sha
 
-Hermes has no `@tag` install syntax: `hermes plugins install owner/repo@v0.8.3`
+Hermes has no `@tag` install syntax: `hermes plugins install owner/repo@v0.8.4`
 fails (Hermes turns it into a repository URL), and `--ref` accepts only a full
 40-character commit sha. The README and the bundled skill
 at the pinned commit therefore say
-`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit>`;
+`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.4 release commit>`;
 that placeholder stays in the tree by design, because a commit cannot contain
 its own sha. Fill it in where it can live:
 
 ```bash
-gh release edit v0.8.3 -R sherwoodagent/sherwood-hermes-plugin --notes "$(cat <<EOF
+gh release edit v0.8.4 -R sherwoodagent/sherwood-hermes-plugin --notes "$(cat <<EOF
 Install: hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref $SHA
 (or, once listed in the Hermes catalog: hermes plugins install sherwood-monitor)
 EOF
@@ -56,8 +54,7 @@ EOF
 ```
 
 and in the consumer-repo PRs (`docs/consumer-updates.md`), which pin `$SHA`
-in place of the placeholder. For v0.8.3 the install line is
-`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3`. Editing the release notes is part of the
+in place of the placeholder. Editing the release notes is part of the
 release, held for the maintainer's go-ahead like the catalog PR.
 
 ## 3. Check the plugin at that commit
@@ -75,21 +72,21 @@ environment, so only run it locally on a throwaway Hermes install.
 
 ## 4. Fill in the entry
 
-On `main`, `catalog/sherwood-monitor.yaml` already carries
-`sha: "5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3"` for v0.8.3. The copy at the pinned commit still has
-the placeholder, because a commit cannot carry its own sha. Submit the
+The copy of `catalog/sherwood-monitor.yaml` at the pinned commit has the
+placeholder, because a commit cannot carry its own sha. (After the tag, a
+follow-up PR fills the sha in on `main`, as #37 did for v0.8.3.) Submit the
 pinned copy, filled in:
 
 ```bash
-sed -e "s/^sha: \"<sha of the v0.8.3 tag commit>\"/sha: \"$SHA\"/" \
+sed -e "s/^sha: \"<sha of the v0.8.4 tag commit>\"/sha: \"$SHA\"/" \
     -e '/^# REPLACE before submitting/,/^# catalog CI reject anything else/d' \
     /tmp/shm-pin/catalog/sherwood-monitor.yaml > /tmp/sherwood-monitor.yaml
-grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit (5d4bd5b... for v0.8.3)
+grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit
 ```
 
 Check, against `plugin.yaml` at the pin:
 
-- `version` is `"0.8.3"` and `requires_hermes` matches `plugin.yaml`.
+- `version` is `"0.8.4"` and `requires_hermes` matches `plugin.yaml`.
 - `capabilities` lists the same 17 tools, 5 hooks and 5 `requires_env` names
   (`tests/test_catalog_entry.py` enforces this in this repo).
 - `tier: community`. Only Nous maintainers set `official` or `verified`.
@@ -104,11 +101,11 @@ cp /tmp/sherwood-monitor.yaml plugin-catalog/sherwood-monitor.yaml
 pip install ruamel.yaml==0.18.17
 python3 scripts/validate_plugin_catalog.py plugin-catalog/sherwood-monitor.yaml
 git add plugin-catalog/sherwood-monitor.yaml
-git commit -S -m "plugin-catalog: add sherwood-monitor 0.8.3"
+git commit -S -m "plugin-catalog: add sherwood-monitor 0.8.4"
 git log --format='%h %G?' -1      # must print G
 git push -u origin plugin-catalog/sherwood-monitor
 gh pr create -R NousResearch/hermes-agent \
-  --title "plugin-catalog: add sherwood-monitor 0.8.3" \
+  --title "plugin-catalog: add sherwood-monitor 0.8.4" \
   --body-file /tmp/sherwood-monitor-pr.md
 ```
 

@@ -1,10 +1,18 @@
 # Consumer-repo updates for v0.8.3
 
-## Next: after v0.8.3 (unreleased)
+## Next: v0.8.4 (tag pending)
 
-On `main` once the approval follow-up to #36 merges. It has no tag, and
-whether it ships as 0.8.4 is the maintainer's call. The consumer docs need
-nothing until it is tagged. What changes for consumers:
+The release workflow tags `v0.8.4` on the merge of the PR that carries the
+0.8.4 release commit (#38). Once it does, the consumer docs move their install
+pin to that sha, with the same edits as the 0.8.1 PRs below. Two more consumer
+doc edits come from the cold install of 0.8.3:
+- A headless install needs `--yes-deps --enable`.
+- The sidecar rebuild recipe should build in
+  `${HERMES_HOME:-$HOME/.hermes}/plugins/sherwood-monitor/xmtp_sidecar`. The
+  `python3 -c "import sherwood_monitor"` path finds neither the plugin dir nor
+  Hermes' workspace copy.
+
+What 0.8.4 changes for consumers:
 
 - **Approvals in a Generic Call plan.** The three forms 0.8.3 let through
   are refused:
@@ -29,6 +37,22 @@ nothing until it is tagged. What changes for consumers:
   patch.
 - **Signatures.** A signature nesting deeper than 16 levels is refused
   cleanly, instead of raising RecursionError.
+- **XMTP sidecar location.** The plugin uses a built sidecar in its own
+  directory first, then the build `setup.py` made in Hermes' dependency
+  workspace (found through the package's install record). The README's new
+  "Build the XMTP sidecar" gives the reliable hand build.
+- **Install docs.** The README covers a headless `--yes-deps --enable`, and
+  the sha comes from `gh api` first.
+- **Settlement memory.** The `<sherwood-settlement>` block names the
+  `remember-settlement` steps the way Hermes resolves them:
+  `skill_view name="sherwood-monitor:sherwood-agent"`,
+  `file_path="skills/remember-settlement/SKILL.md"`.
+- **CLI warning.** `cli_warning` lists only what the installed CLI lacks.
+  0.103.0 under a generic-call command now gets "cannot propose
+  generic-call" alone.
+- **Catalog review notes.** `docs/catalog-submission.md` explains
+  validate's rule-9 warning (the guarded `owner_secret_scope` import) and
+  what `show`/`validate` print about isolation.
 - **Unchanged:** tools, hooks, slash commands, `requires_env`, crons,
   `MIN_CLI_VERSION` (`0.71.0`), the CLI floors (0.103.0 portfolio, 0.104.0
   generic-call), and the network calls.

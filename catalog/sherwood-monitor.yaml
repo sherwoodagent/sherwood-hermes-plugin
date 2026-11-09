@@ -13,15 +13,11 @@
 name: sherwood-monitor
 title: Sherwood
 repo: https://github.com/sherwoodagent/sherwood-hermes-plugin
-# The full 40-character commit the v0.8.3 tag points at, from
-# `git rev-parse 'v0.8.3^{commit}'` (lowercase hex), filled in after the tag
-# existed: a commit cannot carry its own sha, so the tree at this pin still
-# has the placeholder. The loader and catalog CI reject anything else: a tag
-# name, a branch or a short sha. A release PR that bumps `version` puts back
-# the placeholder "<sha of the vX.Y.Z tag commit>" (and the REPLACE comment
-# docs/catalog-submission.md step 4 strips) until its tag exists.
-sha: "5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3"
-version: "0.8.3"
+# REPLACE before submitting: the full 40-character commit the v0.8.4 tag points
+# at, from `git rev-parse 'v0.8.4^{commit}'` (lowercase hex). The loader and
+# catalog CI reject anything else: a tag name, a branch or a short sha.
+sha: "<sha of the v0.8.4 tag commit>"
+version: "0.8.4"
 description: >-
   Sherwood funds for Hermes on Robinhood Chain (chain 4663, USDG). Monitors your
   Sherwood funds (on-chain events reach the next turn, risk checks run before
