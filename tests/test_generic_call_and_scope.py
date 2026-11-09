@@ -664,6 +664,120 @@ def test_a_0_104_shaped_listing_reads_generic_call_as_available():
     assert "generic-call" not in [row["key"] for row in parsed["unavailable"]]
 
 
+# -- discovery: cached with a TTL, off the event loop, fail soft (M6, L3, N3) --------------------
+
+
+class _Runner:
+    def __init__(self, *, fail: bool = False, delay: float = 0.0):
+        self.calls = 0
+        self.threads: list[int] = []
+        self.fail = fail
+        self.delay = delay
+
+    def __call__(self, argv, timeout):
+        import threading
+        import time as _time
+
+        self.calls += 1
+        self.threads.append(threading.get_ident())
+        if self.delay:
+            _time.sleep(self.delay)
+        if self.fail:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return subprocess.CompletedProcess(argv, 0, REAL_LISTING_0_103, "")
+
+
+def test_a_read_is_reused_for_ten_minutes_and_a_failure_for_one(monkeypatch):
+    from sherwood_monitor.fund import scope
+
+    now = [1000.0]
+    monkeypatch.setattr(scope, "_clock", lambda: now[0])
+    ok = _Runner()
+    assert discover_strategy_templates("sherwood-ttl-ok", runner=ok)["ok"]
+    now[0] += scope.DISCOVERY_OK_TTL_S - 1
+    discover_strategy_templates("sherwood-ttl-ok", runner=ok)
+    assert ok.calls == 1
+    now[0] += 2  # past ten minutes: a CLI upgrade shows up without a restart
+    discover_strategy_templates("sherwood-ttl-ok", runner=ok)
+    assert ok.calls == 2
+
+    bad = _Runner(fail=True)
+    assert discover_strategy_templates("sherwood-ttl-bad", runner=bad)["ok"] is False
+    now[0] += scope.DISCOVERY_FAIL_TTL_S - 1
+    discover_strategy_templates("sherwood-ttl-bad", runner=bad)
+    assert bad.calls == 1
+    now[0] += 2  # one cold timeout does not blind every later turn
+    discover_strategy_templates("sherwood-ttl-bad", runner=bad)
+    assert bad.calls == 2
+
+
+def test_errors_name_the_command_not_the_binary_path(monkeypatch):
+    from sherwood_monitor.fund import scope
+
+    monkeypatch.setattr(scope, "_which", lambda name: None)
+    missing = discover_strategy_templates("/opt/private/tools/sherwood")
+    assert missing["ok"] is False and "/opt/private" not in missing["error"]
+
+    def broken(argv, timeout):
+        raise OSError(argv[0])
+
+    failed = discover_strategy_templates("/opt/private/tools/sherwood-2", runner=broken)
+    assert "/opt/private" not in failed["error"] and "`sherwood strategy list`" in failed["error"]
+
+
+def test_the_scope_source_reads_off_the_event_loop_within_budget(tmp_path, monkeypatch):
+    import threading
+    import time as _time
+
+    from sherwood_monitor.fund import scope
+    from sherwood_monitor.fund.scope import make_fund_scope_source
+
+    rt = _runtime(tmp_path)
+    rt.sherwood_bin = "sherwood-slow-test"
+    rt.service.create_fund(fund(), host_agent())
+    monkeypatch.setattr(scope, "DISCOVERY_TIMEOUT_S", 0.2)
+    slow = _Runner(delay=1.5)
+    monkeypatch.setattr(scope, "_run", slow)
+    source = make_fund_scope_source(rt)
+    assert asyncio.iscoroutinefunction(source)
+    ticks = []
+
+    async def turn():
+        async def ticker():
+            while True:
+                ticks.append(1)
+                await asyncio.sleep(0.02)
+
+        task = asyncio.create_task(ticker())
+        started = _time.monotonic()
+        out = await source(session_id="s1")
+        task.cancel()
+        return out, _time.monotonic() - started
+
+    out, elapsed = asyncio.run(turn())
+    assert elapsed < 1.2  # the turn did not wait for the 1.5 s read
+    assert len(ticks) >= 5  # the loop kept running while the list was read
+    assert slow.threads and slow.threads[0] != threading.get_ident()
+    assert "Templates unknown" in out["context"] and "Do not invent" in out["context"]
+
+
+def test_the_skill_pack_is_scanned_once_per_chain():
+    from sherwood_monitor.fund import scope
+
+    scope._reference_skills.cache_clear()
+    first = reference_skills(CHAIN_ID_ROBINHOOD)
+    first.append({"name": "mutated"})  # a caller's copy, not the cache
+    assert reference_skills(CHAIN_ID_ROBINHOOD) != first
+    assert scope._reference_skills.cache_info().misses == 1
+
+
+def test_tests_never_run_the_real_cli():
+    from sherwood_monitor.fund import scope
+
+    assert scope._run.__name__ == "<lambda>"  # the conftest stub, whatever `sherwood` is on PATH
+    assert discover_strategy_templates()["network"] == "robinhood-mainnet"
+
+
 def test_a_4663_fund_labels_other_network_skills_and_does_not_quote_yields():
     discovered = {
         "ok": True, "source": "sherwood strategy list", "network": "Robinhood Chain",

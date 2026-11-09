@@ -8,12 +8,16 @@ inside the CLI itself.
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import re
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from ..session import current_caller
 from .models import CHAIN_ID_ROBINHOOD, FundState
@@ -29,7 +33,15 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _TEMPLATE_LINE = re.compile(r"(?P<name>\S.*?)\s+\((?P<key>[a-z0-9]+(?:-[a-z0-9]+)*)\)")
 _HEADER_NETWORK = re.compile(r"\(([^()]*)\)\s*$")
 _SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills" / "sherwood-agent" / "skills"
-_DISCOVERY: dict[str, dict[str, Any]] = {}
+
+# `sherwood strategy list` budget: the subprocess timeout, under preflight's 5 s `--version`
+# read. A turn never waits on it longer than this (plus thread hand-off).
+DISCOVERY_TIMEOUT_S = 3.0
+DISCOVERY_OK_TTL_S = 600.0  # a read is reused for 10 minutes
+DISCOVERY_FAIL_TTL_S = 60.0  # a failure is retried after a minute
+_DISCOVERY: dict[str, tuple[float, dict[str, Any]]] = {}
+_DISCOVERY_LOCK = threading.Lock()
+_clock = time.monotonic  # tests patch this
 
 Runner = Callable[[list[str], float], subprocess.CompletedProcess[str]]
 
@@ -98,39 +110,55 @@ def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=child_env())
 
 
-def discover_strategy_templates(
-    sherwood_bin: str = "sherwood", *, timeout: float = 3.0, runner: Runner | None = None, refresh: bool = False
-) -> dict[str, Any]:
-    """Read-only ``sherwood strategy list``. Cached per binary. Failure is ``ok: false``, never a guessed list."""
-    key = sherwood_bin or "sherwood"
-    if not refresh and key in _DISCOVERY:
-        return _DISCOVERY[key]
-    run = runner or _run
-    if runner is None and shutil.which(key) is None:
-        result = {"ok": False, "error": f"`{key}` is not on PATH", "available": [], "unavailable": []}
-        _DISCOVERY[key] = result
-        return result
+def _which(name: str) -> str | None:
+    return shutil.which(name)
+
+
+def _failed(error: str) -> dict[str, Any]:
+    return {"ok": False, "error": error, "available": [], "unavailable": []}
+
+
+def _discover(key: str, timeout: float, runner: Runner | None) -> dict[str, Any]:
+    # Errors name the command, never the configured binary path: they reach the prompt.
+    if runner is None and _which(key) is None:
+        return _failed("the Sherwood CLI is not on PATH")
     try:
-        proc = run([key, "strategy", "list"], timeout)
+        proc = (runner or _run)([key, "strategy", "list"], timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        result = {"ok": False, "error": f"`{key} strategy list` failed ({exc.__class__.__name__})", "available": [], "unavailable": []}
-        _DISCOVERY[key] = result
-        return result
+        return _failed(f"`sherwood strategy list` failed ({exc.__class__.__name__})")
     if proc.returncode != 0:
-        result = {
-            "ok": False,
-            "error": f"`{key} strategy list` exited {proc.returncode}",
-            "available": [],
-            "unavailable": [],
-        }
-        _DISCOVERY[key] = result
-        return result
+        return _failed(f"`sherwood strategy list` exited {proc.returncode}")
     try:
-        result = parse_strategy_list(proc.stdout or "")
+        return parse_strategy_list(proc.stdout or "")
     except ValueError as exc:
-        result = {"ok": False, "error": str(exc), "available": [], "unavailable": []}
-    _DISCOVERY[key] = result
-    return result
+        return _failed(str(exc))
+
+
+def discover_strategy_templates(
+    sherwood_bin: str = "sherwood",
+    *,
+    timeout: float = DISCOVERY_TIMEOUT_S,
+    runner: Runner | None = None,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    """Read-only ``sherwood strategy list``. Failure is ``ok: false``, never a guessed list.
+
+    Cached per binary: a read for ``DISCOVERY_OK_TTL_S`` (so a CLI upgrade shows up within
+    minutes, not at the next restart), a failure for ``DISCOVERY_FAIL_TTL_S`` only (one cold
+    timeout does not blind every later turn). Blocking: async callers run it with
+    ``asyncio.to_thread`` (``make_fund_scope_source``). Concurrent callers wait for one read.
+    """
+    key = sherwood_bin or "sherwood"
+    with _DISCOVERY_LOCK:
+        cached = _DISCOVERY.get(key)
+        if cached is not None and not refresh:
+            at, result = cached
+            ttl = DISCOVERY_OK_TTL_S if result.get("ok") else DISCOVERY_FAIL_TTL_S
+            if _clock() - at < ttl:
+                return result
+        result = _discover(key, timeout, runner)
+        _DISCOVERY[key] = (_clock(), result)
+        return result
 
 
 def reference_skills(chain_id: int) -> list[dict[str, str]]:
@@ -138,13 +166,19 @@ def reference_skills(chain_id: int) -> list[dict[str, str]]:
 
     Only Robinhood Chain (4663) is named that way in the pack today. Another chain gets
     no such label from this scan: the CLI list is what says what is deployed there.
+    The skill pack ships with the plugin, so the scan runs once per chain per process.
     """
+    return [dict(row) for row in _reference_skills(chain_id)]
+
+
+@functools.lru_cache(maxsize=8)
+def _reference_skills(chain_id: int) -> tuple[dict[str, str], ...]:
     if chain_id != CHAIN_ID_ROBINHOOD:
-        return []
+        return ()
     needle = f"Not available on Robinhood Chain ({chain_id})"
     found: list[dict[str, str]] = []
     if not _SKILLS_DIR.is_dir():
-        return found
+        return ()
     for path in sorted(_SKILLS_DIR.rglob("SKILL.md")):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -158,7 +192,7 @@ def reference_skills(chain_id: int) -> list[dict[str, str]]:
                 name = line.split(":", 1)[1].strip().strip("'\"")
                 break
         found.append({"name": name, "path": str(path.relative_to(_SKILLS_DIR.parent.parent))})
-    return found
+    return tuple(found)
 
 
 def fund_scope(state: FundState, discovered: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -207,7 +241,7 @@ def scope_text(scope: dict[str, Any]) -> str:
         discovery = f"`sherwood strategy list` on {strategies.get('network') or 'the CLI network'}: {listed}."
     else:
         discovery = (
-            "Strategy list was not read"
+            "Templates unknown: `sherwood strategy list` was not read"
             + (f" ({strategies.get('source')})." if strategies.get("source") else ".")
             + " Do not invent which templates are deployed."
         )
@@ -316,18 +350,29 @@ def scope_state(rt: Any, **hook_kwargs: Any) -> tuple[FundState | None, str]:
         return None, ""
 
 
-def make_fund_scope_source(rt: Any) -> Callable[..., dict[str, str] | None]:
-    """pre_llm context: this turn's fund (see :func:`scope_state`), or nothing."""
+def make_fund_scope_source(rt: Any) -> Callable[..., Awaitable[dict[str, str] | None]]:
+    """pre_llm context: this turn's fund (see :func:`scope_state`), or nothing.
 
-    def source(**kwargs: Any) -> dict[str, str] | None:
-        state, note = scope_state(rt, **kwargs)
+    Async, and nothing blocks the event loop: the fund-state read and ``sherwood strategy list``
+    run in worker threads. A turn waits at most ``DISCOVERY_TIMEOUT_S`` (plus a hand-off margin)
+    for a cold list; past that it is told templates are unknown, and the read finishes in the
+    background for the next turn.
+    """
+
+    async def source(**kwargs: Any) -> dict[str, str] | None:
+        state, note = await asyncio.to_thread(scope_state, rt, **kwargs)
         if state is None:
             return {"context": note} if note else None
         try:
-            discovered = discover_strategy_templates(getattr(rt, "sherwood_bin", "sherwood"))
+            discovered = await asyncio.wait_for(
+                asyncio.to_thread(discover_strategy_templates, getattr(rt, "sherwood_bin", "sherwood")),
+                timeout=DISCOVERY_TIMEOUT_S + 0.5,
+            )
+        except asyncio.TimeoutError:
+            discovered = _failed("`sherwood strategy list` is still running")
         except Exception as exc:
             _log.warning("strategy list skipped: %s", exc)
-            discovered = {"ok": False, "error": exc.__class__.__name__, "available": [], "unavailable": []}
+            discovered = _failed(f"`sherwood strategy list` failed ({exc.__class__.__name__})")
         return {"context": scope_text(fund_scope(state, discovered))}
 
     return source

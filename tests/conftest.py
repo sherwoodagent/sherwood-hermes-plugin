@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -32,6 +33,21 @@ def mock_ctx():
     ctx.register_cli_command = MagicMock()
     ctx.register_skill = MagicMock()
     return ctx
+
+
+@pytest.fixture(autouse=True)
+def _no_sherwood_strategy_list(monkeypatch):
+    """`sherwood strategy list` never runs in tests, whatever is on PATH: the real CLI 0.103.0
+    output (fixtures/strategy_list_0.103.0.txt) unless a test passes its own runner. The
+    discovery cache is cleared around every test."""
+    from sherwood_monitor.fund import scope
+
+    listing = (FIXTURES_DIR / "strategy_list_0.103.0.txt").read_text()
+    monkeypatch.setattr(scope, "_run", lambda argv, timeout: subprocess.CompletedProcess(argv, 0, listing, ""))
+    monkeypatch.setattr(scope, "_which", lambda name: f"/stub/bin/{name}")
+    scope._DISCOVERY.clear()
+    yield
+    scope._DISCOVERY.clear()
 
 
 @pytest.fixture(autouse=True)
