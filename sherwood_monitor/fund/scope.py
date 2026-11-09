@@ -15,7 +15,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+from ..session import current_caller
 from .models import CHAIN_ID_ROBINHOOD, FundState
+from .service import FundServiceError
 from .store import FundNotFound
 
 _log = logging.getLogger(__name__)
@@ -246,34 +248,71 @@ def scope_text(scope: dict[str, Any]) -> str:
     )
 
 
-def make_fund_scope_source(rt: Any) -> Callable[..., dict[str, str] | None]:
-    """pre_llm context: the configured default fund, or an explicit 'do not claim' line when there is none."""
+def _fund_person(rt: Any, state: FundState, user_id: str) -> bool:
+    """The fund's host, one of its members (any join request on record), or this Hermes's owner."""
+    if not user_id:
+        return False
+    owner = str(getattr(rt.settings, "owner_telegram_id", "") or "")
+    return user_id in (state.fund.host_telegram_id, owner) or state.member(user_id) is not None
 
-    def source(**_: Any) -> dict[str, str] | None:
-        name = (getattr(rt.settings, "default_fund", "") or "").strip()
+
+def scope_state(rt: Any, **hook_kwargs: Any) -> tuple[FundState | None, str]:
+    """The fund this turn is about, or (None, note) where note is "" for "inject nothing".
+
+    A messaging turn (a Telegram group, a DM, any chat surface) is about the fund bound to that
+    chat, and only for that fund's host, members and this Hermes's owner. Another chat, a DM or
+    a stranger gets nothing: no fund's vault or templates leak into a conversation it is not in.
+    A non-messaging turn (CLI, cron, the operator's TUI) is about the fund the tools resolve to:
+    the configured default, else the only fund. Several funds and no default get a note; no
+    fund at all gets nothing.
+    """
+    caller = current_caller(**hook_kwargs)
+    if caller.messaging:
+        name = rt.service.fund_for_chat(caller.chat_id) if caller.chat_id else None
         if not name:
-            return {
-                "context": (
-                    "<sherwood-fund-scope>\n"
-                    "No default fund is configured. Do not say a strategy, protocol, or yield is wired up. "
-                    "Call fund_status for the fund being discussed and answer from that fund's chain, vault, "
-                    "and strategies list.\n"
-                    "</sherwood-fund-scope>"
-                )
-            }
+            return None, ""
         try:
             state = rt.service.load(name)
-        except FundNotFound:
-            return {
-                "context": (
-                    "<sherwood-fund-scope>\n"
-                    f"Default fund {name} has no local record. Do not invent its chain or its strategies.\n"
-                    "</sherwood-fund-scope>"
-                )
-            }
         except Exception as exc:
             _log.warning("fund scope skipped: %s", exc)
-            return None
+            return None, ""
+        return (state, "") if _fund_person(rt, state, caller.user_id) else (None, "")
+    try:
+        name = rt.fund_for()
+    except FundServiceError:
+        try:
+            several = len(rt.service.backend.list_funds()) > 1
+        except Exception:
+            several = False
+        if not several:
+            return None, ""
+        return None, (
+            "<sherwood-fund-scope>\n"
+            "Several funds are configured and no default_fund is set. Do not say a strategy, protocol, or yield "
+            "is wired up. Call fund_status with the fund being discussed and answer from that fund's chain, "
+            "vault, and strategies list.\n"
+            "</sherwood-fund-scope>"
+        )
+    try:
+        return rt.service.load(name), ""
+    except FundNotFound:
+        return None, (
+            "<sherwood-fund-scope>\n"
+            f"Default fund {name} has no local record. Do not invent its chain or its strategies.\n"
+            "</sherwood-fund-scope>"
+        )
+    except Exception as exc:
+        _log.warning("fund scope skipped: %s", exc)
+        return None, ""
+
+
+def make_fund_scope_source(rt: Any) -> Callable[..., dict[str, str] | None]:
+    """pre_llm context: this turn's fund (see :func:`scope_state`), or nothing."""
+
+    def source(**kwargs: Any) -> dict[str, str] | None:
+        state, note = scope_state(rt, **kwargs)
+        if state is None:
+            return {"context": note} if note else None
         try:
             discovered = discover_strategy_templates(getattr(rt, "sherwood_bin", "sherwood"))
         except Exception as exc:

@@ -473,10 +473,93 @@ def test_fund_status_and_pre_llm_speak_for_the_configured_fund(agent_ctx, monkey
     assert len(agent_ctx.hooks["pre_llm_call"]) == 1
 
 
-def test_no_default_fund_refuses_to_claim_a_strategy_is_wired_up(tmp_path, monkeypatch):
+def test_no_fund_at_all_adds_no_scope_block(tmp_path, monkeypatch):
     ctx = boot(tmp_path, monkeypatch, {})
     (out,) = asyncio.run(ctx.fire("pre_llm_call", session_id="s1"))
-    assert "No default fund" in out["context"] and "wired up" in out["context"]
+    assert "sherwood-fund-scope" not in (out or {}).get("context", "")
+
+
+# -- the scope is for this turn's fund, and only in that fund's chat (M2) -----------------------
+
+B_VAULT = "0x" + "99" * 20
+B_CHAT = "-100600"
+
+
+def _runtime(tmp_path, **settings):
+    from sherwood_monitor.fund.runtime import FundRuntime
+    from sherwood_monitor.fund.settings import FundSettings
+
+    svc = FundService(LocalJsonBackend(tmp_path / "funds"))
+    return FundRuntime(svc, FundSettings(**settings), None, "sherwood-scope-test")
+
+
+def _scope(rt, **kwargs):
+    from sherwood_monitor.fund.scope import make_fund_scope_source
+
+    out = make_fund_scope_source(rt)(**kwargs)
+    if asyncio.iscoroutine(out):
+        out = asyncio.run(out)
+    return (out or {}).get("context", "")
+
+
+@pytest.fixture
+def two_funds(tmp_path, monkeypatch):
+    monkeypatch.setattr("sherwood_monitor.fund.scope.discover_strategy_templates", lambda *a, **k: {
+        "ok": True, "source": "sherwood strategy list", "network": "robinhood-mainnet",
+        "available": [{"name": "Portfolio", "key": "portfolio"}], "unavailable": [],
+    })
+    rt = _runtime(tmp_path, default_fund="alpha-fund", owner_telegram_id="4242")
+    rt.service.create_fund(fund(), host_agent())
+    rt.service.create_fund(
+        fund(name="beta-fund", vault=B_VAULT, telegram_chat_id=B_CHAT, host_telegram_id="901"), host_agent(),
+    )
+    rt.service.request_membership("beta-fund", "31")
+    return rt
+
+
+def test_a_turn_in_fund_bs_chat_is_scoped_to_fund_b_not_the_default(two_funds):
+    text = _scope(two_funds, platform="telegram", chat_id=B_CHAT, sender_id="901")
+    assert "Active fund beta-fund" in text and B_VAULT in text
+    assert "alpha-fund" not in text and VAULT not in text
+    member = _scope(two_funds, platform="telegram", chat_id=B_CHAT, sender_id="31")
+    assert "Active fund beta-fund" in member
+    owner = _scope(two_funds, platform="telegram", chat_id=B_CHAT, sender_id="4242")
+    assert "Active fund beta-fund" in owner
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"platform": "telegram", "chat_id": "-100999", "sender_id": "900"},  # a chat no fund is bound to
+    {"platform": "telegram", "chat_id": "900", "sender_id": "900"},  # the host's DM with the bot
+    {"platform": "telegram", "chat_id": B_CHAT, "sender_id": "66"},  # a stranger in fund B's group
+    {"platform": "telegram", "chat_id": "-100500", "sender_id": "901"},  # B's host in A's group
+    {"platform": "discord", "chat_id": "-100777", "sender_id": "900"},  # another chat surface, no fund
+])
+def test_other_chats_dms_and_strangers_get_no_fund_context(two_funds, kwargs):
+    assert _scope(two_funds, **kwargs) == ""
+
+
+def test_an_operator_turn_gets_the_default_fund(two_funds):
+    text = _scope(two_funds, session_id="s1")
+    assert "Active fund alpha-fund" in text and VAULT in text
+
+
+def test_one_fund_and_no_default_is_that_fund_not_a_no_default_line(tmp_path, monkeypatch):
+    monkeypatch.setattr("sherwood_monitor.fund.scope.discover_strategy_templates", lambda *a, **k: {
+        "ok": False, "error": "not checked", "available": [], "unavailable": [],
+    })
+    rt = _runtime(tmp_path)
+    rt.service.create_fund(fund(), host_agent())
+    text = _scope(rt, session_id="s1")
+    assert "Active fund alpha-fund" in text and "No default fund" not in text
+    assert "Active fund alpha-fund" in _scope(rt, platform="telegram", chat_id="-100500", sender_id="900")
+
+
+def test_several_funds_and_no_default_tell_an_operator_turn_to_pick_one(tmp_path):
+    rt = _runtime(tmp_path)
+    rt.service.create_fund(fund(), host_agent())
+    rt.service.create_fund(fund(name="beta-fund", vault=B_VAULT, telegram_chat_id=B_CHAT), host_agent())
+    text = _scope(rt, session_id="s1")
+    assert "Several funds" in text and "wired up" in text and VAULT not in text
 
 
 # -- NAV: 60 cash + 40 invested at cost is 100, not 60 and not -40% ----------------------------

@@ -242,8 +242,11 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
     # The agent's next turn sees both the pitch context and the draft request, through ONE hook.
     (hook,) = ctx.hooks["pre_llm_call"]
     said = "@sherwoodagentbot long $NVDA and $AAPL into earnings"
-    # Pitch and draft text stay bound to the chat and sender. The active-fund scope is not
-    # chat-bound: every turn, including a CLI turn, is told which chain this fund is on.
+    # Bound to the chat and sender: another chat or another member's turn gets nothing, not even
+    # the fund scope. A CLI/cron turn (the operator's own surface) gets no chat-bound block; it
+    # does get the scope of the fund the tools resolve to (here the only fund).
+    def fund_blocks(out):
+        return "sherwood-fund" in (out or {}).get("context", "")
 
     def chat_bound(out):
         text = (out or {}).get("context", "")
@@ -251,11 +254,12 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
             "<sherwood-fund-pitch>", "<sherwood-fund-draft-requested>", "<sherwood-fund-shipped>",
         ))
 
-    cli_turn = await hook(user_message=said)
+    cli_turn = await hook(user_message=said)  # (drains the monitor's own warnings too)
     assert not chat_bound(cli_turn) and "<sherwood-fund-scope>" in cli_turn["context"]
-    assert not chat_bound(await hook(platform="telegram", chat_id="-100999", sender_id=str(ALICE), user_message=said))
-    assert not chat_bound(await hook(platform="telegram", chat_id=str(CHAT), sender_id=str(EVE), user_message=said))
+    assert not fund_blocks(await hook(platform="telegram", chat_id="-100999", sender_id=str(ALICE), user_message=said))
+    assert not fund_blocks(await hook(platform="telegram", chat_id=str(CHAT), sender_id=str(EVE), user_message=said))
     ctx_out = await hook(platform="telegram", chat_id=str(CHAT), sender_id=str(ALICE), user_message=said)
+    assert "<sherwood-fund-scope>" in ctx_out["context"] and VAULT in ctx_out["context"]
     assert "<sherwood-fund-pitch>" in ctx_out["context"]
     assert "<sherwood-fund-draft-requested>" in ctx_out["context"] and 'topic="NVDA AAPL pitch"' in ctx_out["context"]
 

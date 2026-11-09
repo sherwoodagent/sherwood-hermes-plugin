@@ -155,12 +155,9 @@ class FundService:
         names: list[str] | None = None
         if chat_id:
             names = self.backend.list_funds()
-            for name in names:
-                try:
-                    if self.backend.load(name).fund.telegram_chat_id == str(chat_id):
-                        return name
-                except FundStoreError:
-                    continue
+            bound = self.fund_for_chat(chat_id, names=names)
+            if bound:
+                return bound
         if default:
             return validate_fund_name(default)
         names = names if names is not None else self.backend.list_funds()
@@ -169,6 +166,19 @@ class FundService:
         if not names:
             raise FundServiceError("no fund here yet: create one (host) or /join-fund <fund> (guest)")
         raise FundServiceError(f"which fund? pass one of: {', '.join(names)}")
+
+    def fund_for_chat(self, chat_id: str | int | None, *, names: list[str] | None = None) -> str | None:
+        """The fund whose ``telegram_chat_id`` is this chat. Never a fallback: None when no fund is bound."""
+        key = str(chat_id or "").strip()
+        if not key:
+            return None
+        for name in names if names is not None else self.backend.list_funds():
+            try:
+                if self.backend.load(name).fund.telegram_chat_id == key:
+                    return name
+            except FundStoreError:
+                continue
+        return None
 
     def check_draft(self, fund: str, agent: str, **kwargs: Any) -> rules.Verdict:
         """Read-only draft check (the pre_tool_call guard uses this)."""
