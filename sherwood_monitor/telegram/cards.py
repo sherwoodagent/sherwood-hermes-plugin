@@ -495,11 +495,21 @@ def render_draft_card(
     buffer_line = bond_buffer_line(p)
     if buffer_line:
         lines.append(buffer_line)
+    if p.template == "generic-call":
+        lines.append(GENERIC_CALL_CARD_LINE)
     lines += ["", "<i>Host: 🚀 Ship it sends this to a vote.</i>"]
     row = [InlineKeyboardButton("🚀 Ship it", callback_data=cb("shipit", p.id))]
     if requires_host_cosign:
         row.append(InlineKeyboardButton("✍️ Co-sign (host)", callback_data=cb("propose", p.id)))
     return "\n".join(lines), _kb([row])
+
+
+# The host decides from the card, so the card says what Generic Call means before the vote.
+GENERIC_CALL_CARD_LINE = (
+    "⚠️ Generic Call: an unaudited template, never certified. Guardians abstain (UNAUDITED_TEMPLATE), so "
+    "execute stays blocked (InsufficientApproveCoverage) until a guardian operator allows it; the vault "
+    "stays locked until then or a cancel."
+)
 
 
 BOND_BUFFER_LINES = {

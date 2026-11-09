@@ -199,6 +199,11 @@ def fund_scope(state: FundState, discovered: dict[str, Any] | None = None) -> di
     """Facts for one configured fund. No yields. No claim that a skill is executable."""
     fund = state.fund
     discovered = discovered if discovered is not None else {"ok": False, "error": "not checked", "available": [], "unavailable": []}
+    if discovered.get("ok") and not discovery_applies(discovered, fund.chain_id):
+        discovered = _failed(
+            f"`sherwood strategy list` printed network {discovered.get('network') or '(none)'}, "
+            f"not this fund's chain {fund.chain_id}"
+        )
     available = [row["key"] for row in discovered.get("available") or []] if discovered.get("ok") else []
     unavailable = [row["key"] for row in discovered.get("unavailable") or []] if discovered.get("ok") else []
     skills = reference_skills(fund.chain_id)

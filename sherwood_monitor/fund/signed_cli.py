@@ -156,7 +156,7 @@ def cli_version_warning(sherwood_bin: str, min_version: str = MIN_CLI_FOR_COMMAN
         ok, version = check_cli_installed(sherwood_bin or "sherwood", min_version)
     except Exception as exc:  # the listing never fails on the check
         _log.warning("sherwood --version check failed: %s", exc)
-        return f"could not check the Sherwood CLI version; these commands need {MIN_CLI_FOR_COMMANDS} or later"
+        return f"could not check the Sherwood CLI version; these commands need {min_version} or later"
     if ok:
         return None
     if version is None:

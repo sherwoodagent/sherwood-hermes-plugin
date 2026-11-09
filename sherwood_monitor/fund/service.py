@@ -40,6 +40,7 @@ from .rules import RuleViolation, require
 from .generic_call import (
     HOST_SIGNER_REFUSAL,
     generic_call_legs,
+    generic_call_plan_path,
     require_agent_signer,
     preview_generic_call,
     propose_generic_call_command,
@@ -562,8 +563,11 @@ class FundService:
                 raise RuleViolation(rules.deny("draft_not_ready", HOST_SIGNER_REFUSAL + ". The draft stays a draft."))
             if agent_signs:
                 if record.generic_call:
-                    path = write_generic_call_plan(self.backend, state.fund.name, record)
-                    record.propose_command = propose_generic_call_command(state.fund, record, path)
+                    # Build (and so check) the command first: a refused ship leaves no plan file.
+                    path = generic_call_plan_path(self.backend, state.fund.name, record)
+                    command = propose_generic_call_command(state.fund, record, str(path))
+                    write_generic_call_plan(self.backend, state.fund.name, record)
+                    record.propose_command = command
                 else:
                     record.propose_command = propose_portfolio_command(state.fund, record)
                 record.handed_out_at = None  # a fresh ship is listed again at once

@@ -130,6 +130,7 @@ def proposal_to_view(record: Any) -> ProposalView:
         bond_buffer_status=str(_get(record, "bond_buffer_status", default="") or ""),
         bond_buffer_note=str(_get(record, "bond_buffer_note", default="") or ""),
         propose_command=str(_get(record, "propose_command", default="") or ""),
+        template=str(_get(record, "template", default="") or ""),
     )
 
 
@@ -490,6 +491,7 @@ def proposal_dict(state: FundState, record: ProposalRecord) -> dict[str, Any]:
         "bond_buffer_note": record.bond_buffer_note,
         "capital_symbol": fund.asset,
         "propose_command": record.propose_command,
+        "template": "generic-call" if record.generic_call else "",
     }
 
 

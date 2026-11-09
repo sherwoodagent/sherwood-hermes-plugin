@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+from pathlib import Path
 from typing import Any, NoReturn
 
 from .callspec import (
@@ -584,17 +586,25 @@ def preview_generic_call(
     }
 
 
-def write_generic_call_plan(backend: Any, fund_name: str, record: ProposalRecord) -> str:
-    """Write the plan next to fund state. Returns the absolute path the CLI ``--calls`` flag takes."""
+def generic_call_plan_path(backend: Any, fund_name: str, record: ProposalRecord) -> Path:
+    """Where the plan goes, next to fund state: an absolute path (a relative ``fund_state_dir``
+    would make ``--calls`` resolve against the one-shot's working directory). Writes nothing."""
     root = getattr(backend, "root", None)
     if root is None:
         _fail("draft_not_ready", "this state backend has nowhere to write the generic-call plan, so no command is handed out")
     name = validate_fund_name(fund_name)
     if not re.fullmatch(r"p-\d+", record.id):
         _fail("draft_not_ready", f"refusing to write a generic-call plan for id {record.id!r}")
-    directory = root / name / "generic-call"
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{record.id}.json"
+    return (Path(root) / name / "generic-call" / f"{record.id}.json").resolve()
+
+
+def write_generic_call_plan(backend: Any, fund_name: str, record: ProposalRecord) -> str:
+    """Write the plan next to fund state (mode 0600). Returns the absolute path ``--calls`` takes."""
+    path = generic_call_plan_path(backend, fund_name, record)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        _fail("draft_not_ready", f"could not write the generic-call plan ({exc.__class__.__name__})")
     payload = json.dumps({k: record.generic_call.get(k, []) for k in _PLAN_KEYS}, indent=2)
     tmp = path.with_suffix(".json.tmp")
     try:
@@ -608,8 +618,6 @@ def write_generic_call_plan(backend: Any, fund_name: str, record: ProposalRecord
 
 def propose_generic_call_command(fund: Fund, record: ProposalRecord, plan_path: str) -> str:
     """``sherwood strategy propose generic-call ...``. Raises RuleViolation when it must not be handed out."""
-    import shlex
-
     if not is_address(fund.vault):
         _fail("no_vault", "the fund has no vault address yet")
     if fund.chain_id not in TEMPLATE_ADDRESS_BOOK:

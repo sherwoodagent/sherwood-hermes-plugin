@@ -780,7 +780,7 @@ def test_tests_never_run_the_real_cli():
 
 def test_a_4663_fund_labels_other_network_skills_and_does_not_quote_yields():
     discovered = {
-        "ok": True, "source": "sherwood strategy list", "network": "Robinhood Chain",
+        "ok": True, "source": "sherwood strategy list", "network": "robinhood-mainnet",
         "available": [{"name": "Portfolio", "key": "portfolio"}],
         "unavailable": [{"name": "Moonwell Supply", "key": "moonwell-supply"}],
     }
@@ -816,7 +816,7 @@ def test_fund_status_and_pre_llm_speak_for_the_configured_fund(agent_ctx, monkey
     monkeypatch.setattr(
         "sherwood_monitor.fund.scope.discover_strategy_templates",
         lambda *a, **k: {
-            "ok": True, "source": "sherwood strategy list", "network": "Robinhood Chain",
+            "ok": True, "source": "sherwood strategy list", "network": "robinhood-mainnet",
             "available": [{"name": "Portfolio", "key": "portfolio"}],
             "unavailable": [{"name": "Moonwell Supply", "key": "moonwell-supply"}],
         },
@@ -954,6 +954,66 @@ def test_nav_100_with_40_invested_is_at_cost_not_a_loss(tmp_path):
     from sherwood_monitor.fund.telegram import fund_dict
     stale = fund_dict(svc.load("alpha-fund"), now=partial.read_at + 1000)
     assert stale["nav_stale"] is True and stale["nav_partial"] is True and stale["pnl_bps"] == 0
+
+
+# -- LOW items: version floor wording, absolute plan path, no orphan plan, network match, card ----
+
+
+def test_a_failed_version_check_names_the_generic_call_floor(monkeypatch):
+    from sherwood_monitor.fund import signed_cli
+
+    def boom(*a, **k):
+        raise RuntimeError("x")
+
+    monkeypatch.setattr("sherwood_monitor.preflight.check_cli_installed", boom)
+    warning = signed_cli.cli_version_warning("sherwood", MIN_CLI_FOR_GENERIC_CALL)
+    assert "0.104.0" in warning and "0.103.0" not in warning
+
+
+def test_a_relative_state_dir_still_hands_out_an_absolute_plan_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rec = ProposalRecord(id="p-1", proposer_agent="alpha", thesis="t", generic_call=plan())
+    path = write_generic_call_plan(LocalJsonBackend(Path("rel-funds")), "alpha-fund", rec)
+    assert Path(path).is_absolute() and Path(path).is_file()
+    assert path == str((tmp_path / "rel-funds" / "alpha-fund" / "generic-call" / "p-1.json").resolve())
+
+
+def test_a_refused_ship_leaves_no_plan_file(agent_ctx, tmp_path):
+    drafted = _draft(agent_ctx, plan(), strategy_duration_seconds=0)  # no duration: the command is refused
+    assert drafted["ok"], drafted
+    svc = _service(tmp_path)
+    with pytest.raises(RuleViolation) as exc:
+        svc.ship_draft("alpha-fund", drafted["proposal"]["id"], caller_telegram_id="900", agent_signs=True)
+    assert exc.value.code == "draft_not_ready"
+    assert not list((tmp_path / STATE).rglob("generic-call/*.json"))
+
+
+def test_a_list_for_another_network_is_not_this_funds_templates():
+    discovered = parse_strategy_list(REAL_LISTING_0_103)  # robinhood-mainnet
+    scope = fund_scope(FundState(fund=fund(chain_id=8453, asset="WETH")), discovered)
+    assert scope["strategies"]["discovered"] is False and scope["strategies"]["available"] == []
+    text = scope_text(scope)
+    assert "Templates unknown" in text and "8453" in text and "portfolio" not in text
+    same = fund_scope(FundState(fund=fund()), discovered)
+    assert same["strategies"]["discovered"] and "portfolio" in same["strategies"]["available"]
+
+
+def test_the_draft_card_says_what_generic_call_means(tmp_path):
+    from sherwood_monitor.fund.telegram import proposal_dict, proposal_to_view
+    from sherwood_monitor.telegram.cards import render_draft_card
+
+    svc = _service(tmp_path)
+    svc.create_fund(fund(), Agent(name="alpha", identity_id="101", address=HOST_ADDR))
+    svc.claim_topic("alpha-fund", "alpha", "custom route")
+    rec = svc.draft_proposal(
+        "alpha-fund", "alpha", topic="custom route", thesis="a custom call", legs=[], max_capital=100_000_000,
+        max_drawdown_bps=1000, strategy_duration=3600, generic_call=plan(),
+    ).proposal
+    text, _ = render_draft_card(proposal_to_view(proposal_dict(svc.load("alpha-fund"), rec)))
+    assert "Generic Call" in text and "UNAUDITED_TEMPLATE" in text and "InsufficientApproveCoverage" in text
+    portfolio = ProposalRecord(id="p-9", proposer_agent="alpha", thesis="t")
+    plain, _ = render_draft_card(proposal_to_view(proposal_dict(svc.load("alpha-fund"), portfolio)))
+    assert "Generic Call" not in plain
 
 
 # -- the pitch skill keeps the official stock-token list (M7) ----------------------------------------
