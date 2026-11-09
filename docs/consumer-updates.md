@@ -1,5 +1,35 @@
 # Consumer-repo updates for v0.8.3
 
+## Next: after v0.8.3 (unreleased)
+
+On `main` once the approval follow-up to #36 merges. It has no tag, and
+whether it ships as 0.8.4 is the maintainer's call. The consumer docs need
+nothing until it is tagged. What changes for consumers:
+
+- **Approvals in a Generic Call plan.** The three forms 0.8.3 let through
+  are refused:
+  - an approve inside a multicall-style wrapper. The plugin opens
+    `multicall(bytes[])`, `multicall(uint256,bytes[])`,
+    `multicall(bytes32,bytes[])`, `batch(bytes[],bool)` and the Multicall3
+    `aggregate` family, up to three wrappers deep; a wrapper it cannot
+    decode is refused;
+  - `increaseApproval`;
+  - ERC777 `authorizeOperator`.
+
+  `approveAndCall` is covered too.
+- **Asset approvals are capped at the pull.** An approval of the vault
+  asset may not exceed the plan's pull (`approve_above_pull`). Another
+  token's approval is still refused only at or above 2^255 (2^159 for
+  Permit2), because the plan does not say how much of it the clone will
+  hold.
+- **Settle patches.** A settle patch may not scale a balance up into a call
+  that approves.
+- **Signatures.** A signature nesting deeper than 16 levels is refused
+  cleanly, instead of raising RecursionError.
+- **Unchanged:** tools, hooks, slash commands, `requires_env`, crons,
+  `MIN_CLI_VERSION` (`0.71.0`), the CLI floors (0.103.0 portfolio, 0.104.0
+  generic-call), and the network calls.
+
 ## v0.8.3
 
 The `v0.8.3` tag points at `5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3` (the merge of
@@ -26,9 +56,10 @@ What 0.8.3 changes for consumers:
   hex, signatures and argument types, settle patches), so a plan it accepts is
   one the CLI compiles; it refuses an unlimited approval given as approve,
   increaseAllowance, Permit2 approve, permit (EIP-2612 or DAI) or
-  setApprovalForAll, in raw `data` or `signature` + `args`. Three forms
-  still pass, pending a follow-up: an approve wrapped in a multicall,
-  `increaseApproval`, and ERC777 `authorizeOperator`. The draft's preview is unsigned and not
+  setApprovalForAll, in raw `data` or `signature` + `args`. In 0.8.3 three
+  forms still pass: an approve wrapped in a multicall, `increaseApproval`,
+  and ERC777 `authorizeOperator`; `main` refuses them after 0.8.3 (see
+  "Next" above). The draft's preview is unsigned and not
   execution acceptance, and it is not ready when this host's `sherwood
   strategy list` does not print generic-call as available. Only under
   `proposal_signer: agent`: after the host's 🚀 Ship it the plugin writes the

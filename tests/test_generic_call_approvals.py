@@ -217,6 +217,9 @@ def test_ordinary_nesting_still_compiles():
 def test_the_disclosure_names_the_refused_forms_and_the_pull_bound():
     text = " ".join((Path(__file__).parent.parent / "docs" / "hackathon-disclosure.md").read_text().split())
     assert "unlimited approvals in any form" not in text
+    readme = " ".join((Path(__file__).parent.parent / "README.md").read_text().split())
+    for doc in (text, readme):
+        assert "still pass" not in doc  # the three forms the 0.8.3 docs listed as passing are refused now
     for needle in ("multicall(bytes[])", "increaseApproval", "authorizeOperator", "setApprovalForAll",
                    "above the plan's pull", "2^255", "2^159"):
         assert needle in text, needle
