@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from eth_utils import function_signature_to_4byte_selector
 
 from sherwood_monitor.fund.generic_call import (
     MIN_CLI_FOR_GENERIC_CALL,
@@ -61,6 +62,18 @@ Not available on this network
   Moonwell Supply (moonwell-supply)
     Supply USDC.
 """
+
+
+ROUTER = "0x" + "88" * 20
+MAX_UINT = str(2**256 - 1)
+
+
+def _sel(signature: str) -> str:
+    return function_signature_to_4byte_selector(signature).hex()
+
+
+def _addr_word(address: str) -> str:
+    return "00" * 12 + address[2:].lower()
 
 
 def _call(target: str = TARGET, selector: str = "c0ffee00", words: int = 1) -> dict:
@@ -151,6 +164,69 @@ def test_malformed_plans_are_rejected_and_an_asset_sweep_is_an_exit(calls, code)
     with pytest.raises(RuleViolation) as exc:
         validate_generic_call_plan(calls, fund())
     assert exc.value.code == code
+
+
+# -- unlimited approvals: the same rule for raw data and signature + args (H1) ---------------------
+
+
+@pytest.mark.parametrize("call", [
+    {"target": USDG, "signature": "approve(address,uint256)", "args": [ROUTER, MAX_UINT]},
+    {"target": TARGET, "signature": "approve(address spender, uint256 amount)", "args": [ROUTER, str(2**255)]},
+    {"target": TARGET, "signature": "function approve(address,uint256)", "args": ["$clone", MAX_UINT]},
+    {"target": TARGET, "signature": "increaseAllowance(address,uint256)", "args": [ROUTER, MAX_UINT]},
+    {"target": TARGET, "signature": "setApprovalForAll(address,bool)", "args": [ROUTER, True]},
+    {"target": TARGET, "signature": "setApprovalForAll(address,bool)", "args": [ROUTER, "true"]},
+    {"target": TARGET, "signature": "approve(address,address,uint160,uint48)",
+     "args": [TARGET, ROUTER, str(2**160 - 1), 0]},
+    {"target": TARGET, "data": "0x" + _sel("increaseAllowance(address,uint256)") + _addr_word(ROUTER) + "ff" * 32},
+    {"target": TARGET, "data": "0x" + _sel("setApprovalForAll(address,bool)") + _addr_word(ROUTER) + "00" * 31 + "01"},
+    {"target": USDG, "data": "0x" + _sel("approve(address,uint256)") + _addr_word(ROUTER) + "ff" * 32},
+])
+def test_an_unlimited_approval_is_refused_in_every_form(call):
+    with pytest.raises(RuleViolation) as exc:
+        validate_generic_call_plan(plan(executeCalls=[call]), fund(), pull_amount=100_000_000)
+    assert exc.value.code == "unlimited_approve"
+    assert "never allowed" in exc.value.reason
+
+
+def test_an_unlimited_approval_in_the_settle_leg_is_refused_too():
+    settle = [{"target": USDG, "signature": "approve(address,uint256)", "args": [ROUTER, MAX_UINT]}]
+    with pytest.raises(RuleViolation) as exc:
+        validate_generic_call_plan(plan(settleCalls=settle), fund(), pull_amount=1)
+    assert exc.value.code == "unlimited_approve"
+
+
+@pytest.mark.parametrize("args", [[ROUTER, "100000000"], [ROUTER, "$pullAmount"], [ROUTER, 5], ["$clone", "$pull_amount"]])
+def test_an_exact_or_pull_amount_approval_on_the_asset_is_allowed(args):
+    call = {"target": USDG, "signature": "approve(address,uint256)", "args": args}
+    stored = validate_generic_call_plan(plan(executeCalls=[call]), fund(), pull_amount=100_000_000)
+    assert stored["executeCalls"][0]["args"] == args
+
+
+def test_an_operator_approval_switched_off_is_allowed():
+    call = {"target": TARGET, "signature": "setApprovalForAll(address,bool)", "args": [ROUTER, False]}
+    assert validate_generic_call_plan(plan(executeCalls=[call]), fund())["executeCalls"]
+
+
+def test_the_asset_call_is_judged_by_its_selector_not_its_signature_label():
+    # data says 0xdeadbeef; the label says approve. The selector is what runs.
+    labelled = {"target": USDG, "signature": "approve(address,uint256)", "data": "0xdeadbeef" + "ab" * 64}
+    with pytest.raises(RuleViolation) as exc:
+        validate_generic_call_plan(plan(executeCalls=[labelled]), fund())
+    assert exc.value.code in ("bad_call", "bad_calldata")
+
+
+def test_the_guard_blocks_an_unlimited_signature_approve_before_the_handler(agent_ctx):
+    agent_ctx.call_tool("fund_claim_topic", {"topic": "custom route"})
+    hook = agent_ctx.hooks["pre_tool_call"][0]
+    calls = plan(executeCalls=[{"target": USDG, "signature": "approve(address,uint256)", "args": [ROUTER, MAX_UINT]}])
+    blocked = asyncio.run(hook(tool_name="fund_draft_proposal", args={
+        "topic": "custom route", "thesis": "x", "template": "generic-call", "calls": calls,
+        "max_capital": "100", "max_drawdown_bps": 1000,
+    }))
+    assert blocked["action"] == "block" and "unlimited_approve" in blocked["message"]
+    drafted = _draft(agent_ctx, calls)
+    assert drafted["ok"] is False and drafted["code"] == "unlimited_approve"
 
 
 def test_another_chain_is_not_handed_a_4663_template_and_moonwell_is_not_banned_by_name():

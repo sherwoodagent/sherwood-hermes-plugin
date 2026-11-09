@@ -18,13 +18,14 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any
+from typing import Any, NoReturn
 
+from .callspec import Binding, SpecError, encode_call, parse_signature, unlimited_grant
 from .models import CHAIN_ID_ROBINHOOD, TOKEN_ADDRESSES_4663, Fund, Leg, ProposalRecord
 from .rules import RuleViolation, deny, is_address
 from .signed_cli import cli_duration, proposal_name
 from .store import validate_fund_name
-from .units import format_units, is_unlimited
+from .units import format_units
 
 # CLI 0.104.0 ``strategy propose`` / ``strategy clone`` option, not ``strategy init``.
 MIN_CLI_FOR_GENERIC_CALL = "0.104.0"
@@ -82,7 +83,7 @@ def generic_call_legs(max_capital: int) -> list[Leg]:
     ]
 
 
-def _fail(code: str, reason: str) -> None:
+def _fail(code: str, reason: str) -> NoReturn:
     raise RuleViolation(deny(code, reason))
 
 
@@ -99,16 +100,18 @@ def _calldata(value: Any, where: str) -> str:
     text = str(value or "").strip()
     if not _HEX_RE.match(text) or len(text) < 10 or len(text) % 2 != 0:
         _fail("bad_calldata", f"{where} data must be 0x hex with at least a 4-byte selector")
-    if is_unlimited(_approve_word(text)):
-        _fail("unlimited_approve", f"{where} approves an unlimited amount; that is never allowed")
     return text
 
 
-def _approve_word(data: str) -> int:
-    raw = data.lower()
-    if not raw.startswith("0x" + _APPROVE) or len(raw) < 10 + 128:
-        return 0
-    return int(raw[10 + 64 : 10 + 128], 16)
+def _no_unlimited_grant(compiled: bytes, where: str) -> None:
+    """The plugin's rule, on the compiled bytes: raw data and signature + args are the same call."""
+    grant = unlimited_grant(compiled)
+    if grant:
+        _fail(
+            "unlimited_approve",
+            f"{where} grants an unlimited allowance ({grant}); unlimited approvals are never allowed. "
+            "Approve the exact amount, or $pullAmount",
+        )
 
 
 def _uint(value: Any, where: str, *, allow_missing: bool = False) -> int | None:
@@ -134,11 +137,12 @@ def _selector(data: str) -> str:
     return data.lower()[2:10]
 
 
-def _asset_call_ok(selector: str, signature: str) -> bool:
-    if selector in (_APPROVE, _TRANSFER):
-        return True
-    name = signature.strip().split("(", 1)[0].strip().lower()
-    return name in ("approve", "transfer")
+def _asset_call_ok(compiled: bytes) -> bool:
+    """CLI validateGenericCallInit: on the vault asset only approve/transfer, with both words present.
+
+    Judged on the selector the calldata carries, never on the ``signature`` label beside it.
+    """
+    return len(compiled) >= 68 and compiled[:4].hex() in (_APPROVE, _TRANSFER)
 
 
 def _local_forbidden(target: str, fund: Fund) -> str | None:
@@ -150,12 +154,16 @@ def _local_forbidden(target: str, fund: Fund) -> str | None:
     return None
 
 
-def validate_generic_call_plan(raw: Any, fund: Fund) -> dict[str, Any]:
+def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) -> dict[str, Any]:
     """Return the plan to store and hand to the CLI, or raise RuleViolation.
 
     Structural only: addresses, calldata, caps the template documents, and an
-    exit leg. No chain read, so a target with no code is not rejected here;
-    the CLI refuses that at propose.
+    exit leg. Each call is compiled to calldata the way the CLI compiles it
+    (``callspec``), so a rule like "no unlimited approvals" holds for
+    ``signature`` + ``args`` as well as raw ``data``. ``pull_amount`` (base
+    units, the draft's max capital) is what ``$pullAmount`` stands for. No
+    chain read, so a target with no code is not rejected here; the CLI refuses
+    that at propose.
     """
     if not isinstance(raw, dict):
         _fail("bad_plan", "calls must be an object with executeCalls, settleCalls, settlePatches and sweepTokens")
@@ -169,6 +177,12 @@ def validate_generic_call_plan(raw: Any, fund: Fund) -> dict[str, Any]:
             _fail("bad_plan", f"{key} must be an array")
         plan[key] = value
     asset = TOKEN_ADDRESSES_4663.get((fund.asset or "").upper()) if fund.chain_id == CHAIN_ID_ROBINHOOD else None
+    binding = Binding(
+        clone=_ZERO,  # the CLI's first compile binds the clone to zero too (planGenericCallClone)
+        vault=fund.vault if is_address(fund.vault) else _ZERO,
+        asset=asset or _ZERO,
+        pull_amount=max(0, int(pull_amount or 0)),
+    )
     for leg_name, calls in (("execute", plan["executeCalls"]), ("settle", plan["settleCalls"])):
         if len(calls) > MAX_CALLS_PER_LEG:
             _fail("bad_plan", f"the {leg_name} leg has {len(calls)} calls; the template takes at most {MAX_CALLS_PER_LEG}")
@@ -192,21 +206,24 @@ def validate_generic_call_plan(raw: Any, fund: Fund) -> dict[str, Any]:
             if has_data and has_args:
                 _fail("bad_calldata", f"{where} must give data or args, not both")
             if has_data:
-                encoded = _calldata(data, where)
-                total += (len(encoded) - 2) // 2
-                if asset and target.lower() == asset.lower() and not _asset_call_ok(_selector(encoded), signature):
-                    _fail(
-                        "bad_call",
-                        f"{where} calls the vault asset with selector 0x{_selector(encoded)}; "
-                        "on the asset only approve and transfer are allowed",
-                    )
+                compiled = bytes.fromhex(_calldata(data, where)[2:])
             elif signature.strip():
-                if asset and target.lower() == asset.lower() and not _asset_call_ok("", signature):
-                    _fail("bad_call", f"{where} calls the vault asset as {signature.split('(', 1)[0]!r}; only approve and transfer are allowed")
-                if has_args and not isinstance(call.get("args"), list):
+                if has_args and call.get("args") is not None and not isinstance(call.get("args"), list):
                     _fail("bad_plan", f"{where} args must be an array")
+                try:
+                    compiled = encode_call(parse_signature(signature), call.get("args"), binding, where)
+                except SpecError as exc:
+                    _fail("bad_call", str(exc) if str(exc).startswith(where) else f"{where}: {exc}")
             else:
                 _fail("bad_calldata", f"{where} needs 0x calldata or a signature")
+            total += len(compiled)
+            _no_unlimited_grant(compiled, where)
+            if asset and target.lower() == asset.lower() and not _asset_call_ok(compiled):
+                _fail(
+                    "bad_call",
+                    f"{where} calls the vault asset with selector 0x{compiled[:4].hex()}; "
+                    "on the asset only approve(address,uint256) and transfer(address,uint256) are allowed",
+                )
         if total > MAX_LEG_CALLDATA:
             _fail("bad_calldata", f"the {leg_name} leg carries {total} bytes of calldata; the template takes at most {MAX_LEG_CALLDATA}")
     if len(plan["sweepTokens"]) > MAX_SWEEP_TOKENS:

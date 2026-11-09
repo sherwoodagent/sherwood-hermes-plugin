@@ -294,7 +294,7 @@ def parse_draft_args(args: dict[str, Any], state: FundState) -> DraftArgs:
             raise RuleViolation(rules.deny(
                 "bad_plan", "a generic-call draft takes calls, not portfolio weights or calldata legs",
             ))
-        generic = validate_generic_call_plan(calls, state.fund)
+        generic = validate_generic_call_plan(calls, state.fund, pull_amount=max_capital)
         legs = generic_call_legs(max_capital)
     elif calls not in (None, "", {}):
         raise RuleViolation(rules.deny("bad_plan", "a portfolio draft does not take a generic-call plan"))
