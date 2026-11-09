@@ -150,8 +150,11 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   - Inside a turn the plugin uses the documented
     `agent.secret_scope.current_secret_scope()`.
   - Outside one it imports `owner_secret_scope(home)`, the mapping Hermes'
-    own gateway, cron and delegate code bind for a profile (process env plus
-    `.env`, so a secret injected by launchd, systemd or `op run` is kept).
+    own gateway, cron and delegate code bind for a profile. For the launch
+    profile (the process's own home) that is the process env plus `.env`, so
+    a secret injected by launchd, systemd or `op run` is kept. For another
+    profile's home it is built from that profile's files, as
+    `build_profile_secret_scope` does.
   - Hermes has no public equivalent today. The import is guarded: without it
     the plugin falls back to `agent.secret_scope.build_profile_secret_scope(home)`.
   - Nothing is rebound or patched; validate's `no core override` check

@@ -1,4 +1,4 @@
-# Consumer-repo updates for v0.8.3
+# Consumer-repo updates for v0.8.4
 
 ## Next: v0.8.4 (tag pending)
 
