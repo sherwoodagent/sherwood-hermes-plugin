@@ -57,7 +57,7 @@ back. Respect `held_back`, `chain_hold`, `expired` and `cli_warning`. In the
 group chat you have no terminal: never try; say the proposing agent runs its
 command outside the chat.
 
-What the plugin registers (v0.8.2): 17 tools, 5 hooks, 5 slash commands,
+What the plugin registers (v0.8.3): 17 tools, 5 hooks, 5 slash commands,
 4 skills, 6 `hermes sherwood` subcommands and one Telegram platform handler.
 
 - **Monitor tools** (toolset `sherwood-monitor`): `sherwood_monitor_start`,
@@ -78,7 +78,9 @@ What the plugin registers (v0.8.2): 17 tools, 5 hooks, 5 slash commands,
   Hermes shuts down, `reason="shutdown"`; `atexit` is the fallback), `pre_tool_call` (risk checks on
   `sherwood proposal create` / `strategy propose`, the fund rules and the
   host check), `post_tool_call` (settlement memory), `pre_llm_call` (one
-  hook: queued events plus the Telegram pitch context).
+  hook: queued events, the Telegram pitch context, and the
+  `<sherwood-fund-scope>` block for the turn's fund: its chain, vault and the
+  templates `sherwood strategy list` printed; none in other chats or DMs).
 - **Slash commands:** `/fund`, `/join-fund <fund>` (owner only: brings this
   Hermes into a fund as a co-manager), `/fund-approve`, `/fund-agents`,
   `/leaderboard`. Telegram's menu shows them with `_` for `-`.
@@ -113,8 +115,11 @@ code tools in the group's toolset, `plugins.isolation: in_process`,
 private chat, never "Always". If the group toolset still has `terminal`,
 say so to the operator. With `proposal_signer: agent` the operator also
 needs the Sherwood CLI 0.103.0 or later on this machine (older releases
-target another network or lack the bond escrow on the propose path);
-`fund_pending_commands` says so in `cli_warning` when it is older. The
+target another network or lack the bond escrow on the propose path), and
+0.104.0 or later for a Generic Call draft's `sherwood strategy propose
+generic-call`; `fund_pending_commands` says so in `cli_warning` when it is
+older. A Generic Call draft needs `proposal_signer: agent`: under the host
+signer `fund_draft_proposal` refuses it. The
 fund features work with the gateway's `multiplex_profiles` on or off; if a
 member reports "Links are not configured yet" while `SHERWOOD_TG_LINK_SECRET`
 is set in this profile's `.env`, tell the operator to check the gateway log

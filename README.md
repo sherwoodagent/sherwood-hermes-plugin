@@ -39,13 +39,13 @@ sherwood config set --private-key <0x...>
 ## Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.2 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit>
 ```
 
 Hermes has no `@tag` install syntax; `--ref` takes a full 40-character commit
-sha. Use the commit the `v0.8.2` tag points at: it is on the
-[v0.8.2 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.2),
-or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.2 --jq .sha`.
+sha. Use the commit the `v0.8.3` tag points at: it is on the
+[v0.8.3 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.3),
+or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.3 --jq .sha`.
 (This README cannot carry that sha: it is part of the commit.) Once the plugin
 is listed in the Hermes catalog, `hermes plugins install sherwood-monitor`
 installs the reviewed pin. Hermes ≥ 0.21.5.
@@ -92,7 +92,7 @@ SHERWOOD_PRIVATE_KEY=0x...      # optional, secret: only for XMTP; the address i
 The Python package installs fine even if the sidecar build fails; XMTP is just disabled until you rebuild. To skip the build and rebuild manually:
 
 ```bash
-SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.2 release commit>
+SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit>
 # find the installed location:
 python3 -c "import sherwood_monitor, pathlib; print(pathlib.Path(sherwood_monitor.__file__).parent.parent / 'xmtp_sidecar')"
 cd <that path>
@@ -193,6 +193,13 @@ hermes sherwood fund-bind alpha-fund --host-telegram-id 123  # operator only: ch
   on demand with `sherwood_monitor_start`.
 - **Between turns.** Events the streams route are buffered (the last 200) and
   the next turn's `pre_llm_call` injects them as `<sherwood-event>` blocks.
+- **Fund scope.** The same hook adds a `<sherwood-fund-scope>` block for the
+  turn's fund: in a fund's Telegram group, for its host and members; in an
+  operator turn (CLI, cron), for `default_fund`, else the only fund. It names
+  the fund's chain, vault and asset and the templates `sherwood strategy
+  list` printed on this host (read-only, cached 10 minutes, at most 3 s per
+  turn, off the event loop), and labels bundled skills for other networks as
+  examples. Other chats, DMs and strangers get none.
 - **Catch-up.** `on_session_start` runs a one-shot `sherwood session check`
   per fund, which reports what changed since the CLI's last check (for
   example while Hermes was down).
@@ -261,7 +268,7 @@ vectors: [docs/telegram.md](docs/telegram.md).
 ### Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.2 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit>
 ```
 
 (The sha: see [Install](#install).) Once the plugin is listed in the Hermes
@@ -350,10 +357,25 @@ wallet. Then record the vault with `fund_setup`.
   `--max-drawdown-bps` carries the drawdown the fund rules checked (the CLI
   defaults to 20%). Every argument is shell-quoted, and the name and thesis
   use the attached form (`'--name=...'`, `'--description=...'`) so text
-  that starts with `-` can never be read as a flag. Only symbol + weight
-  drafts ship (1 to 20 legs, each symbol once). There is no ✍️ Co-sign
-  button. The ship is the plugin's go-ahead, not an on-chain control: the
-  open factory accepts a propose from a registered agent either way.
+  that starts with `-` can never be read as a flag. Symbol + weight drafts
+  ship (1 to 20 legs, each symbol once), and so do Generic Call drafts.
+  Raw-calldata legs do not. There is no ✍️ Co-sign button. The ship is the
+  plugin's go-ahead, not an on-chain control: the open factory accepts a
+  propose from a registered agent either way.
+- **Generic Call.** A draft with `template: "generic-call"` and a `calls`
+  plan (`executeCalls`, `settleCalls`, `settlePatches`, `sweepTokens`)
+  instead of legs. The plugin checks the plan the way the Sherwood CLI
+  0.104.0 compiles it and refuses an unlimited approval in any form (raw
+  `data` or `signature` + `args`); the draft's preview is unsigned and not
+  execution acceptance. At ship it writes the plan to
+  `<fund state dir>/<fund>/generic-call/p-N.json` (mode 0600) and hands out
+  `sherwood strategy propose generic-call --vault <vault> --calls <plan.json>
+  --amount <max capital> --duration <e.g. 6h> --max-drawdown-bps <bps>
+  '--name=...' '--description=...'`. Generic Call is an unaudited template:
+  guardians abstain (UNAUDITED_TEMPLATE), so execute stays blocked until a
+  guardian operator allows it; the draft card says so. With
+  `proposal_signer: host` there is no prepare route for it, so the draft is
+  refused and nothing is recorded.
 - **Guest agents.** `fund_approve_agent` and `/fund-approve <agent>` return
   `sherwood vault add --vault <vault> --wallet <agent> --agent-id <id>`
   instead of a register-agent body or a `/tg/sign` link; confirm with the tx
@@ -382,8 +404,10 @@ wallet. Then record the vault with `fund_setup`.
 - **CLI version.** The commands carry no `--chain` and need the Sherwood CLI
   0.103.0 or later (Robinhood Chain mainnet is the only network from 0.93.0;
   0.93.0 shipped without the bond escrow addresses, and 0.103.0 is the
-  release the flags were checked against). `fund_pending_commands` reads
-  `sherwood --version` and says so in `cli_warning` when it is older.
+  release the flags were checked against). A generic-call command needs
+  0.104.0 or later, the release that added `--calls` and the template.
+  `fund_pending_commands` reads `sherwood --version` and says so in
+  `cli_warning` when it is older.
 
 With `proposal_signer: host` (the default) none of this applies: the host's
 browser wallet owns the vault and co-signs from `/tg/sign`, as before.

@@ -1,11 +1,56 @@
 # Consumer-repo updates for v0.8.1
 
-## Next: v0.8.2 (tag pending)
+## Next: v0.8.3 (tag pending)
 
-The release workflow tags `v0.8.2` on the merge of the 0.8.2 release PR. Once
-it does, the consumer docs move their install pin to that sha, with the same
-edits as the 0.8.1 PRs below. Nothing else in the consumer docs changes. What
-0.8.2 changes for consumers:
+The release workflow tags `v0.8.3` on the merge of the PR that carries the
+0.8.3 release commit (#36). Once it does, the consumer docs move their install
+pin to that sha, with the same edits as the 0.8.1 PRs below. What 0.8.3
+changes for consumers:
+
+- **Generic Call drafts.** `fund_draft_proposal` takes `template:
+  "generic-call"` and a `calls` plan (`executeCalls`, `settleCalls`,
+  `settlePatches`, `sweepTokens`) instead of legs. The plugin checks the plan
+  the way the Sherwood CLI 0.104.0 compiles it (indices, amounts, addresses,
+  hex, signatures and argument types, settle patches), so a plan it accepts is
+  one the CLI compiles; it refuses an unlimited approval in any form (raw
+  `data` or `signature` + `args`: approve, increaseAllowance, Permit2,
+  permit, setApprovalForAll). The draft's preview is unsigned and not
+  execution acceptance, and it is not ready when this host's `sherwood
+  strategy list` does not print generic-call as available. Only under
+  `proposal_signer: agent`: after the host's 🚀 Ship it the plugin writes the
+  plan to `<fund state dir>/<fund>/generic-call/p-N.json` (mode 0600) and
+  hands out `sherwood strategy propose generic-call --vault ... --calls
+  <plan.json> --amount ... --duration ... --max-drawdown-bps ...`, which
+  needs the Sherwood CLI 0.104.0 or later. Under `proposal_signer: host` the
+  draft is refused (no prepare route) and nothing is recorded. Generic Call
+  is an unaudited template: guardians abstain, so execute stays blocked until
+  a guardian operator allows it, and the draft card says so.
+- **Fund scope per turn.** A turn in a fund's Telegram group, from its host,
+  a member or the owner, and an operator turn (CLI, cron: `default_fund`,
+  else the only fund) get a `<sherwood-fund-scope>` block: that fund's chain,
+  vault and asset, and the templates `sherwood strategy list` printed on this
+  host. Bundled skills for other networks (Moonwell, levered swap, memecoin
+  alpha and others) are labeled other-network examples, and no yield is
+  quoted. Other chats, DMs and strangers get none. `fund_status` returns the
+  same `scope`.
+- **Fixes in this release.** The strategy-list header is no longer read as a
+  template; the list is cached 10 minutes (a failure 60 s) and read off the
+  event loop with a 3 s budget; the plan file path is absolute and is only
+  written once the command is built; the pitch skill keeps the official
+  stock-token list for baskets.
+- **Consumer docs:** besides the pin, a page that lists what an agent can
+  propose under `proposal_signer: agent` may add Generic Call with its
+  0.104.0 CLI floor. No CLI pin moves: the plugin-wide `MIN_CLI_VERSION`
+  stays `0.71.0` and portfolio commands still need 0.103.0.
+- **Unchanged:** tools, hooks, slash commands, `requires_env`, crons,
+  `MIN_CLI_VERSION` (`0.71.0`), and the network calls. New child process: the
+  read-only `sherwood strategy list`.
+
+## v0.8.2
+
+The `v0.8.2` tag points at `736eac3e51c08332f96868054ecb3c473b6759bb` (the
+merge of #35): `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.2 --jq .sha`.
+What 0.8.2 changed for consumers:
 
 - **NAV includes deployed capital after execute.** The vault's `totalAssets()`
   counts only the cash it holds: a PortfolioStrategy takes the capital out at
