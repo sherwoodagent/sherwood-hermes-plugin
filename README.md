@@ -43,12 +43,27 @@ hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of
 ```
 
 Hermes has no `@tag` install syntax; `--ref` takes a full 40-character commit
-sha. Use the commit the `v0.8.3` tag points at: it is on the
-[v0.8.3 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.3),
-or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.3 --jq .sha`.
-(This README cannot carry that sha: it is part of the commit.) Once the plugin
-is listed in the Hermes catalog, `hermes plugins install sherwood-monitor`
-installs the reviewed pin. Hermes ≥ 0.21.5.
+sha, the commit the `v0.8.3` tag points at. Get it with:
+
+```bash
+gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.3 --jq .sha
+```
+
+(This README cannot carry that sha: it is part of the commit. The
+[v0.8.3 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.3)
+shows it once the release notes are edited.)
+
+From a terminal the install asks before it prepares the Python dependencies
+and enables the plugin. Without one (CI, a script, an agent's own shell) it
+cannot ask, so the plugin lands installed but disabled ("Run `hermes plugins
+enable sherwood-monitor`"). To install and enable in one run, answer up front:
+
+```bash
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit> --yes-deps --enable
+```
+
+Once the plugin is listed in the Hermes catalog, `hermes plugins install
+sherwood-monitor` installs the reviewed pin. Hermes ≥ 0.21.5.
 
 A fresh install prompts for five environment variables (Hermes' `requires_env`):
 `TELEGRAM_BOT_TOKEN`, `SHERWOOD_TG_LINK_SECRET`, `SHERWOOD_TG_API_TOKEN` (only
@@ -656,12 +671,17 @@ the plugin injects a `<sherwood-settlement>` block into the agent's next turn:
 ```
 <sherwood-settlement fund="alpha-fund" action="settle" proposal_id="42"
   pnl_usd="500.0" tx="0xabc...">
-REMEMBER THIS — use the remember-settlement skill to persist it to memory.
+REMEMBER THIS: persist it to memory as the remember-settlement steps in the
+sherwood-monitor:sherwood-agent skill say (skill_view
+name="sherwood-monitor:sherwood-agent",
+file_path="skills/remember-settlement/SKILL.md").
 </sherwood-settlement>
 ```
 
-The bundled `remember-settlement` skill primes the agent to call its `memory`
-tool and store a one-line record. Over weeks this becomes a fund history the
+The `remember-settlement` steps are a file inside the bundled skill pack,
+which Hermes registers as `sherwood-monitor:sherwood-agent`. They are not a
+skill of their own, so the block names the pack and the file. They prime the
+agent to call its `memory` tool and store a one-line record. Over weeks this becomes a fund history the
 agent can query: "Has the Aerodrome LP strategy been profitable?", "Which
 proposer has the best track record?", "What's our average P&L on 7-day
 strategies for alpha-fund?"

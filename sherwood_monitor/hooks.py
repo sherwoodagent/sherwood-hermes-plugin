@@ -287,6 +287,12 @@ _SHERWOOD_SETTLE_RE = re.compile(
 )
 
 
+# Hermes registers the bundled pack as "<plugin>:<skill>"; remember-settlement is a file inside it,
+# read with skill_view(name, file_path) (tools/skills_tool_plugin.py serves any file in the skill dir).
+SETTLEMENT_SKILL = "sherwood-monitor:sherwood-agent"
+SETTLEMENT_SKILL_FILE = "skills/remember-settlement/SKILL.md"
+
+
 def _format_settlement_block(record: dict) -> str:
     return (
         f'<sherwood-settlement fund="{record["fund"]}" '
@@ -294,7 +300,9 @@ def _format_settlement_block(record: dict) -> str:
         f'proposal_id="{record.get("proposal_id", "?")}" '
         f'pnl_usd="{record.get("pnl_usd", "n/a")}" '
         f'tx="{record.get("tx_hash", "?")}">\n'
-        f"REMEMBER THIS — use the remember-settlement skill to persist it to memory.\n"
+        f"REMEMBER THIS: persist it to memory as the remember-settlement steps in the "
+        f'{SETTLEMENT_SKILL} skill say (skill_view name="{SETTLEMENT_SKILL}", '
+        f'file_path="{SETTLEMENT_SKILL_FILE}").\n'
         f"</sherwood-settlement>"
     )
 

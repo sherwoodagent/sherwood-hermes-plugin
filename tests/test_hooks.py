@@ -340,3 +340,18 @@ async def test_pre_llm_call_returns_none_when_empty():
     hook = make_pre_llm_call_hook(EventBuffer())
     result = await hook(session_id="s1")
     assert result is None
+
+
+def test_the_settlement_block_names_the_skill_the_way_hermes_resolves_it():
+    """Hermes registers the pack as sherwood-monitor:sherwood-agent; remember-settlement is a file in it."""
+    from pathlib import Path
+
+    from sherwood_monitor.hooks import SETTLEMENT_SKILL, SETTLEMENT_SKILL_FILE, _format_settlement_block
+
+    block = _format_settlement_block({"fund": "alpha", "action": "settle", "proposal_id": "1", "tx_hash": "0x1"})
+    assert 'skill_view name="sherwood-monitor:sherwood-agent"' in block
+    assert 'file_path="skills/remember-settlement/SKILL.md"' in block
+    assert "use the remember-settlement skill" not in block  # not a registered skill name
+    pack = Path(__file__).parent.parent / "skills" / "sherwood-agent"
+    assert SETTLEMENT_SKILL == "sherwood-monitor:" + pack.name
+    assert (pack / SETTLEMENT_SKILL_FILE).is_file()
