@@ -245,6 +245,65 @@ def test_the_guard_blocks_an_unlimited_signature_approve_before_the_handler(agen
     assert drafted["ok"] is False and drafted["code"] == "unlimited_approve"
 
 
+def test_selector_constants_match_keccak():
+    from sherwood_monitor.fund.callspec import SELECTORS, selector_of
+
+    for signature, selector in SELECTORS.items():
+        assert _sel(signature) == selector == selector_of(signature), signature
+
+
+_NO_KECCAK = """
+import sys
+import eth_utils
+
+
+def no_backend(*a, **k):
+    raise ImportError("None of these hashing backends are installed")
+
+
+eth_utils.keccak = no_backend
+sys.modules["Crypto"] = None
+sys.modules["Crypto.Hash"] = None
+import sherwood_monitor  # noqa: F401  (the plugin package, as hermes plugins validate probes it)
+from sherwood_monitor.fund import generic_call, service, tools  # noqa: F401
+print("imported")
+"""
+
+
+def test_importing_the_plugin_never_needs_a_keccak_backend():
+    """`hermes plugins validate` probes the import in a runtime without the plugin's deps."""
+    import sys
+
+    root = Path(__file__).parent.parent
+    proc = subprocess.run([sys.executable, "-c", _NO_KECCAK], cwd=root, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0 and "imported" in proc.stdout, proc.stderr[-2000:]
+
+
+def test_without_a_keccak_backend_raw_data_is_checked_and_a_signature_is_refused(monkeypatch):
+    import sys
+
+    import eth_utils
+
+    from sherwood_monitor.fund import callspec
+
+    def no_backend(*a, **k):
+        raise ImportError("None of these hashing backends are installed")
+
+    monkeypatch.setattr(eth_utils, "keccak", no_backend)
+    monkeypatch.setitem(sys.modules, "Crypto", None)
+    monkeypatch.setitem(sys.modules, "Crypto.Hash", None)
+    raw = {"target": USDG, "data": "0x095ea7b3" + _addr_word(ROUTER) + "ff" * 32}
+    with pytest.raises(RuleViolation) as unlimited:
+        validate_generic_call_plan(plan(executeCalls=[raw]), fund())
+    assert unlimited.value.code == "unlimited_approve"
+    signed = {"target": USDG, "signature": "approve(address,uint256)", "args": [ROUTER, "1"]}
+    with pytest.raises(RuleViolation) as refused:
+        validate_generic_call_plan(plan(executeCalls=[signed]), fund())
+    assert refused.value.code == "bad_call" and "keccak" in refused.value.reason
+    with pytest.raises(callspec.SpecError):
+        callspec.keccak256(b"approve(address,uint256)")
+
+
 # -- a plan the plugin accepts is one CLI 0.104.0 compiles (M4) ------------------------------------
 # Mirrors @sherwoodagent/cli@0.104.0 dist/chunk-ADWPGCQW.js: compileCall (6676-6709), coerce,
 # scaleOf (6711-6720), compileGenericCallSpec (6721-6793), parseGenericCallSpec (6795-6810) and

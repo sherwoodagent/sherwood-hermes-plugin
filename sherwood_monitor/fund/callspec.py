@@ -59,20 +59,49 @@ class SpecError(ValueError):
 
 
 def keccak256(data: bytes) -> bytes:
-    """Ethereum keccak-256 (eth-utils, else pycryptodome: both are the plugin's declared deps)."""
+    """Ethereum keccak-256 (eth-utils, else pycryptodome: the plugin's declared deps).
+
+    Only a plan call given as ``signature`` needs it, and only when that plan is checked:
+    importing the plugin never hashes (the selectors below are constants), so a Hermes
+    runtime without a keccak backend still loads the plugin. There, a signature call is
+    refused, never guessed.
+    """
     try:
         from eth_utils import keccak  # type: ignore[import-not-found]
 
         return bytes(keccak(data))
-    except ImportError:  # pragma: no cover - eth-utils is a declared dependency
+    except Exception:  # eth-hash raises when no backend is installed
+        pass
+    try:
         from Crypto.Hash import keccak as _k  # type: ignore[import-not-found]
 
-        return _k.new(digest_bits=256, data=data).digest()
+        return bytes(_k.new(digest_bits=256, data=data).digest())
+    except Exception:
+        raise SpecError(
+            "this Hermes has no keccak backend (the plugin's eth-hash[pycryptodome] dependency), so a call "
+            "given as a signature cannot be checked; give raw data, or install the plugin's dependencies"
+        ) from None
 
 
 def selector_of(signature: str) -> str:
     """4-byte selector (8 hex chars, no 0x) of a canonical ``name(type,...)`` signature."""
     return keccak256(signature.encode("ascii"))[:4].hex()
+
+
+# Selectors the checks below use, as constants: keccak256(signature)[:4]. tests pin each one
+# against eth-utils (test_generic_call_and_scope.py::test_selector_constants_match_keccak).
+SELECTORS = {
+    "approve(address,uint256)": "095ea7b3",
+    "increaseAllowance(address,uint256)": "39509351",
+    "approve(address,address,uint160,uint48)": "87517c45",  # Permit2 AllowanceTransfer
+    "permit(address,address,uint256,uint256,uint8,bytes32,bytes32)": "d505accf",  # EIP-2612
+    "permit(address,address,uint256,uint256,bool,uint8,bytes32,bytes32)": "8fcbaf0c",  # DAI
+    "setApprovalForAll(address,bool)": "a22cb465",
+    "transfer(address,uint256)": "a9059cbb",
+    "transferFrom(address,address,uint256)": "23b872dd",
+    "safeTransferFrom(address,address,uint256)": "42842e0e",
+    "safeTransferFrom(address,address,uint256,bytes)": "b88d4fde",
+}
 
 
 @dataclass(frozen=True)
@@ -477,12 +506,12 @@ def decode_check(fn: Function, data: bytes) -> None:
 
 GENERIC_CALL_ADDRESS_WORDS = {
     # CLI genericCallAddressWords: words below this count are spender/operator/recipient addresses.
-    selector_of("approve(address,uint256)"): 1,
-    selector_of("setApprovalForAll(address,bool)"): 1,
-    selector_of("transfer(address,uint256)"): 1,
-    selector_of("transferFrom(address,address,uint256)"): 2,
-    selector_of("safeTransferFrom(address,address,uint256)"): 2,
-    selector_of("safeTransferFrom(address,address,uint256,bytes)"): 2,
+    SELECTORS["approve(address,uint256)"]: 1,
+    SELECTORS["setApprovalForAll(address,bool)"]: 1,
+    SELECTORS["transfer(address,uint256)"]: 1,
+    SELECTORS["transferFrom(address,address,uint256)"]: 2,
+    SELECTORS["safeTransferFrom(address,address,uint256)"]: 2,
+    SELECTORS["safeTransferFrom(address,address,uint256,bytes)"]: 2,
 }
 
 
@@ -515,15 +544,15 @@ class _Grant:
 
 
 _GRANTS: dict[str, _Grant] = {
-    selector_of("approve(address,uint256)"): _Grant("approve", 1, 256),
-    selector_of("increaseAllowance(address,uint256)"): _Grant("increaseAllowance", 1, 256),
+    SELECTORS["approve(address,uint256)"]: _Grant("approve", 1, 256),
+    SELECTORS["increaseAllowance(address,uint256)"]: _Grant("increaseAllowance", 1, 256),
     # Permit2 AllowanceTransfer.approve(token, spender, uint160 amount, uint48 expiration)
-    selector_of("approve(address,address,uint160,uint48)"): _Grant("Permit2 approve", 2, 160),
+    SELECTORS["approve(address,address,uint160,uint48)"]: _Grant("Permit2 approve", 2, 160),
     # EIP-2612 permit(owner, spender, value, deadline, v, r, s)
-    selector_of("permit(address,address,uint256,uint256,uint8,bytes32,bytes32)"): _Grant("permit", 2, 256),
+    SELECTORS["permit(address,address,uint256,uint256,uint8,bytes32,bytes32)"]: _Grant("permit", 2, 256),
     # DAI-style permit(holder, spender, nonce, expiry, bool allowed, v, r, s): allowed=true is unlimited
-    selector_of("permit(address,address,uint256,uint256,bool,uint8,bytes32,bytes32)"): _Grant("DAI permit", 4, 0),
-    selector_of("setApprovalForAll(address,bool)"): _Grant("setApprovalForAll", 1, 0),
+    SELECTORS["permit(address,address,uint256,uint256,bool,uint8,bytes32,bytes32)"]: _Grant("DAI permit", 4, 0),
+    SELECTORS["setApprovalForAll(address,bool)"]: _Grant("setApprovalForAll", 1, 0),
 }
 
 
