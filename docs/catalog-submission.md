@@ -141,6 +141,48 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   `.py` wrapper scripts to `$HERMES_HOME/scripts/` (Hermes runs cron scripts only
   from there) and registers them with `hermes cron create`; it is disclosed.
   Its test runs the real `hermes` binary in a scratch `HERMES_HOME`.
+- **The rule-9 warning (private core import).** `hermes plugins validate`
+  passes, with one warning: `private core imports (catalog rule 9 …):
+  sherwood_monitor/telegram/scope.py:89
+  tui_gateway.launch_profile_policy.owner_secret_scope`. The reason:
+  - The Telegram fund handlers run on Hermes' Telegram adapter loop, outside
+    any agent turn. So when the adapter connects, the plugin captures the
+    profile's secret mapping and installs it around each handler call. That
+    way `get_secret` reads this profile's secrets when `multiplex_profiles`
+    is on.
+  - Inside a turn the plugin uses the documented
+    `agent.secret_scope.current_secret_scope()`.
+  - Outside one it imports `owner_secret_scope(home)`, the mapping Hermes'
+    own gateway, cron and delegate code bind for a profile (process env plus
+    `.env`, so a secret injected by launchd, systemd or `op run` is kept).
+  - Hermes has no public equivalent today. The import is guarded: without it
+    the plugin falls back to `agent.secret_scope.build_profile_secret_scope(home)`.
+  - Nothing is rebound or patched; validate's `no core override` check
+    passes.
+  If the reviewers want the import gone, the plugin can use the fallback
+  alone or ask for a public seam.
+- **What `show` and `validate` say about isolation.** `hermes plugins show
+  sherwood-monitor` prints `Runs in: Hermes process — runs in the plugin host
+  (plugins.isolation: host)`, and validate's isolation report says `verdict:
+  host`. The entry's `known_issues` say to keep `plugins.isolation:
+  in_process`. These do not contradict each other:
+  - **The line has two parts.** The first part is where the plugin runs now:
+    `in_process` is Hermes' default. The dimmed part is the static audit
+    (`hermes_cli/plugin_isolation_audit.py`).
+  - **The audit cannot see the Telegram handler.** It reads only direct
+    `<obj>.register_*(...)` calls. The plugin looks up
+    `register_platform_handler` with `getattr(ctx,
+    "register_platform_handler", None)`, so that it still loads on a Hermes
+    without the method, and the audit does not see it. Hermes lists that
+    method as unsupported in the plugin host ("the handler factory receives
+    the platform's native SDK client"). Validate's own note says
+    `register_cli_command` is skipped there.
+  - **Under `isolation: host`** the Telegram handler and `hermes sherwood`
+    are missing, as `known_issues` says.
+  - **`Listens: (none)`** is the manifest's `listens` list of Hermes events,
+    and the plugin subscribes to none. The `subscribe` in the audit's
+    `ctx_methods` is the plugin's own `FundService.subscribe`, not a Hermes
+    subscription.
 
 - **Rule 11 (credentials come through Hermes): resolved in 0.7.0.** Up to
   0.6.0 the plugin read the Sherwood CLI's `~/.sherwood/config.json`
