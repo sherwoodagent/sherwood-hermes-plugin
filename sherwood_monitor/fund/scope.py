@@ -21,7 +21,11 @@ from .store import FundNotFound
 _log = logging.getLogger(__name__)
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
-_TEMPLATE_LINE = re.compile(r"^\s*(.+?)\s+\(([a-z0-9-]+)\)\s*$")
+# One template row: "Name (key)". CLI 0.104.0 index.js:4990-5028 prints available rows at
+# two spaces (their description and "Template: 0x..." lines at four) and the "Not available
+# on <network>:" rows at four.
+_TEMPLATE_LINE = re.compile(r"(?P<name>\S.*?)\s+\((?P<key>[a-z0-9]+(?:-[a-z0-9]+)*)\)")
+_HEADER_NETWORK = re.compile(r"\(([^()]*)\)\s*$")
 _SKILLS_DIR = Path(__file__).resolve().parent.parent.parent / "skills" / "sherwood-agent" / "skills"
 _DISCOVERY: dict[str, dict[str, Any]] = {}
 
@@ -33,25 +37,44 @@ def _strip(text: str) -> str:
 
 
 def parse_strategy_list(text: str) -> dict[str, Any]:
-    """Split ``sherwood strategy list`` into available and unavailable template keys."""
+    """Split ``sherwood strategy list`` into available and unavailable template keys.
+
+    Only template rows count: the ``Strategy Templates (<network>)`` header, descriptions,
+    ``Template: 0x...`` lines, notes and the ``Clone a template:`` footer never become a template.
+    """
     available: list[dict[str, str]] = []
     unavailable: list[dict[str, str]] = []
     network = ""
-    bucket = available
+    section = ""  # "", "available", "unavailable"
     for raw in _strip(text).splitlines():
         line = raw.rstrip()
-        if "Strategy Templates" in line and "(" in line and ")" in line:
-            network = line[line.rfind("(") + 1 : line.rfind(")")]
-        if "Not available" in line:
-            bucket = unavailable
+        body = line.lstrip(" ")
+        indent = len(line) - len(body)
+        if not body:
             continue
-        match = _TEMPLATE_LINE.match(line.strip())
+        if body.startswith("Strategy Templates"):
+            found = _HEADER_NETWORK.search(body)
+            network = found.group(1).strip() if found else ""
+            section = "available"
+            continue
+        if body.startswith("Not available on"):
+            section = "unavailable"
+            continue
+        if indent == 0:
+            if not set(body) <= {"\u2500", "-", "="}:
+                section = ""  # the footer, or anything after the list (a rule line is not)
+            continue
+        if section == "available" and indent != 2:
+            continue  # a description, a "Template:" line or a note
+        if section == "unavailable" and indent < 2:
+            continue
+        if not section:
+            continue
+        match = _TEMPLATE_LINE.fullmatch(body)
         if not match:
             continue
-        name, key = match.group(1).strip(), match.group(2)
-        if name.lower().startswith("template"):
-            continue
-        bucket.append({"name": name, "key": key})
+        row = {"name": match["name"].strip(), "key": match["key"]}
+        (available if section == "available" else unavailable).append(row)
     if not available and not unavailable:
         raise ValueError("no templates in strategy list output")
     return {"ok": True, "network": network, "available": available, "unavailable": unavailable, "source": "sherwood strategy list"}

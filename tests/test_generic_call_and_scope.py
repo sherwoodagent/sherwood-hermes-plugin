@@ -52,6 +52,23 @@ SETUP = {
     "host_telegram_id": "900", "max_capital": "1000", "max_drawdown_bps": 2000, "voting_period": 1800,
     "agent_fee_bps": 500,
 }
+FIXTURES = Path(__file__).parent.parent / "fixtures"
+# `sherwood strategy list`, CLI 0.103.0, captured read-only (scratch HOME) on 2026-11-08.
+REAL_LISTING_0_103 = (FIXTURES / "strategy_list_0.103.0.txt").read_text()
+
+
+def listing_with_generic_call_available(text: str = REAL_LISTING_0_103) -> str:
+    """The 0.103.0 output with Generic Call moved to the available rows, as CLI 0.104.0's printer
+    (index.js:4990-5028) prints a template whose address-book entry is set."""
+    text = text.replace("    Generic Call (generic-call)\n", "")
+    row = (
+        "\n  Generic Call (generic-call)\n"
+        "    Run a fixed list of calls against any protocol, no Solidity (--calls <plan.json>, --amount).\n"
+        "    Template: 0xee67db9630fCB4F69C013928b2113C5489B39833\n"
+    )
+    return text.replace("\n  Not available on", row + "\n  Not available on", 1)
+
+
 LISTING = """\x1b[1mStrategy Templates (Robinhood Chain)\x1b[0m
   Portfolio (portfolio)
     A basket of stock tokens.
@@ -378,6 +395,27 @@ def test_strategy_list_splits_available_from_unavailable_and_a_timeout_is_not_a_
 
     missed = discover_strategy_templates("sherwood-scope-test", runner=timed_out, refresh=True)
     assert missed["ok"] is False and missed["available"] == []
+
+
+def test_the_real_0_103_listing_never_makes_the_header_a_template():
+    parsed = parse_strategy_list(REAL_LISTING_0_103)
+    keys = [row["key"] for row in parsed["available"]]
+    assert parsed["network"] == "robinhood-mainnet"
+    assert "robinhood-mainnet" not in keys
+    assert keys == ["portfolio", "morpho-supply", "concentrated-liquidity", "lighter-perp", "launchpad"]
+    unavailable = [row["key"] for row in parsed["unavailable"]]
+    assert "generic-call" in unavailable and "moonwell-supply" in unavailable
+    assert "robinhood-mainnet" not in unavailable
+    # Descriptions ("... (--market-id, --amount)"), Template: lines and the footer are not rows.
+    assert all(" " not in key for key in keys + unavailable)
+    text = scope_text(fund_scope(FundState(fund=fund()), parsed))
+    assert "robinhood-mainnet, portfolio" not in text and ": portfolio, morpho-supply" in text
+
+
+def test_a_0_104_shaped_listing_reads_generic_call_as_available():
+    parsed = parse_strategy_list(listing_with_generic_call_available())
+    assert "generic-call" in [row["key"] for row in parsed["available"]]
+    assert "generic-call" not in [row["key"] for row in parsed["unavailable"]]
 
 
 def test_a_4663_fund_labels_other_network_skills_and_does_not_quote_yields():

@@ -1,0 +1,37 @@
+
+Strategy Templates (robinhood-mainnet)
+────────────────────────────────────────────────────────────
+
+  Portfolio (portfolio)
+    Weighted portfolio of tokens (stock tokens, crypto) with rebalancing
+    Template: 0xAA5872009c527cCb80343E41C52840CEdb095eb0
+
+  Morpho Supply (morpho-supply)
+    Supply the vault asset to one Morpho Blue market (--market-id, --amount)
+    Template: 0x5B55E1Da361573CB0788e750038567D2569BE41d
+
+  Concentrated Liquidity (concentrated-liquidity)
+    Uniswap V3 LP range funded by a Morpho borrow against vault-asset collateral (--pool, --market-id, --collateral-amount, --borrow-amount, --range-pct)
+    Template: 0xcba9C84F2d382729D1519c5F7f4a9AAaC075f8B5
+
+  Lighter Perp (lighter-perp)
+    USDG margin in a strategy-owned Lighter (zkLighter) perp account; agent trades via an L2 key
+    Template: 0x62f85891b1914c48eA35eA9f81EA49BB31C2e5Cd
+
+  Launchpad (launchpad)
+    Launch a fund token on Sushi Launchpad V2 or StonkBrokers; holders claim a reserve pro-rata
+    Template: 0x1F8221c4176B8B017A6Ef699947BB4A33730Df32
+
+  Not available on robinhood-mainnet:
+    Moonwell Supply (moonwell-supply)
+    Aerodrome LP (aerodrome-lp)
+    Venice Inference (venice-inference)
+    wstETH Moonwell Yield (wsteth-moonwell)
+    Mamo Yield (mamo-yield)
+    Hyperliquid Perp (hyperliquid-perp)
+    Hyperliquid Grid (hyperliquid-grid)
+    Generic Call (generic-call)
+
+Clone a template:  sherwood strategy clone <template> --vault <addr> ...
+Full proposal:     sherwood strategy propose <template> --vault <addr> ...
+
