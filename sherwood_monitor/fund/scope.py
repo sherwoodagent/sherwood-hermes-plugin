@@ -134,6 +134,23 @@ def _discover(key: str, timeout: float, runner: Runner | None) -> dict[str, Any]
         return _failed(str(exc))
 
 
+def cached_strategy_templates(sherwood_bin: str = "sherwood") -> dict[str, Any] | None:
+    """The cached list if it is still fresh, else None. Never runs anything and never waits:
+    while another caller is reading the list, this is None too."""
+    key = sherwood_bin or "sherwood"
+    if not _DISCOVERY_LOCK.acquire(blocking=False):
+        return None
+    try:
+        cached = _DISCOVERY.get(key)
+        if cached is None:
+            return None
+        at, result = cached
+        ttl = DISCOVERY_OK_TTL_S if result.get("ok") else DISCOVERY_FAIL_TTL_S
+        return result if _clock() - at < ttl else None
+    finally:
+        _DISCOVERY_LOCK.release()
+
+
 def discover_strategy_templates(
     sherwood_bin: str = "sherwood",
     *,
@@ -358,19 +375,25 @@ def scope_state(rt: Any, **hook_kwargs: Any) -> tuple[FundState | None, str]:
 def make_fund_scope_source(rt: Any) -> Callable[..., Awaitable[dict[str, str] | None]]:
     """pre_llm context: this turn's fund (see :func:`scope_state`), or nothing.
 
-    Async, and nothing blocks the event loop: the fund-state read and ``sherwood strategy list``
-    run in worker threads. A turn waits at most ``DISCOVERY_TIMEOUT_S`` (plus a hand-off margin)
-    for a cold list; past that it is told templates are unknown, and the read finishes in the
-    background for the next turn.
+    Async, and ``sherwood strategy list`` never runs on the event loop. The fund record is a
+    local JSON read, done in place like the Telegram bridge's chat context; a fresh cached list
+    is used in place too, so a turn with no fund, or a warm cache, costs no thread hop. Only a
+    cold or expired list goes to a worker thread, and a turn waits for it at most
+    ``DISCOVERY_TIMEOUT_S`` (plus a hand-off margin); past that it is told templates are
+    unknown, and the read finishes in the background for the next turn.
     """
 
     async def source(**kwargs: Any) -> dict[str, str] | None:
-        state, note = await asyncio.to_thread(scope_state, rt, **kwargs)
+        state, note = scope_state(rt, **kwargs)
         if state is None:
             return {"context": note} if note else None
+        sherwood_bin = getattr(rt, "sherwood_bin", "sherwood")
+        cached = cached_strategy_templates(sherwood_bin)
+        if cached is not None:
+            return {"context": scope_text(fund_scope(state, cached))}
         try:
             discovered = await asyncio.wait_for(
-                asyncio.to_thread(discover_strategy_templates, getattr(rt, "sherwood_bin", "sherwood")),
+                asyncio.to_thread(discover_strategy_templates, sherwood_bin),
                 timeout=DISCOVERY_TIMEOUT_S + 0.5,
             )
         except asyncio.TimeoutError:

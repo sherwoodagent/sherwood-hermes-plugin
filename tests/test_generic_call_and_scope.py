@@ -820,6 +820,38 @@ def test_the_scope_source_reads_off_the_event_loop_within_budget(tmp_path, monke
     assert "Templates unknown" in out["context"] and "Do not invent" in out["context"]
 
 
+def test_a_warm_cache_is_read_in_place_and_a_cold_one_off_the_loop(tmp_path, monkeypatch):
+    import threading
+
+    from sherwood_monitor.fund import scope
+    from sherwood_monitor.fund.scope import cached_strategy_templates, make_fund_scope_source
+
+    rt = _runtime(tmp_path)
+    rt.sherwood_bin = "sherwood-warm-test"
+    rt.service.create_fund(fund(), host_agent())
+    counting = _Runner()
+    monkeypatch.setattr(scope, "_run", counting)
+    assert cached_strategy_templates("sherwood-warm-test") is None
+    source = make_fund_scope_source(rt)
+    first = asyncio.run(source(session_id="s1"))
+    assert counting.calls == 1 and counting.threads[0] != threading.get_ident()  # cold: a worker thread
+    assert cached_strategy_templates("sherwood-warm-test")["ok"]
+    hops = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy(fn, *a, **k):
+        hops.append(fn)
+        return await real_to_thread(fn, *a, **k)
+
+    monkeypatch.setattr(scope.asyncio, "to_thread", spy)
+    second = asyncio.run(source(session_id="s1"))
+    assert counting.calls == 1 and hops == []  # warm: no subprocess, no thread hop
+    assert second == first
+    # No fund for this turn: nothing to read, no hop either.
+    assert asyncio.run(source(platform="telegram", chat_id="-100999", sender_id="900")) is None
+    assert hops == []
+
+
 def test_the_skill_pack_is_scanned_once_per_chain():
     from sherwood_monitor.fund import scope
 
