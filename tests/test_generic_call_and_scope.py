@@ -1,16 +1,14 @@
 """Generic Call preparation, and answers scoped to the configured fund.
 
 Local fixtures only. Nothing here signs, broadcasts, funds a vault, or messages Telegram.
-A skipped cold-install case is BLOCKED when the hermes binary is absent; the register()
-check in an empty home is an import/load, not a cold install.
+The register() check in an empty home is an in-process import/load, not a cold install:
+the release step `hermes plugins validate` (docs/catalog-submission.md) is that check.
 """
 from __future__ import annotations
 
 import asyncio
 import copy
-import os
 import shlex
-import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -477,7 +475,7 @@ def test_nav_100_with_40_invested_is_at_cost_not_a_loss(tmp_path):
     assert stale["nav_stale"] is True and stale["nav_partial"] is True and stale["pnl_bps"] == 0
 
 
-# -- cold install vs import ---------------------------------------------------------------------
+# -- register() in an empty home (an import check, not a cold install) ---------------------------
 
 
 def test_register_in_an_empty_home_is_an_import_check_not_a_cold_install(tmp_path, monkeypatch):
@@ -487,24 +485,3 @@ def test_register_in_an_empty_home_is_an_import_check_not_a_cold_install(tmp_pat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty-home"))
     ctx = boot(tmp_path, monkeypatch, {})
     assert "fund_draft_proposal" in ctx.tools and "fund_status" in ctx.tools
-
-
-def test_cold_hermes_home_is_blocked_when_the_binary_is_missing(tmp_path):
-    """A real hermes process in a scratch HERMES_HOME, with secret env removed.
-
-    Not a live profile, and it does not message Telegram. Without the binary the case is
-    BLOCKED (skipped), not passed.
-    """
-    hermes = os.environ.get("HERMES_BIN") or shutil.which("hermes")
-    if not hermes:
-        pytest.skip("BLOCKED: hermes binary unavailable")
-    env = os.environ.copy()
-    for key in ("TELEGRAM_BOT_TOKEN", "SHERWOOD_PRIVATE_KEY", "SHERWOOD_TG_LINK_SECRET",
-                "SHERWOOD_TG_API_TOKEN", "SHERWOOD_AGENT_ADDRESS"):
-        env.pop(key, None)
-    env["HERMES_HOME"] = str(tmp_path / "hermes-home")
-    env["HOME"] = str(tmp_path / "home")
-    (tmp_path / "hermes-home").mkdir()
-    (tmp_path / "home").mkdir()
-    proc = subprocess.run([hermes, "--version"], capture_output=True, text=True, env=env, timeout=60)
-    assert proc.returncode == 0 and proc.stdout.strip()
