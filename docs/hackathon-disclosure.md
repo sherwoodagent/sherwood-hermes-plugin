@@ -46,9 +46,25 @@ plugin adds no contracts:
   `proposal_signer: agent` a proposal can instead be a Generic Call clone:
   an unaudited template (tier 2 at full notional, never certified) that runs
   a fixed list of calls. The plugin checks the plan's shape the way the CLI
-  0.104.0 compiles it, refuses unlimited approvals in any form, and refuses
-  calls to the vault or the governor; the CLI refuses the rest it reads from
-  the chain. Guardians abstain on it (UNAUDITED_TEMPLATE), so execute stays
+  0.104.0 compiles it and refuses calls to the vault or the governor; the
+  CLI refuses the rest it reads from the chain. The plugin also checks
+  approvals, which the CLI does not. It reads every call as compiled (raw
+  `data` and `signature` + `args` alike), and every call inside a
+  `multicall(bytes[])`, `multicall(uint256,bytes[])`,
+  `multicall(bytes32,bytes[])`, `batch(bytes[],bool)` or Multicall3
+  `aggregate`, `aggregate3`, `aggregate3Value`, `tryAggregate`,
+  `blockAndAggregate` or `tryBlockAndAggregate` wrapper, up to three
+  wrappers deep; a wrapper it cannot decode is refused. It refuses an
+  operator approval that is switched on (`setApprovalForAll(…, true)`,
+  ERC777 `authorizeOperator`, DAI `permit` with `allowed` true). It bounds
+  `approve`, `increaseAllowance`, `increaseApproval`, `approveAndCall`,
+  EIP-2612 `permit` and Permit2 `approve`. An approval of the vault asset
+  may not be above the plan's pull, the most the clone receives. An approval
+  of any other token is refused only at or above 2^255 (2^159 for Permit2),
+  because the plan does not say how much of that token the clone will hold.
+  A settle patch may not scale a balance up (`mulNum` above `mulDen`) into a
+  call that approves. Approvals in other forms, or behind other wrappers,
+  are not recognized. Guardians abstain on it (UNAUDITED_TEMPLATE), so execute stays
   blocked (InsufficientApproveCoverage) and the vault stays locked until a
   guardian operator allows it or the proposal is cancelled. The plugin does
   not lift that gate.

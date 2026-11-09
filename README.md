@@ -365,9 +365,15 @@ wallet. Then record the vault with `fund_setup`.
 - **Generic Call.** A draft with `template: "generic-call"` and a `calls`
   plan (`executeCalls`, `settleCalls`, `settlePatches`, `sweepTokens`)
   instead of legs. The plugin checks the plan the way the Sherwood CLI
-  0.104.0 compiles it and refuses an unlimited approval in any form (raw
-  `data` or `signature` + `args`); the draft's preview is unsigned and not
-  execution acceptance. At ship it writes the plan to
+  0.104.0 compiles it. It also checks approvals, as raw `data` or
+  `signature` + `args`, and inside `multicall` / `batch` / Multicall3
+  `aggregate*` wrappers. It refuses operator approvals that are switched on
+  (`setApprovalForAll`, ERC777 `authorizeOperator`, DAI `permit`). It caps
+  an `approve`-style approval of the vault asset at the plan's pull. Any
+  other token's approval is refused at or above 2^255 (2^159 for Permit2).
+  The full list is in
+  [docs/hackathon-disclosure.md](docs/hackathon-disclosure.md). The draft's
+  preview is unsigned and not execution acceptance. At ship it writes the plan to
   `<fund state dir>/<fund>/generic-call/p-N.json` (mode 0600) and hands out
   `sherwood strategy propose generic-call --vault <vault> --calls <plan.json>
   --amount <max capital> --duration <e.g. 6h> --max-drawdown-bps <bps>
