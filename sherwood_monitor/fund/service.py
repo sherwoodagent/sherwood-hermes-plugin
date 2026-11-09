@@ -474,6 +474,7 @@ class FundService:
         bond_buffer_status: str = "",
         bond_buffer_note: str = "",
         generic_call: dict[str, Any] | None = None,
+        discovered: dict[str, Any] | None = None,
     ) -> DraftResult:
         """Check every rule, record the draft, consume the claim, return the prepare payload."""
         now = self.clock()
@@ -521,7 +522,7 @@ class FundService:
             if plan:
                 prepare = preview_generic_call(
                     state.fund, plan, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps,
-                    strategy_duration=strategy_duration,
+                    strategy_duration=strategy_duration, discovered=discovered,
                 )
             elif is_portfolio(record):
                 prepare = self.portfolio_payload(state.fund, record, proposer=proposer.address, metadata_uri=metadata_uri)

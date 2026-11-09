@@ -462,6 +462,41 @@ def _patch_preview(patch: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def generic_call_availability(discovered: dict[str, Any] | None, chain_id: int) -> str:
+    """"" when this host's strategy list prints generic-call as available for this chain,
+    "missing: ..." when it was read and does not, else a warning (list not read, or another network)."""
+    from .scope import discovery_applies
+
+    if discovered is None:
+        return ""
+    if not discovered.get("ok"):
+        why = str(discovered.get("error") or "not read")
+        return (
+            f"`sherwood strategy list` could not be read ({why}), so whether this host's CLI can propose "
+            f"generic-call (it needs {MIN_CLI_FOR_GENERIC_CALL} or later) is unknown."
+        )
+    if not discovery_applies(discovered, chain_id):
+        return (
+            f"`sherwood strategy list` printed network {discovered.get('network') or '(none)'}, not this fund's chain "
+            f"{chain_id}, so it says nothing about Generic Call here."
+        )
+    available = {row.get("key") for row in discovered.get("available") or []}
+    if TEMPLATE_KEY in available:
+        return ""
+    network = discovered.get("network") or "this network"
+    unavailable = {row.get("key") for row in discovered.get("unavailable") or []}
+    where = (
+        f"lists generic-call under \"Not available on {network}\""
+        if TEMPLATE_KEY in unavailable
+        else "does not list generic-call at all"
+    )
+    return (
+        f"missing:cli: `sherwood strategy list` on this host {where}. Proposing it needs the Sherwood CLI "
+        f"{MIN_CLI_FOR_GENERIC_CALL} or later, where the template is deployed on {network}; upgrade the CLI "
+        "that runs the propose command, then check the list again. Nothing was signed"
+    )
+
+
 def preview_generic_call(
     fund: Fund,
     plan: dict[str, Any],
@@ -469,8 +504,15 @@ def preview_generic_call(
     max_capital: int,
     max_drawdown_bps: int,
     strategy_duration: int,
+    discovered: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Unsigned preview. ``ready`` means the command can be built, not that it may execute."""
+    """Unsigned preview. ``ready`` means the command can be built, not that it may execute.
+
+    ``discovered`` is this host's ``sherwood strategy list`` (``scope.discover_strategy_templates``).
+    When it was read for this fund's chain and does not print generic-call as available, the
+    preview is not ready and says what is missing: the CLI that runs the propose command cannot
+    propose this template (below 0.104.0, or the template is absent there).
+    """
     template = TEMPLATE_ADDRESS_BOOK.get(fund.chain_id)
     asset_address = TOKEN_ADDRESSES_4663.get((fund.asset or "").upper()) if fund.chain_id == CHAIN_ID_ROBINHOOD else None
     missing: list[str] = []
@@ -485,6 +527,11 @@ def preview_generic_call(
             "`sherwood strategy list` is the live check. Nothing was signed"
         )
     warnings = [EXIT_NOTE]
+    availability = generic_call_availability(discovered, fund.chain_id)
+    if availability.startswith("missing:"):
+        missing.append(availability[len("missing:"):])
+    elif availability:
+        warnings.append(availability)
     if any(not p.get("quote_time_floor") for p in (_patch_preview(p) for p in plan.get("settlePatches") or [])):
         warnings.append("At least one settle patch has no price floor. " + QUOTE_FLOOR_NOTE)
     if not plan.get("executeCalls"):

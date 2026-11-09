@@ -415,6 +415,47 @@ def test_the_asset_placeholder_is_held_to_the_asset_rule():
         validate_generic_call_plan(plan(settleCalls=[], sweepTokens=["$asset", USDG]), fund())
 
 
+# -- the preview is not ready when this host's CLI cannot propose generic-call (M5) ----------------
+
+
+def _discovery(monkeypatch, listing=None, *, error=None):
+    result = (
+        {"ok": False, "error": error, "available": [], "unavailable": []}
+        if error else parse_strategy_list(listing)
+    )
+    monkeypatch.setattr("sherwood_monitor.fund.scope.discover_strategy_templates", lambda *a, **k: result)
+    return result
+
+
+def test_the_preview_is_not_ready_when_the_strategy_list_has_generic_call_unavailable(agent_ctx, monkeypatch):
+    _discovery(monkeypatch, REAL_LISTING_0_103)  # CLI 0.103.0: "Not available on robinhood-mainnet"
+    drafted = _draft(agent_ctx, plan())
+    assert drafted["ok"], drafted
+    prepare = drafted["prepare"]
+    assert prepare["ready"] is False and prepare["signed"] is False
+    (cli,) = [m for m in prepare["missing"] if m.startswith("cli:")]
+    assert "Not available on robinhood-mainnet" in cli and "0.104.0" in cli
+
+
+def test_the_preview_is_ready_when_the_list_prints_generic_call(agent_ctx, monkeypatch):
+    _discovery(monkeypatch, listing_with_generic_call_available())
+    prepare = _draft(agent_ctx, plan())["prepare"]
+    assert prepare["ready"] is True and prepare["missing"] == []
+
+
+def test_an_older_cli_that_does_not_list_generic_call_is_missing_too(agent_ctx, monkeypatch):
+    _discovery(monkeypatch, REAL_LISTING_0_103.replace("    Generic Call (generic-call)\n", ""))
+    prepare = _draft(agent_ctx, plan())["prepare"]
+    assert prepare["ready"] is False and any("does not list generic-call at all" in m for m in prepare["missing"])
+
+
+def test_an_unread_list_is_a_warning_not_a_ready_claim_about_the_cli(agent_ctx, monkeypatch):
+    _discovery(monkeypatch, error="`sherwood strategy list` failed (TimeoutExpired)")
+    prepare = _draft(agent_ctx, plan())["prepare"]
+    assert prepare["ready"] is True
+    assert any("could not be read" in w and "0.104.0" in w for w in prepare["body"]["warnings"])
+
+
 def test_another_chain_is_not_handed_a_4663_template_and_moonwell_is_not_banned_by_name():
     other = fund(chain_id=8453, asset="WETH")
     stored = validate_generic_call_plan(plan(), other)

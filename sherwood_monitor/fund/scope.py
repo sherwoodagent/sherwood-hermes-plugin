@@ -82,6 +82,16 @@ def parse_strategy_list(text: str) -> dict[str, Any]:
     return {"ok": True, "network": network, "available": available, "unavailable": unavailable, "source": "sherwood strategy list"}
 
 
+# `sherwood strategy list` prints the CLI network name; these are the chains they mean.
+NETWORK_CHAIN_IDS = {"robinhood-mainnet": CHAIN_ID_ROBINHOOD}
+
+
+def discovery_applies(discovered: dict[str, Any], chain_id: int) -> bool:
+    """True when the list was read for the network this fund is on (an unknown network is not)."""
+    network = str(discovered.get("network") or "").strip().lower()
+    return NETWORK_CHAIN_IDS.get(network) == chain_id
+
+
 def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     from ..childenv import child_env
 

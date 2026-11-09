@@ -335,13 +335,17 @@ def _guarded(fn: Callable[[dict[str, Any]], dict[str, Any]]) -> ToolHandler:
     return handler
 
 
+def _discovered(rt: FundRuntime) -> dict[str, Any]:
+    """This host's `sherwood strategy list` (cached in scope.py). A failure is ``ok: false``."""
+    try:
+        return fund_scope_mod.discover_strategy_templates(rt.sherwood_bin)
+    except Exception as exc:
+        return {"ok": False, "error": exc.__class__.__name__, "available": [], "unavailable": []}
+
+
 def _status_scope(rt: FundRuntime, state: FundState) -> dict[str, Any]:
     """This fund's chain, vault, and whatever `sherwood strategy list` actually printed. No yields."""
-    try:
-        discovered = fund_scope_mod.discover_strategy_templates(rt.sherwood_bin)
-    except Exception as exc:
-        discovered = {"ok": False, "error": exc.__class__.__name__, "available": [], "unavailable": []}
-    return fund_scope(state, discovered)
+    return fund_scope(state, _discovered(rt))
 
 
 def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
@@ -511,6 +515,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             bond_buffer_status=str(args.get("bond_buffer_status") or ""),
             bond_buffer_note=str(args.get("bond_buffer_note") or ""),
             generic_call=d.generic_call or None,
+            discovered=_discovered(rt) if d.generic_call else None,
         )
         return {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
 
