@@ -64,19 +64,22 @@ def _installed_source_dir() -> Path | None:
     Hermes loads the plugin from ``$HERMES_HOME/plugins/sherwood-monitor/`` but installs its
     Python package, editable, from a copy in its dependency workspace; ``setup.py`` builds the
     sidecar in that copy when npm is on PATH. The install record (PEP 610 ``direct_url.json``,
-    read through ``importlib.metadata``) names the copy. None when there is no such record.
+    read through ``importlib.metadata``) names the copy. None when there is no such record, or
+    it is not an editable install from an absolute ``file:`` path: never an exception.
     """
     try:
         raw = _metadata.distribution("sherwood-monitor").read_text("direct_url.json") or ""
         info = json.loads(raw) if raw else {}
+        dir_info = info.get("dir_info") if isinstance(info, dict) else None
+        if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+            return None
+        url = urlparse(str(info.get("url") or ""))
+        if url.scheme != "file" or not url.path:
+            return None
+        path = Path(unquote(url.path))
+        return path if path.is_absolute() else None
     except Exception:
         return None
-    if not isinstance(info, dict) or not (info.get("dir_info") or {}).get("editable"):
-        return None
-    url = urlparse(str(info.get("url") or ""))
-    if url.scheme != "file" or not url.path:
-        return None
-    return Path(unquote(url.path))
 
 
 def _sidecar_dir() -> Path:
@@ -136,7 +139,11 @@ def register(ctx: Any) -> None:
     cfg_path = _plugin_root() / "config.yaml"
     cfg = load_config(cfg_path)
 
-    sidecar_dir = _sidecar_dir()
+    try:
+        sidecar_dir = _sidecar_dir()
+    except Exception as exc:  # finding the sidecar must never stop the plugin loading
+        _log.warning("XMTP sidecar lookup failed (%s); using the plugin's own xmtp_sidecar/", type(exc).__name__)
+        sidecar_dir = Path(__file__).parent.parent / "xmtp_sidecar"
 
     buffer = EventBuffer()
 

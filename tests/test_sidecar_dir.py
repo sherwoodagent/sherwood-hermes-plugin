@@ -59,6 +59,10 @@ def test_a_path_with_spaces_in_the_record_is_decoded(tmp_path, monkeypatch, own_
     {"url": "file:///nowhere/at/all", "dir_info": {"editable": True}},  # not built there
     {"url": "file:///nowhere", "dir_info": {}},  # not editable
     "not a dict",
+    {"url": "file:///nowhere", "dir_info": "editable"},  # dir_info valid JSON but not an object
+    {"url": "file:///nowhere", "dir_info": {"editable": "yes"}},  # editable must be true
+    {"url": "file:relative/xmtp", "dir_info": {"editable": True}},  # a relative file: URL
+    {"url": 5, "dir_info": {"editable": True}},
 ])
 def test_without_a_workspace_build_the_plugin_dir_is_named(monkeypatch, own_unbuilt, record):
     _installed(monkeypatch, record)
@@ -78,3 +82,21 @@ def test_a_build_in_the_plugin_dir_wins(tmp_path, monkeypatch):
     _installed(monkeypatch, {"url": (tmp_path / "elsewhere").as_uri(), "dir_info": {"editable": True}})
     monkeypatch.setattr(sherwood_monitor, "_sidecar_built", lambda d: True)
     assert sherwood_monitor._sidecar_dir() == OWN
+
+
+def test_a_relative_file_url_with_a_build_is_still_not_used(tmp_path, monkeypatch, own_unbuilt):
+    monkeypatch.chdir(tmp_path)
+    _build(tmp_path / "relative")
+    _installed(monkeypatch, {"url": "file:relative", "dir_info": {"editable": True}})
+    assert sherwood_monitor._sidecar_dir() == OWN  # never resolved against the working directory
+
+
+def test_register_loads_even_if_the_sidecar_lookup_raises(tmp_path, monkeypatch):
+    from tests.test_fund_plugin import boot
+
+    def broken():
+        raise RuntimeError("lookup exploded")
+
+    monkeypatch.setattr(sherwood_monitor, "_sidecar_dir", broken)
+    ctx = boot(tmp_path, monkeypatch, {})
+    assert "sherwood_monitor_status" in ctx.tools and "fund_status" in ctx.tools
