@@ -20,7 +20,18 @@ import os
 import re
 from typing import Any, NoReturn
 
-from .callspec import Binding, SpecError, encode_call, parse_signature, unlimited_grant
+from .callspec import (
+    MAX_SAFE_INTEGER,
+    Binding,
+    Function,
+    SpecError,
+    address_words,
+    decode_check,
+    encode_call,
+    parse_signature,
+    patch_word_index,
+    unlimited_grant,
+)
 from .models import CHAIN_ID_ROBINHOOD, TOKEN_ADDRESSES_4663, Fund, Leg, ProposalRecord
 from .rules import RuleViolation, deny, is_address
 from .signed_cli import cli_duration, proposal_name
@@ -40,7 +51,10 @@ MAX_LEG_CALLDATA = 16384
 _PLAN_KEYS = ("executeCalls", "settleCalls", "settlePatches", "sweepTokens")
 _APPROVE = "095ea7b3"
 _TRANSFER = "a9059cbb"
-_HEX_RE = re.compile(r"^0x[0-9a-fA-F]*$")
+_HEX_RE = re.compile(r"0x[0-9a-fA-F]*")
+_ADDRESS_RE = re.compile(r"0x[0-9a-fA-F]{40}")
+_CALL_KEYS = ("target", "data", "signature", "args", "value", "note")
+_PATCH_KEYS = ("callIndex", "argIndex", "wordIndex", "token", "mulNum", "mulDen")
 _ZERO = "0x" + "0" * 40
 
 # Fleet guardians (sherwood-guardian) treat a non-core clone as UNAUDITED_TEMPLATE,
@@ -102,18 +116,45 @@ def _fail(code: str, reason: str) -> NoReturn:
     raise RuleViolation(deny(code, reason))
 
 
-def _address(value: Any, where: str) -> str:
-    text = str(value or "").strip()
-    if not is_address(text):
-        _fail("bad_target", f"{where} must be a 0x address, not {text[:66]!r}")
-    if text.lower() == _ZERO:
-        _fail("bad_target", f"{where} is the zero address")
-    return text
+_PLACEHOLDER_ASSET = "$asset"
+
+
+def _token_ref(value: Any, where: str, fund: Fund, *, code: str = "bad_target") -> tuple[str, str]:
+    """A call target, sweep token or patch token: (as written, resolved lowercase key).
+
+    CLI ``placeholder`` + ``isAddress``: a 0x address, or ``$asset`` (the vault asset). ``$clone``
+    and ``$vault`` resolve too, but the CLI refuses both as a target or a sweep token
+    (``forbiddenLabel``), so they are refused here. The resolved key of ``$asset`` is the asset
+    address when the plugin knows it, else the literal ``$asset``.
+    """
+    text = value.strip() if isinstance(value, str) else ""
+    low = text.lower()
+    if low == _PLACEHOLDER_ASSET:
+        asset = _asset_address(fund)
+        return text, (asset.lower() if asset else _PLACEHOLDER_ASSET)
+    if low == "$clone":
+        _fail(code, f"{where} is $clone, the clone itself; the clone may not call or sweep itself")
+    if low == "$vault":
+        _fail(code, f"{where} is $vault, this fund's vault; the clone may not call it or sweep it")
+    if not _ADDRESS_RE.fullmatch(text):
+        _fail(code, f"{where} must be a 0x address or $asset, not {text[:66]!r}")
+    if low == _ZERO:
+        _fail(code, f"{where} is the zero address")
+    forbidden = _local_forbidden(text, fund)
+    if forbidden:
+        _fail(code, f"{where} is {forbidden}; the clone may not call it")
+    return text, low
+
+
+def _asset_address(fund: Fund) -> str | None:
+    if fund.chain_id != CHAIN_ID_ROBINHOOD:
+        return None
+    return TOKEN_ADDRESSES_4663.get((fund.asset or "").upper())
 
 
 def _calldata(value: Any, where: str) -> str:
-    text = str(value or "").strip()
-    if not _HEX_RE.match(text) or len(text) < 10 or len(text) % 2 != 0:
+    text = value.strip() if isinstance(value, str) else ""
+    if not _HEX_RE.fullmatch(text) or len(text) < 10 or len(text) % 2 != 0:
         _fail("bad_calldata", f"{where} data must be 0x hex with at least a 4-byte selector")
     return text
 
@@ -129,27 +170,38 @@ def _no_unlimited_grant(compiled: bytes, where: str) -> None:
         )
 
 
-def _uint(value: Any, where: str, *, allow_missing: bool = False) -> int | None:
-    if value in (None, ""):
-        if allow_missing:
-            return None
-        _fail("bad_plan", f"{where} is missing")
-    if isinstance(value, bool) or isinstance(value, float):
-        _fail("bad_plan", f"{where} must be an integer, not a float or bool")
-    text = str(value).strip()
-    if not re.fullmatch(r"\d{1,78}", text):
-        _fail("bad_plan", f"{where} must be a non-negative integer")
-    return int(text)
+def _json_index(value: Any, where: str) -> int:
+    """CLI ``Number.isInteger(x) && x >= 0``: a JSON integer, not a string, float, bool or null."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _fail("bad_plan", f"{where} must be a JSON integer from 0 (not a string, float or null), got {value!r}"[:200])
+    return value
 
 
-def _value_is_zero(value: Any, where: str) -> None:
-    if value in (None, "", 0, "0", "0x0", "0x"):
+def _scale(value: Any, where: str) -> int | str:
+    """CLI ``scaleOf``: a JSON integer up to 2^53-1, or a decimal string up to 2^256-1. Absent is 0."""
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_SAFE_INTEGER:
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,78}", value.strip()) and int(value.strip()) < 2**256:
+        return value.strip()
+    _fail(
+        "bad_plan",
+        f"{where} must be a uint256 in raw units: a decimal string, or a JSON integer up to 2^53-1, got {value!r}"[:200],
+    )
+
+
+def _value_is_zero(call: dict[str, Any], where: str) -> None:
+    """CLI ``compileCall`` value: absent, a safe JSON integer or a decimal string; the template needs 0."""
+    if "value" not in call:
         return
-    _fail("bad_call", f"{where} value must be 0; the vault holds no native token for this call")
-
-
-def _selector(data: str) -> str:
-    return data.lower()[2:10]
+    value = call["value"]
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_SAFE_INTEGER:
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,78}", value.strip()):
+        number = int(value.strip())
+    else:
+        _fail("bad_call", f"{where} value must be a non-negative integer, and 0 for this template")
+    if number != 0:
+        _fail("bad_call", f"{where} value must be 0; the vault holds no native token for this call")
 
 
 def _asset_call_ok(compiled: bytes) -> bool:
@@ -169,140 +221,195 @@ def _local_forbidden(target: str, fund: Fund) -> str | None:
     return None
 
 
+def _compile_call(call: Any, where: str, fund: Fund, binding: Binding) -> tuple[dict[str, Any], str, bytes, Function | None]:
+    """One plan call -> (the entry to store, resolved target key, calldata, parsed signature or None).
+
+    Mirrors CLI ``compileCall``: ``data`` xor ``args``; with both ``data`` and ``signature`` the data
+    must decode as that signature; ``signature`` + ``args`` encodes; ``value`` is 0; ``note`` is text.
+    """
+    if not isinstance(call, dict):
+        _fail("bad_plan", f"{where} must be an object")
+    extra = [k for k in call if k not in _CALL_KEYS]
+    if extra:
+        _fail("bad_plan", f"{where} has unknown field(s): {', '.join(extra)}. Allowed: {', '.join(_CALL_KEYS)}")
+    target, target_key = _token_ref(call.get("target"), f"{where} target", fund)
+    _value_is_zero(call, where)
+    note = call.get("note")
+    if note is not None and not isinstance(note, str):
+        _fail("bad_plan", f"{where} note must be text")
+    signature = call.get("signature")
+    if signature is not None and not isinstance(signature, str):
+        _fail("bad_call", f"{where} signature must be text like approve(address,uint256)")
+    fn: Function | None = None
+    if signature and signature.strip():
+        try:
+            fn = parse_signature(signature)
+        except SpecError as exc:
+            _fail("bad_call", f"{where}: {exc}")
+    data = call.get("data")
+    has_data = data not in (None, "")
+    stored: dict[str, Any] = {"target": target}
+    if has_data:
+        if "args" in call:
+            _fail("bad_calldata", f"{where} must give data or args, not both")
+        text = _calldata(data, where)
+        compiled = bytes.fromhex(text[2:])
+        if fn is not None:
+            try:
+                decode_check(fn, compiled)
+            except SpecError as exc:
+                _fail("bad_calldata", f"{where}: {exc}")
+        stored["data"] = text
+    elif fn is not None:
+        args = call.get("args")
+        try:
+            compiled = encode_call(fn, args, binding, where)
+        except SpecError as exc:
+            _fail("bad_call", str(exc))
+        if args is not None:
+            stored["args"] = args
+    else:
+        _fail("bad_calldata", f"{where} needs 0x data, or a signature with args")
+    if fn is not None:
+        stored["signature"] = signature.strip()
+    if note and note.strip():
+        stored["note"] = note.strip()[:300]
+    _no_unlimited_grant(compiled, where)
+    if target_key in (_PLACEHOLDER_ASSET, (_asset_address(fund) or "").lower()) and not _asset_call_ok(compiled):
+        _fail(
+            "bad_call",
+            f"{where} calls the vault asset with selector 0x{compiled[:4].hex()}; "
+            "on the asset only approve(address,uint256) and transfer(address,uint256) are allowed",
+        )
+    return stored, target_key, compiled, fn
+
+
 def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) -> dict[str, Any]:
     """Return the plan to store and hand to the CLI, or raise RuleViolation.
 
-    Structural only: addresses, calldata, caps the template documents, and an
-    exit leg. Each call is compiled to calldata the way the CLI compiles it
-    (``callspec``), so a rule like "no unlimited approvals" holds for
-    ``signature`` + ``args`` as well as raw ``data``. ``pull_amount`` (base
-    units, the draft's max capital) is what ``$pullAmount`` stands for. No
-    chain read, so a target with no code is not rejected here; the CLI refuses
-    that at propose.
+    Mirrors what ``@sherwoodagent/cli@0.104.0`` checks before it signs, so a plan accepted here
+    is one the CLI compiles: ``parseGenericCallSpec``, ``compileGenericCallSpec`` and the offline
+    part of ``validateGenericCallInit`` (dist/chunk-ADWPGCQW.js). Each call is compiled to calldata
+    the way the CLI compiles it (``callspec``), so "no unlimited approvals" holds for ``signature``
+    + ``args`` as well as raw ``data``. ``pull_amount`` (base units, the draft's max capital) is
+    what ``$pullAmount`` stands for. The returned plan is a normalized copy: only the keys the CLI
+    reads, integers as JSON integers, no ``null`` where the CLI would read a value.
+
+    No chain read: the CLI also refuses the factory, registries, sWOOD and the ledger as targets
+    once it reads them from the vault, a target with no code, and a pull above the tier-2 ceiling.
+    The plugin adds its own rules: an exit (a settle leg or the asset swept), no duplicate sweep
+    tokens, no unlimited approvals.
     """
     if not isinstance(raw, dict):
         _fail("bad_plan", "calls must be an object with executeCalls, settleCalls, settlePatches and sweepTokens")
     unknown = [k for k in raw if k not in _PLAN_KEYS]
     if unknown:
         _fail("bad_plan", f"unknown generic-call field(s): {', '.join(unknown)}. Allowed: {', '.join(_PLAN_KEYS)}")
-    plan: dict[str, list[Any]] = {}
+    lists: dict[str, list[Any]] = {}
     for key in _PLAN_KEYS:
         value = raw.get(key, [])
         if not isinstance(value, list):
             _fail("bad_plan", f"{key} must be an array")
-        plan[key] = value
-    asset = TOKEN_ADDRESSES_4663.get((fund.asset or "").upper()) if fund.chain_id == CHAIN_ID_ROBINHOOD else None
+        lists[key] = value
+    asset = _asset_address(fund)
     binding = Binding(
         clone=_ZERO,  # the CLI's first compile binds the clone to zero too (planGenericCallClone)
         vault=fund.vault if is_address(fund.vault) else _ZERO,
         asset=asset or _ZERO,
         pull_amount=max(0, int(pull_amount or 0)),
     )
-    for leg_name, calls in (("execute", plan["executeCalls"]), ("settle", plan["settleCalls"])):
+    plan: dict[str, list[Any]] = {key: [] for key in _PLAN_KEYS}
+    targets: set[str] = set()
+    settle_compiled: list[tuple[bytes, Function | None]] = []
+    for leg_name, key in (("execute", "executeCalls"), ("settle", "settleCalls")):
+        calls = lists[key]
         if len(calls) > MAX_CALLS_PER_LEG:
             _fail("bad_plan", f"the {leg_name} leg has {len(calls)} calls; the template takes at most {MAX_CALLS_PER_LEG}")
         total = 0
         for i, call in enumerate(calls):
-            where = f"{leg_name} call {i}"
-            if not isinstance(call, dict):
-                _fail("bad_plan", f"{where} must be an object")
-            extra = [k for k in call if k not in ("target", "data", "signature", "args", "value")]
-            if extra:
-                _fail("bad_plan", f"{where} has unknown field(s): {', '.join(extra)}")
-            target = _address(call.get("target"), where)
-            forbidden = _local_forbidden(target, fund)
-            if forbidden:
-                _fail("bad_target", f"{where} targets {forbidden}; the clone may not call it")
-            _value_is_zero(call.get("value"), where)
-            data = call.get("data")
-            signature = str(call.get("signature") or "")
-            has_data = data not in (None, "")
-            has_args = "args" in call
-            if has_data and has_args:
-                _fail("bad_calldata", f"{where} must give data or args, not both")
-            if has_data:
-                compiled = bytes.fromhex(_calldata(data, where)[2:])
-            elif signature.strip():
-                if has_args and call.get("args") is not None and not isinstance(call.get("args"), list):
-                    _fail("bad_plan", f"{where} args must be an array")
-                try:
-                    compiled = encode_call(parse_signature(signature), call.get("args"), binding, where)
-                except SpecError as exc:
-                    _fail("bad_call", str(exc) if str(exc).startswith(where) else f"{where}: {exc}")
-            else:
-                _fail("bad_calldata", f"{where} needs 0x calldata or a signature")
+            stored, target_key, compiled, fn = _compile_call(call, f"{leg_name} call {i}", fund, binding)
+            plan[key].append(stored)
+            targets.add(target_key)
             total += len(compiled)
-            _no_unlimited_grant(compiled, where)
-            if asset and target.lower() == asset.lower() and not _asset_call_ok(compiled):
-                _fail(
-                    "bad_call",
-                    f"{where} calls the vault asset with selector 0x{compiled[:4].hex()}; "
-                    "on the asset only approve(address,uint256) and transfer(address,uint256) are allowed",
-                )
+            if leg_name == "settle":
+                settle_compiled.append((compiled, fn))
         if total > MAX_LEG_CALLDATA:
             _fail("bad_calldata", f"the {leg_name} leg carries {total} bytes of calldata; the template takes at most {MAX_LEG_CALLDATA}")
-    if len(plan["sweepTokens"]) > MAX_SWEEP_TOKENS:
-        _fail("bad_plan", f"{len(plan['sweepTokens'])} sweep tokens; the template takes at most {MAX_SWEEP_TOKENS}")
-    sweeps: list[str] = []
-    seen_sweep: set[str] = set()
-    for i, token in enumerate(plan["sweepTokens"]):
-        addr = _address(token, f"sweep token {i}")
-        forbidden = _local_forbidden(addr, fund)
-        if forbidden:
-            _fail("bad_target", f"sweep token {i} is {forbidden}")
-        if addr.lower() in seen_sweep:
-            _fail("bad_plan", f"sweep token {addr} is listed twice")
-        seen_sweep.add(addr.lower())
-        sweeps.append(addr)
-    plan["sweepTokens"] = sweeps
-    if len(plan["settlePatches"]) > MAX_SETTLE_PATCHES:
-        _fail("bad_plan", f"{len(plan['settlePatches'])} settle patches; the template takes at most {MAX_SETTLE_PATCHES}")
+    if len(lists["sweepTokens"]) > MAX_SWEEP_TOKENS:
+        _fail("bad_plan", f"{len(lists['sweepTokens'])} sweep tokens; the template takes at most {MAX_SWEEP_TOKENS}")
+    sweeps: set[str] = set()
+    for i, token in enumerate(lists["sweepTokens"]):
+        text, key = _token_ref(token, f"sweep token {i}", fund)
+        if key in sweeps:
+            _fail("bad_plan", f"sweep token {text} is listed twice")
+        sweeps.add(key)
+        plan["sweepTokens"].append(text)
+    if len(lists["settlePatches"]) > MAX_SETTLE_PATCHES:
+        _fail("bad_plan", f"{len(lists['settlePatches'])} settle patches; the template takes at most {MAX_SETTLE_PATCHES}")
+    asset_key = asset.lower() if asset else None
     patched: set[tuple[int, int]] = set()
-    for i, patch in enumerate(plan["settlePatches"]):
+    for i, patch in enumerate(lists["settlePatches"]):
         where = f"settle patch {i}"
         if not isinstance(patch, dict):
             _fail("bad_plan", f"{where} must be an object")
-        extra = [k for k in patch if k not in ("callIndex", "argIndex", "wordIndex", "token", "mulNum", "mulDen")]
+        extra = [k for k in patch if k not in _PATCH_KEYS]
         if extra:
-            _fail("bad_plan", f"{where} has unknown field(s): {', '.join(extra)}")
-        token = _address(patch.get("token"), where)
-        call_index = _uint(patch.get("callIndex"), f"{where} callIndex")
-        assert call_index is not None
-        if call_index >= len(plan["settleCalls"]):
-            _fail("bad_plan", f"{where} names settle call {call_index}, but the settle leg has {len(plan['settleCalls'])} call(s)")
-        has_arg = "argIndex" in patch and patch.get("argIndex") not in (None, "")
-        has_word = "wordIndex" in patch and patch.get("wordIndex") not in (None, "")
+            _fail("bad_plan", f"{where} has unknown field(s): {', '.join(extra)}. Allowed: {', '.join(_PATCH_KEYS)}")
+        token, token_key = _token_ref(patch.get("token"), f"{where} token", fund, code="bad_plan")
+        stored: dict[str, Any] = {}
+        for scale in ("mulNum", "mulDen"):
+            if scale in patch:
+                stored[scale] = _scale(patch[scale], f"{where} {scale}")
+        if "callIndex" not in patch:
+            _fail("bad_plan", f"{where} callIndex is missing")
+        call_index = _json_index(patch["callIndex"], f"{where} callIndex")
+        if call_index >= len(settle_compiled):
+            _fail("bad_plan", f"{where} names settle call {call_index}, but the settle leg has {len(settle_compiled)} call(s)")
+        # The CLI counts a key that is present, even as null, as given.
+        has_arg, has_word = "argIndex" in patch, "wordIndex" in patch
         if has_arg == has_word:
-            _fail("bad_plan", f"{where} needs exactly one of argIndex or wordIndex")
-        word_index = _uint(patch.get("wordIndex"), f"{where} wordIndex") if has_word else None
-        if has_arg:
-            arg_index = _uint(patch.get("argIndex"), f"{where} argIndex")
-            assert arg_index is not None
-            if arg_index < 0:
-                _fail("bad_plan", f"{where} argIndex must be >= 0")
-        mul_num = _uint(patch.get("mulNum"), f"{where} mulNum", allow_missing=True)
-        mul_den = _uint(patch.get("mulDen"), f"{where} mulDen", allow_missing=True)
-        if (mul_num in (None, 0)) != (mul_den in (None, 0)):
+            _fail("bad_plan", f"{where} needs exactly one of argIndex (with the call's signature) or wordIndex")
+        data, fn = settle_compiled[call_index]
+        if has_word:
+            word_index = _json_index(patch["wordIndex"], f"{where} wordIndex")
+            position: dict[str, int] = {"wordIndex": word_index}
+        else:
+            arg_index = _json_index(patch["argIndex"], f"{where} argIndex")
+            if fn is None:
+                _fail(
+                    "bad_plan",
+                    f"{where}: settle call {call_index} is raw data with no signature, so argument {arg_index} "
+                    "cannot be located; add its signature or pass a raw wordIndex",
+                )
+            try:
+                word_index = patch_word_index(fn, arg_index)
+            except SpecError as exc:
+                _fail("bad_plan", f"{where}: settle call {call_index} ({fn.name}): {exc}")
+            position = {"argIndex": arg_index}
+        words = 0 if len(data) < 36 else (len(data) - 4) // 32
+        if word_index >= words:
+            _fail("bad_plan", f"{where} writes word {word_index} of settle call {call_index}, which has {words} argument word(s)")
+        if token_key not in (asset_key, _PLACEHOLDER_ASSET) and token_key not in targets and token_key not in sweeps:
+            _fail(
+                "bad_target",
+                f"{where} reads {token}, which is neither the vault asset ($asset), a call target nor a sweep token",
+            )
+        guarded = address_words(data)
+        if word_index < guarded:
+            _fail(
+                "bad_plan",
+                f"{where} writes word {word_index} of settle call {call_index} (selector 0x{data[:4].hex()}), an "
+                f"address word; words below {guarded} cannot be patched",
+            )
+        mul_num = int(stored.get("mulNum", 0))
+        mul_den = int(stored.get("mulDen", 0))
+        if (mul_num == 0) != (mul_den == 0):
             _fail("bad_plan", f"{where} must set mulNum and mulDen both, or neither (a half-set scale is rejected)")
-        call = plan["settleCalls"][call_index]
-        data = str(call.get("data") or "")
-        if word_index is not None and _HEX_RE.match(data) and len(data) >= 10 and len(data) % 2 == 0:
-            words = 0 if (len(data) - 2) // 2 < 36 else ((len(data) - 2) // 2 - 4) // 32
-            if word_index >= words:
-                _fail("bad_plan", f"{where} writes word {word_index} of a call with {words} argument word(s)")
-            selector = _selector(data)
-            if word_index == 0 and selector in (_APPROVE, _TRANSFER):
-                _fail("bad_plan", f"{where} would overwrite an approve/transfer address word")
-        if word_index is not None:
-            key = (call_index, word_index)
-            if key in patched:
-                _fail("bad_plan", f"{where} writes word {word_index} of settle call {call_index}, which another patch already writes")
-            patched.add(key)
-        if asset and token.lower() != asset.lower():
-            targets = {str(c.get("target") or "").lower() for c in plan["executeCalls"] + plan["settleCalls"] if isinstance(c, dict)}
-            if token.lower() not in targets and token.lower() not in seen_sweep:
-                _fail("bad_target", f"{where} reads {token}, which is not the vault asset, a call target, or a sweep token")
-    asset_swept = bool(asset) and any(t.lower() == asset.lower() for t in sweeps)
+        if (call_index, word_index) in patched:
+            _fail("bad_plan", f"{where} writes word {word_index} of settle call {call_index}, which another patch already writes")
+        patched.add((call_index, word_index))
+        plan["settlePatches"].append({"callIndex": call_index, **position, "token": token, **stored})
+    asset_swept = bool(sweeps & {asset_key, _PLACEHOLDER_ASSET} - {None})
     if not plan["settleCalls"] and not asset_swept:
         _fail(
             "no_exit",
@@ -314,23 +421,33 @@ def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) ->
     return plan
 
 
-def _call_preview(call: dict[str, Any], index: int) -> dict[str, Any]:
+def _selector_of_call(call: dict[str, Any]) -> str:
     data = str(call.get("data") or "")
+    if _HEX_RE.fullmatch(data) and len(data) >= 10:
+        return "0x" + data[2:10].lower()
+    try:
+        return "0x" + parse_signature(call.get("signature")).selector
+    except SpecError:
+        return ""
+
+
+def _call_preview(call: dict[str, Any], index: int) -> dict[str, Any]:
     row: dict[str, Any] = {
         "index": index,
         "target": call.get("target"),
         "value": "0",
         "signature": str(call.get("signature") or ""),
+        "selector": _selector_of_call(call),
     }
-    if data:
-        row["selector"] = "0x" + _selector(data) if _HEX_RE.match(data) and len(data) >= 10 else ""
-        row["data"] = data
+    for key in ("data", "args", "note"):
+        if key in call:
+            row[key] = call[key]
     return row
 
 
 def _patch_preview(patch: dict[str, Any]) -> dict[str, Any]:
-    mul_den = _uint(patch.get("mulDen"), "mulDen", allow_missing=True) or 0
-    mul_num = _uint(patch.get("mulNum"), "mulNum", allow_missing=True) or 0
+    mul_num = int(patch.get("mulNum") or 0)
+    mul_den = int(patch.get("mulDen") or 0)
     row = {
         "callIndex": patch.get("callIndex"),
         "argIndex": patch.get("argIndex"),

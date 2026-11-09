@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import shlex
 import stat
 import subprocess
@@ -242,6 +243,176 @@ def test_the_guard_blocks_an_unlimited_signature_approve_before_the_handler(agen
     assert blocked["action"] == "block" and "unlimited_approve" in blocked["message"]
     drafted = _draft(agent_ctx, calls)
     assert drafted["ok"] is False and drafted["code"] == "unlimited_approve"
+
+
+# -- a plan the plugin accepts is one CLI 0.104.0 compiles (M4) ------------------------------------
+# Mirrors @sherwoodagent/cli@0.104.0 dist/chunk-ADWPGCQW.js: compileCall (6676-6709), coerce,
+# scaleOf (6711-6720), compileGenericCallSpec (6721-6793), parseGenericCallSpec (6795-6810) and
+# validateGenericCallInit (6446-6550).
+
+SWAP = "swapExactIn(address,uint256,uint256)"
+
+
+def _settle_swap(**kw) -> dict:
+    call = {"target": TARGET, "signature": SWAP, "args": [USDG, "1", "0"]}
+    call.update(kw)
+    return call
+
+
+def _patch(**kw) -> dict:
+    patch = {"callIndex": 0, "wordIndex": 1, "token": TARGET}
+    patch.update(kw)
+    return patch
+
+
+@pytest.mark.parametrize("patch,why", [
+    ({"callIndex": "0", "wordIndex": 1, "token": TARGET}, "a string callIndex"),  # review 3a
+    ({"callIndex": 0, "wordIndex": "1", "token": TARGET}, "a string wordIndex"),  # review 3a
+    ({"callIndex": 0, "argIndex": None, "wordIndex": 1, "token": TARGET}, "argIndex null beside wordIndex"),  # 3b
+    ({"callIndex": 0, "wordIndex": None, "token": TARGET}, "a null wordIndex"),
+    ({"callIndex": 0.0, "wordIndex": 1, "token": TARGET}, "a float callIndex"),
+    ({"callIndex": True, "wordIndex": 1, "token": TARGET}, "a bool callIndex"),
+    (_patch(mulNum=2**53, mulDen=1), "a JSON number above 2^53-1"),  # review 3c
+    (_patch(mulNum=None, mulDen=None), "null scales"),
+    (_patch(mulNum="1.5", mulDen="1"), "a decimal-point scale"),
+    (_patch(mulNum=str(2**256), mulDen="1"), "a scale above uint256"),
+    ({"callIndex": 0, "argIndex": 1, "token": TARGET}, "argIndex on a raw-data call"),
+    ({"callIndex": 0, "wordIndex": 0, "token": TARGET}, None),  # control: allowed
+])
+def test_patch_fields_are_typed_as_the_cli_reads_them(patch, why):
+    raw = plan(settlePatches=[patch])
+    if why is None:
+        assert validate_generic_call_plan(raw, fund())["settlePatches"] == [patch]
+        return
+    with pytest.raises(RuleViolation) as exc:
+        validate_generic_call_plan(raw, fund())
+    assert exc.value.code == "bad_plan", why
+
+
+def test_large_scales_go_as_decimal_strings_and_the_stored_patch_is_normalized():
+    raw = plan(
+        settleCalls=[_settle_swap()],
+        settlePatches=[{"callIndex": 0, "argIndex": 2, "token": TARGET, "mulNum": str(2**200), "mulDen": 2**53 - 1}],
+    )
+    stored = validate_generic_call_plan(raw, fund())
+    assert stored["settlePatches"] == [
+        {"callIndex": 0, "argIndex": 2, "token": TARGET, "mulNum": str(2**200), "mulDen": 2**53 - 1},
+    ]
+
+
+@pytest.mark.parametrize("patch,code", [
+    ({"callIndex": 0, "argIndex": 0, "token": TARGET}, "bad_plan"),  # address argument, not a uint
+    ({"callIndex": 0, "argIndex": 3, "token": TARGET}, "bad_plan"),  # no argument 3
+    ({"callIndex": 0, "wordIndex": 3, "token": TARGET}, "bad_plan"),  # past the 3 argument words
+    ({"callIndex": 1, "wordIndex": 0, "token": TARGET}, "bad_plan"),  # no settle call 1
+    ({"callIndex": 0, "wordIndex": 1, "token": ROUTER}, "bad_target"),  # not the asset, a target or a sweep
+    ({"callIndex": 0, "wordIndex": 1, "token": "$asset"}, None),
+    ({"callIndex": 0, "argIndex": 1, "token": "$asset"}, None),
+])
+def test_patches_resolve_against_the_compiled_settle_call(patch, code):
+    raw = plan(settleCalls=[_settle_swap()], settlePatches=[patch])
+    if code is None:
+        assert validate_generic_call_plan(raw, fund())["settlePatches"][0]["token"] == "$asset"
+        return
+    with pytest.raises(RuleViolation) as exc:
+        validate_generic_call_plan(raw, fund())
+    assert exc.value.code == code
+
+
+def test_a_patch_may_not_overwrite_a_transferfrom_address_word():
+    settle = [{"target": TARGET, "data": "0x" + _sel("transferFrom(address,address,uint256)") + "00" * 96}]
+    with pytest.raises(RuleViolation) as exc:
+        validate_generic_call_plan(plan(settleCalls=settle, settlePatches=[_patch(wordIndex=1)]), fund())
+    assert exc.value.code == "bad_plan" and "address word" in exc.value.reason
+    ok = validate_generic_call_plan(plan(settleCalls=settle, settlePatches=[_patch(wordIndex=2)]), fund())
+    assert ok["settlePatches"][0]["wordIndex"] == 2
+
+
+@pytest.mark.parametrize("call,code", [
+    ({"target": TARGET, "data": "0xc0ffee00" + "ab" * 32, "value": "0x0"}, "bad_call"),
+    ({"target": TARGET, "data": "0xc0ffee00" + "ab" * 32, "value": None}, "bad_call"),
+    ({"target": TARGET, "data": "0xc0ffee00" + "ab" * 32, "value": False}, "bad_call"),
+    ({"target": TARGET, "data": "0xc0ffee00" + "ab" * 32, "value": 1}, "bad_call"),
+    ({"target": "$clone", "data": "0xc0ffee00" + "ab" * 32}, "bad_target"),
+    ({"target": "$vault", "data": "0xc0ffee00" + "ab" * 32}, "bad_target"),
+    ({"target": "$pullAmount", "data": "0xc0ffee00" + "ab" * 32}, "bad_target"),
+    ({"target": TARGET, "signature": SWAP, "args": [USDG, "1"]}, "bad_call"),  # arity
+    ({"target": TARGET, "signature": SWAP, "args": ["Moonwell", "1", "0"]}, "bad_call"),  # not an address
+    ({"target": TARGET, "signature": SWAP, "args": [USDG, 2**53, "0"]}, "bad_call"),  # unsafe JSON number
+    ({"target": TARGET, "signature": SWAP, "args": [USDG, "-1", "0"]}, "bad_call"),  # uint below 0
+    ({"target": TARGET, "signature": SWAP, "args": [USDG, 1.5, "0"]}, "bad_call"),
+    ({"target": TARGET, "signature": "f(bytes32)", "args": ["0xabcd"]}, "bad_call"),  # not 32 bytes
+    ({"target": TARGET, "signature": "f(bytes)", "args": ["abcd"]}, "bad_call"),  # not 0x hex
+    ({"target": TARGET, "signature": "f(bool)", "args": [1]}, "bad_call"),
+    ({"target": TARGET, "signature": "f(fixed128x18)", "args": ["1"]}, "bad_call"),  # unknown type
+    ({"target": TARGET, "signature": "f(uint256 address)", "args": ["1"]}, "bad_call"),  # keyword name
+    ({"target": TARGET, "signature": "f (uint256)", "args": ["1"]}, "bad_call"),  # not a signature
+    ({"target": TARGET, "signature": "f(function)", "args": ["0x"]}, "bad_call"),  # the CLI cannot encode it
+    ({"target": TARGET, "signature": SWAP, "data": "0x" + _sel(SWAP) + "00" * 64}, "bad_calldata"),  # short
+    ({"target": TARGET, "signature": "f(bool)", "data": "0x" + _sel("f(bool)") + "00" * 31 + "02"}, "bad_calldata"),
+    ({"target": TARGET, "signature": "g(uint256)", "data": "0x" + _sel("f(uint256)") + "00" * 32}, "bad_calldata"),
+    ({"target": TARGET, "data": "0xc0ffee00" + "ab" * 32, "args": []}, "bad_calldata"),
+    ({"target": TARGET, "args": [1]}, "bad_calldata"),  # args with no signature
+    ({"target": TARGET, "data": "0xc0ffee00" + "ab" * 32, "note": 5}, "bad_plan"),
+])
+def test_calls_the_cli_would_refuse_are_refused_here(call, code):
+    with pytest.raises(RuleViolation) as exc:
+        validate_generic_call_plan(plan(executeCalls=[call]), fund(), pull_amount=100_000_000)
+    assert exc.value.code == code
+
+
+@pytest.mark.parametrize("call", [
+    {"target": TARGET, "data": "0xc0ffee00" + "ab" * 32, "value": "0"},
+    {"target": TARGET, "data": "0xc0ffee00" + "ab" * 32, "value": 0, "note": "swap leg"},
+    {"target": "$asset", "signature": "approve(address,uint256)", "args": [ROUTER, "$pullAmount"]},
+    {"target": TARGET, "signature": SWAP, "args": ["$asset", "$pullAmount", "0"]},
+    {"target": TARGET, "signature": "function swap(address tokenIn, uint256 amountIn) external returns (uint256)",
+     "args": [USDG, 2**53 - 1]},
+    {"target": TARGET, "signature": "route((address,uint24)[],bytes,string)",
+     "args": [[[USDG, 3000], {"0": TARGET, "1": 500}], "0x", "memo"]},
+    {"target": TARGET, "signature": "route((address,uint24)[],bytes,string)",
+     "args": ['[["0x' + "77" * 20 + '", 3000]]', "0xabcd", ""]},
+    {"target": TARGET, "signature": SWAP, "data": "0x" + _sel(SWAP) + _addr_word(USDG) + "00" * 64},
+    {"target": TARGET, "signature": "f(bool)", "data": "0x" + _sel("f(bool)") + "00" * 31 + "01"},
+])
+def test_calls_the_cli_compiles_are_accepted(call):
+    stored = validate_generic_call_plan(plan(executeCalls=[call]), fund(), pull_amount=100_000_000)
+    entry = stored["executeCalls"][0]
+    assert "value" not in entry and entry["target"] == call["target"]
+    if "note" in call:
+        assert entry["note"] == call["note"]
+
+
+def test_the_written_plan_holds_only_keys_the_cli_reads(agent_ctx, tmp_path):
+    calls = plan(
+        executeCalls=[{"target": "$asset", "signature": "approve(address,uint256)", "args": [ROUTER, "$pullAmount"],
+                       "value": "0", "note": "  approve the router  "}],
+        settleCalls=[_settle_swap()],
+        settlePatches=[{"callIndex": 0, "argIndex": 1, "token": " $asset "}],
+        sweepTokens=["$asset"],
+    )
+    drafted = _draft(agent_ctx, calls)
+    assert drafted["ok"], drafted
+    shipped = _service(tmp_path).ship_draft("alpha-fund", drafted["proposal"]["id"], caller_telegram_id="900", agent_signs=True)
+    args = shlex.split(shipped.propose_command)
+    written = json.loads(Path(args[args.index("--calls") + 1]).read_text())
+    assert written == {
+        "executeCalls": [{"target": "$asset", "args": [ROUTER, "$pullAmount"], "signature": "approve(address,uint256)",
+                          "note": "approve the router"}],
+        "settleCalls": [{"target": TARGET, "args": [USDG, "1", "0"], "signature": SWAP}],
+        "settlePatches": [{"callIndex": 0, "argIndex": 1, "token": "$asset"}],
+        "sweepTokens": ["$asset"],
+    }
+
+
+def test_the_asset_placeholder_is_held_to_the_asset_rule():
+    with pytest.raises(RuleViolation) as exc:
+        validate_generic_call_plan(plan(executeCalls=[{"target": "$asset", "data": "0xdeadbeef" + "ab" * 64}]), fund())
+    assert exc.value.code == "bad_call"
+    # Swept as $asset, the asset is an exit even without a settle leg; listed twice is refused.
+    assert validate_generic_call_plan(plan(settleCalls=[], sweepTokens=["$asset"]), fund())["sweepTokens"] == ["$asset"]
+    with pytest.raises(RuleViolation):
+        validate_generic_call_plan(plan(settleCalls=[], sweepTokens=["$asset", USDG]), fund())
 
 
 def test_another_chain_is_not_handed_a_4663_template_and_moonwell_is_not_banned_by_name():

@@ -396,6 +396,116 @@ def encode_call(fn: Function, args: Any, b: Binding, where: str) -> bytes:
     return bytes.fromhex(fn.selector) + _encode_tuple(list(fn.inputs), coerced)
 
 
+# -- ABI decoding check (raw data given with a signature) -------------------------------------------
+def _read_word(buf: bytes, pos: int) -> int:
+    if pos < 0 or pos + 32 > len(buf):
+        raise SpecError("it is shorter than its arguments need")
+    return int.from_bytes(buf[pos : pos + 32], "big")
+
+
+def _safe(n: int, what: str) -> int:
+    if n > MAX_SAFE_INTEGER:
+        raise SpecError(f"{what} {n} is not a safe integer")
+    return n
+
+
+def _decode_tuple(params: list[Param], buf: bytes, base: int, depth: int) -> None:
+    pos = base
+    for p in params:
+        if is_dynamic(p):
+            offset = _safe(_read_word(buf, pos), "an offset")
+            _decode_one(p, buf, base + offset, depth + 1)
+            pos += 32
+        else:
+            _decode_one(p, buf, pos, depth + 1)
+            pos += 32 * static_words(p)
+
+
+def _decode_one(p: Param, buf: bytes, pos: int, depth: int) -> None:
+    if depth > 32:
+        raise SpecError("it nests deeper than 32 levels")
+    if not is_dynamic(p) and pos + 32 * static_words(p) > len(buf):
+        raise SpecError("it is shorter than its arguments need")
+    arr = _ARRAY_RE.fullmatch(p.type)
+    if arr:
+        inner = Param(type=arr[1], components=p.components)
+        if arr[2] == "":
+            length = _safe(_read_word(buf, pos), "an array length")
+            if length * 32 > len(buf):
+                raise SpecError("an array length runs past the data")
+            _decode_tuple([inner] * length, buf, pos + 32, depth)
+        else:
+            if int(arr[2]) * 32 > len(buf):
+                raise SpecError("a fixed array runs past the data")
+            _decode_tuple([inner] * int(arr[2]), buf, pos, depth)
+        return
+    if p.type == "tuple":
+        _decode_tuple(list(p.components), buf, pos, depth)
+        return
+    if p.type in ("bytes", "string"):
+        length = _safe(_read_word(buf, pos), "a length")
+        if pos + 32 + length > len(buf):
+            raise SpecError("a bytes or string length runs past the data")
+        return
+    word = _read_word(buf, pos)
+    if p.type == "bool" and word > 1:
+        raise SpecError("a bool word is not 0 or 1")
+    if _INT_TYPE_RE.fullmatch(p.type) and int(p.type.split("int", 1)[1] or 256) <= 48:
+        # viem reads uint8..uint48 (and int) through bytesToNumber, which refuses an unsafe number.
+        value = word - 2**256 if not p.type.startswith("u") and word >= 2**255 else word
+        _safe(abs(value), "a small integer")
+
+
+def decode_check(fn: Function, data: bytes) -> None:
+    """CLI ``compileCall`` with both ``data`` and ``signature``: viem ``decodeFunctionData`` must accept it.
+
+    The selector must match the signature, and the arguments must decode: in bounds, bool words
+    0 or 1, offsets, lengths and small integers safe numbers. Stricter than viem where they could differ.
+    """
+    if data[:4].hex() != fn.selector:
+        raise SpecError(
+            f"data does not decode as {fn.canonical}: its selector is 0x{data[:4].hex()}, "
+            f"the signature's is 0x{fn.selector}"
+        )
+    if not fn.inputs:
+        return
+    try:
+        _decode_tuple(list(fn.inputs), data[4:], 0, 0)
+    except SpecError as exc:
+        raise SpecError(f"data does not decode as {fn.canonical}: {exc}") from None
+
+
+GENERIC_CALL_ADDRESS_WORDS = {
+    # CLI genericCallAddressWords: words below this count are spender/operator/recipient addresses.
+    selector_of("approve(address,uint256)"): 1,
+    selector_of("setApprovalForAll(address,bool)"): 1,
+    selector_of("transfer(address,uint256)"): 1,
+    selector_of("transferFrom(address,address,uint256)"): 2,
+    selector_of("safeTransferFrom(address,address,uint256)"): 2,
+    selector_of("safeTransferFrom(address,address,uint256,bytes)"): 2,
+}
+
+
+def address_words(data: bytes) -> int:
+    return GENERIC_CALL_ADDRESS_WORDS.get(data[:4].hex(), 0)
+
+
+def patch_word_index(fn: Function, arg_index: int) -> int:
+    """CLI ``patchWordIndex``: the head word of a static uint argument, or SpecError."""
+    inputs = fn.inputs
+    if arg_index < 0 or arg_index >= len(inputs):
+        raise SpecError(f"{fn.name} takes {len(inputs)} argument(s); there is no argument {arg_index}")
+    target = inputs[arg_index]
+    label = f"{target.name or f'arg{arg_index}'} ({target.type})"
+    if is_dynamic(target):
+        raise SpecError(
+            f"argument {arg_index} {label} is dynamic: its head word is an offset. Pass a raw wordIndex for a value inside it"
+        )
+    if not re.fullmatch(r"uint[0-9]*", target.type):
+        raise SpecError(f"argument {arg_index} {label} is not a uint; a balance patch writes an amount")
+    return sum(head_words(p) for p in inputs[:arg_index])
+
+
 # -- what an approval grants ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class _Grant:
