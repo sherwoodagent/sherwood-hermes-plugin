@@ -1,20 +1,34 @@
-# Consumer-repo updates for v0.8.1
+# Consumer-repo updates for v0.8.3
 
-## Next: v0.8.3 (tag pending)
+## v0.8.3
 
-The release workflow tags `v0.8.3` on the merge of the PR that carries the
-0.8.3 release commit (#36). Once it does, the consumer docs move their install
-pin to that sha, with the same edits as the 0.8.1 PRs below. What 0.8.3
-changes for consumers:
+The `v0.8.3` tag points at `5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3` (the merge of
+#36): `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.3 --jq .sha`.
+Install: `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3`
+(add `--force` when upgrading from an earlier `--ref` install).
+
+The consumer PRs opened for 0.8.1 now pin 0.8.3, with the same edits as the
+0.8.1 section below (0.8.2 was never pinned in a consumer repo). Every merge
+is held for the maintainer.
+
+| Repo | PR | 0.8.3 commit | Waits on |
+|---|---|---|---|
+| `sherwoodagent/mintlify-docs` | [#139](https://github.com/sherwoodagent/mintlify-docs/pull/139) | `aa13f46` | maintainer merge |
+| `sherwoodagent/skill` | [#123](https://github.com/sherwoodagent/skill/pull/123) | `8e9a628` | maintainer merge (skill release 0.35.2) |
+| `sherwoodagent/sherwood` | [#744](https://github.com/sherwoodagent/sherwood/pull/744) (draft) | `01323ee` | #139 and #123 merging, then two pointer commits |
+
+What 0.8.3 changes for consumers:
 
 - **Generic Call drafts.** `fund_draft_proposal` takes `template:
   "generic-call"` and a `calls` plan (`executeCalls`, `settleCalls`,
   `settlePatches`, `sweepTokens`) instead of legs. The plugin checks the plan
   the way the Sherwood CLI 0.104.0 compiles it (indices, amounts, addresses,
   hex, signatures and argument types, settle patches), so a plan it accepts is
-  one the CLI compiles; it refuses an unlimited approval in any form (raw
-  `data` or `signature` + `args`: approve, increaseAllowance, Permit2,
-  permit, setApprovalForAll). The draft's preview is unsigned and not
+  one the CLI compiles; it refuses an unlimited approval given as approve,
+  increaseAllowance, Permit2 approve, permit (EIP-2612 or DAI) or
+  setApprovalForAll, in raw `data` or `signature` + `args`. Three forms
+  still pass, pending a follow-up: an approve wrapped in a multicall,
+  `increaseApproval`, and ERC777 `authorizeOperator`. The draft's preview is unsigned and not
   execution acceptance, and it is not ready when this host's `sherwood
   strategy list` does not print generic-call as available. Only under
   `proposal_signer: agent`: after the host's 🚀 Ship it the plugin writes the
