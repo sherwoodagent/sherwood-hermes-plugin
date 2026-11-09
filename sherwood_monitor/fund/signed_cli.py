@@ -142,26 +142,32 @@ def register_agent_command(fund: Fund, agent: Agent) -> str:
     ])
 
 
-def cli_version_warning(sherwood_bin: str) -> str | None:
-    """A warning when the installed CLI is below MIN_CLI_FOR_COMMANDS (read-only `sherwood --version`,
-    through preflight's check). None when it is new enough. Never raises: a failed check is a warning."""
+def cli_version_warning(sherwood_bin: str, min_version: str = MIN_CLI_FOR_COMMANDS) -> str | None:
+    """A warning when the installed CLI is below ``min_version`` (read-only `sherwood --version`,
+    through preflight's check). None when it is new enough. Never raises: a failed check is a warning.
+
+    Portfolio commands use ``MIN_CLI_FOR_COMMANDS`` (0.103.0). A pending generic-call command
+    passes 0.104.0, the CLI that added ``strategy propose generic-call``. The preflight floor
+    stays lower: the monitor itself does not need the newer command.
+    """
     try:
         from ..preflight import check_cli_installed
 
-        ok, version = check_cli_installed(sherwood_bin or "sherwood", MIN_CLI_FOR_COMMANDS)
+        ok, version = check_cli_installed(sherwood_bin or "sherwood", min_version)
     except Exception as exc:  # the listing never fails on the check
         _log.warning("sherwood --version check failed: %s", exc)
-        return f"could not check the Sherwood CLI version; these commands need {MIN_CLI_FOR_COMMANDS} or later"
+        return f"could not check the Sherwood CLI version; these commands need {min_version} or later"
     if ok:
         return None
     if version is None:
         return (
             f"could not read `{sherwood_bin} --version`; these commands need the Sherwood CLI "
-            f"{MIN_CLI_FOR_COMMANDS} or later"
+            f"{min_version} or later"
         )
     return (
-        f"the installed Sherwood CLI is {version}, below {MIN_CLI_FOR_COMMANDS}: upgrade it before running these "
-        "commands (older releases target another network or lack the bond escrow on the propose path)"
+        f"the installed Sherwood CLI is {version}, below {min_version}: upgrade it before running these "
+        "commands (older releases target another network, lack the bond escrow on the propose path, "
+        "or cannot propose generic-call)"
     )
 
 

@@ -1,7 +1,7 @@
-# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.2)
+# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.3)
 
 This is the disclosure for the Nous Hermes hackathon entry and for the Hermes
-plugin catalog (rule 13). It describes what the plugin does at v0.8.2, who
+plugin catalog (rule 13). It describes what the plugin does at v0.8.3, who
 signs what, what it reads, and what does not work yet.
 
 ## What it is
@@ -18,7 +18,14 @@ signs what, what it reads, and what does not work yet.
   agent pitches trades, members back or object to them, the host approves
   members (or deposits are open to anyone) and guest Hermes agents, and each
   proposal gets a card in the chat that updates as votes and the chain
-  change.
+  change. A proposal is a stock-token basket or, under
+  `proposal_signer: agent`, a Generic Call plan (a fixed list of calls on
+  this fund's chain).
+- **Fund scope.** Each turn in a fund's group (from its host or a member)
+  and each operator turn is told that fund's chain, vault and asset and the
+  templates the local `sherwood strategy list` printed, so the agent does
+  not present another network's protocol, or a yield, as wired up. Other
+  chats, DMs and strangers are told nothing about any fund.
 
 Sherwood vaults are on Robinhood Chain mainnet (chain 4663). The fund asset is
 USDG. There is no testnet deployment.
@@ -35,7 +42,16 @@ plugin adds no contracts:
   so an open vault takes deposits from anyone.
 - Proposals are PortfolioStrategy clones made through the strategy factory.
   Each proposal names its legs (stock tokens and weights), a maximum capital
-  and a maximum drawdown, which must sit inside the fund's ceilings.
+  and a maximum drawdown, which must sit inside the fund's ceilings. Under
+  `proposal_signer: agent` a proposal can instead be a Generic Call clone:
+  an unaudited template (tier 2 at full notional, never certified) that runs
+  a fixed list of calls. The plugin checks the plan's shape the way the CLI
+  0.104.0 compiles it, refuses unlimited approvals in any form, and refuses
+  calls to the vault or the governor; the CLI refuses the rest it reads from
+  the chain. Guardians abstain on it (UNAUDITED_TEMPLATE), so execute stays
+  blocked (InsufficientApproveCoverage) and the vault stays locked until a
+  guardian operator allows it or the proposal is cancelled. The plugin does
+  not lift that gate.
 - Each proposer posts a WOOD bond of 1% of the proposal's coverage. The
   plugin refuses unlimited approvals. Approving the quote plus 5% and
   re-quoting on a drift over 5% are what the fund skills tell the agent to
@@ -53,7 +69,10 @@ Off chain:
 - Fund state: one JSON file per fund under
   `~/.hermes/plugins/sherwood-monitor/funds/` (mode 0600) holding members,
   agents, claims, drafts, proposals and settle receipts. Agents coordinate
-  through this file, not through chat.
+  through this file, not through chat. When the host ships a Generic Call
+  draft under `proposal_signer: agent`, its checked plan is written next to
+  it, `funds/<fund>/generic-call/p-N.json` (mode 0600), for the CLI's
+  `--calls`.
 - Signed links: the plugin signs personal links to `app.sherwood.sh` with an
   HMAC key (`SHERWOOD_TG_LINK_SECRET`). The signature proves the bot issued
   the link to that Telegram user. It does not authorize money.
@@ -86,7 +105,7 @@ restricted or open per fund, independently of the signer.
 | Signer | Signs | Where |
 |---|---|---|
 | Host (vault owner), `proposal_signer: host` | create the fund; approve each depositor (`approveDepositor`, restricted deposits only); register each guest agent (`registerAgent`); set the agent fee; co-sign proposals while the protocol requires owner-only proposals | `app.sherwood.sh/tg/sign`, from a link issued to the host's Telegram id. The page's contract: check the link and that the connected wallet owns the vault, show every address in full, and send the prepared transactions in order without editing them. |
-| Host agent (vault owner), `proposal_signer: agent` | register each guest agent (`sherwood vault add --vault --wallet --agent-id`); propose its own drafts (`sherwood strategy propose portfolio ...`, with its own WOOD bond). Creating the fund (`--open-deposits` for an open fund), the agent fee and governor parameters are CLI steps the operator runs by hand; the plugin builds no command for them | the `sherwood` CLI with the wallet it holds, run by the agent with its terminal tool outside the group chat. The plugin builds the command (from the draft the fund rules checked, every argument shell-quoted, free text in the attached `--flag=value` form), shows it on the draft card and in `fund_pending_commands`, and records the on-chain id and tx hash afterwards. |
+| Host agent (vault owner), `proposal_signer: agent` | register each guest agent (`sherwood vault add --vault --wallet --agent-id`); propose its own drafts (`sherwood strategy propose portfolio ...`, or `sherwood strategy propose generic-call --calls <plan.json> ...` for a Generic Call draft, with its own WOOD bond). Creating the fund (`--open-deposits` for an open fund), the agent fee and governor parameters are CLI steps the operator runs by hand; the plugin builds no command for them | the `sherwood` CLI with the wallet it holds, run by the agent with its terminal tool outside the group chat. The plugin builds the command (from the draft the fund rules checked, every argument shell-quoted, free text in the attached `--flag=value` form), shows it on the draft card and in `fund_pending_commands`, and records the on-chain id and tx hash afterwards. |
 | Members | join (link a wallet), deposit, withdraw, Object (an Against vote) | `app.sherwood.sh/tg/join`, `/tg/deposit`, `/tg/withdraw`, `/tg/vote`, from their own wallets |
 | The agent (and guest agents) | its own WOOD bond approval and the USDG to WOOD swap that tops up the bond; settling its own proposals; under `proposal_signer: agent` a guest agent proposes its own shipped drafts with its own CLI wallet | its own wallet (`fund.agent_address`) |
 | The plugin | nothing on chain; HMAC signatures on links, and XMTP messages from the sidecar's own derived key when `SHERWOOD_PRIVATE_KEY` is set | |
@@ -113,7 +132,8 @@ unsigned calldata; it holds no keys and no funds.
   Chainlink-backed `/sources/prices` for WOOD/USD; it has no WOOD entry
   today, so the bond shows in WOOD only.
 - **Instruments: the Robinhood Chain stock-token list.** The skills restrict
-  pitches and proposal legs to tokens on that list and the fund asset.
+  pitches and proposal legs to tokens on that list and the fund asset. A
+  Generic Call plan is not a basket and does not add a token to it.
 - **api.sherwood.sh:** the prepare routes (create-fund, approve-depositor(s),
   register-agent, deposit, propose, propose-portfolio, vote, execute, settle,
   redeem, set-agent-fee and others), the fund-card read
@@ -146,9 +166,12 @@ unsigned calldata; it holds no keys and no funds.
   fund's XMTP group id from the Durin L2Registry, and talks to the XMTP
   network.
 - **Child processes:** the plugin runs the `sherwood` CLI only for reads
-  (`session check`, `vault info`, and `--version`, which
-  `fund_pending_commands` also runs under `proposal_signer: agent`); it never
-  runs a signing command. The `sherwood` CLI, node and npm get the environment
+  (`session check`, `vault info`, `--version`, which
+  `fund_pending_commands` also runs under `proposal_signer: agent`, and
+  `strategy list`, which prints the templates this CLI has on its network:
+  for the per-turn fund-scope block, `fund_status` and a Generic Call
+  draft's preview, at most once per 10 minutes, with a 3 s timeout, off the
+  event loop); it never runs a signing command. The `sherwood` CLI, node and npm get the environment
   without `SHERWOOD_PRIVATE_KEY`, `TELEGRAM_BOT_TOKEN` and `SHERWOOD_TG_*`.
   Hermes itself keeps plugin secrets in its environment, so a session with
   the terminal tool, or a cron script, can read them: use a dedicated
@@ -261,9 +284,16 @@ change is logged as a warning.
 - **Agent-signer commands need Sherwood CLI 0.103.0 or later.** They carry
   no `--chain` (Robinhood Chain mainnet is the only network from 0.93.0),
   0.93.0 shipped without the bond escrow addresses on the propose path, and
-  0.103.0 is the release the flags were checked against.
+  0.103.0 is the release the flags were checked against. A Generic Call
+  command needs 0.104.0 or later (the release that added `--calls`).
   `fund_pending_commands` reads `sherwood --version` and warns when it is
   older.
+- **Generic Call is agent-signer only and offline-checked.** Under
+  `proposal_signer: host` there is no prepare route for it, so the draft is
+  refused. The plugin's checks make no chain read: the CLI also refuses the
+  factory, registries, sWOOD and the ledger as targets, a target with no
+  code, and a pull above the vault's tier-2 ceiling, at propose time. A
+  passing preview is not `simulate_batch` and not execution acceptance.
 - **A deny-mode cron must not run agent-signer commands.** Recording the
   on-chain id after a propose (`fund_set_proposal_status`) or the tx after a
   registration (`fund_approve_agent`) is a host-authority call, so Hermes'

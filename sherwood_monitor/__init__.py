@@ -393,6 +393,12 @@ def register(ctx: Any) -> None:
     context_sources: list[Any] = []
     if fund_rt is not None:
         try:
+            from .fund.scope import make_fund_scope_source
+
+            context_sources.append(make_fund_scope_source(fund_rt))
+        except Exception as exc:
+            _log.warning("fund scope disabled: %s", exc)
+        try:
             from .fund.telegram import wire_fund_telegram
 
             bridge = wire_fund_telegram(ctx, fund_rt, push_context=buffer.push)

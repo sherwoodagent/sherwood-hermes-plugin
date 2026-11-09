@@ -76,6 +76,7 @@ class ProposalView:
     bond_buffer_note: str = ""  # bufferNote, or the 409 premium message
     # proposal_signer: agent: the Sherwood CLI command the proposer agent runs once shipped ("" otherwise).
     propose_command: str = ""
+    template: str = ""  # "generic-call" for a Generic Call draft; "" for a portfolio or raw-calls draft
 
     @property
     def display_id(self) -> str:

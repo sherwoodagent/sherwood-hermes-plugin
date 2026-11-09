@@ -37,6 +37,16 @@ from .models import (
     plausible_timestamp,
 )
 from .rules import RuleViolation, require
+from .generic_call import (
+    HOST_SIGNER_REFUSAL,
+    generic_call_legs,
+    generic_call_plan_path,
+    require_agent_signer,
+    preview_generic_call,
+    propose_generic_call_command,
+    validate_generic_call_plan,
+    write_generic_call_plan,
+)
 from .signed_cli import propose_portfolio_command
 from .store import FundNotFound, FundStateBackend, FundStoreError, validate_fund_name
 from .txbuilder import DEFAULT_TX_BUILDER_URL, TxBuilderError, build_propose_body, build_propose_portfolio_body
@@ -148,12 +158,9 @@ class FundService:
         names: list[str] | None = None
         if chat_id:
             names = self.backend.list_funds()
-            for name in names:
-                try:
-                    if self.backend.load(name).fund.telegram_chat_id == str(chat_id):
-                        return name
-                except FundStoreError:
-                    continue
+            bound = self.fund_for_chat(chat_id, names=names)
+            if bound:
+                return bound
         if default:
             return validate_fund_name(default)
         names = names if names is not None else self.backend.list_funds()
@@ -162,6 +169,19 @@ class FundService:
         if not names:
             raise FundServiceError("no fund here yet: create one (host) or /join-fund <fund> (guest)")
         raise FundServiceError(f"which fund? pass one of: {', '.join(names)}")
+
+    def fund_for_chat(self, chat_id: str | int | None, *, names: list[str] | None = None) -> str | None:
+        """The fund whose ``telegram_chat_id`` is this chat. Never a fallback: None when no fund is bound."""
+        key = str(chat_id or "").strip()
+        if not key:
+            return None
+        for name in names if names is not None else self.backend.list_funds():
+            try:
+                if self.backend.load(name).fund.telegram_chat_id == key:
+                    return name
+            except FundStoreError:
+                continue
+        return None
 
     def check_draft(self, fund: str, agent: str, **kwargs: Any) -> rules.Verdict:
         """Read-only draft check (the pre_tool_call guard uses this)."""
@@ -454,6 +474,8 @@ class FundService:
         quote_usd_per_wood: str = "",
         bond_buffer_status: str = "",
         bond_buffer_note: str = "",
+        generic_call: dict[str, Any] | None = None,
+        discovered: dict[str, Any] | None = None,
     ) -> DraftResult:
         """Check every rule, record the draft, consume the claim, return the prepare payload."""
         now = self.clock()
@@ -462,8 +484,14 @@ class FundService:
 
         def mutate(state: FundState) -> DraftResult:
             state.claims = rules.active_claims(state, now)
+            plan: dict[str, Any] = {}
+            use_legs = legs
+            if generic_call:
+                require_agent_signer(self.proposal_signer)
+                plan = validate_generic_call_plan(generic_call, state.fund, pull_amount=max_capital)
+                use_legs = generic_call_legs(max_capital)
             require(rules.check_draft(
-                state, agent, topic, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps, legs=legs, now=now
+                state, agent, topic, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps, legs=use_legs, now=now
             ))
             proposer = state.agent(agent)
             assert proposer is not None
@@ -472,7 +500,8 @@ class FundService:
                 id=f"p-{state.next_proposal_seq}",
                 proposer_agent=proposer.name,
                 thesis=thesis.strip(),
-                legs=legs,
+                legs=use_legs,
+                generic_call=plan,
                 max_capital=str(max_capital),
                 max_drawdown_bps=max_drawdown_bps,
                 bond_wood=str(bond_quote_wood or 0),
@@ -491,7 +520,12 @@ class FundService:
             state.proposals.append(record)
             state.claims = [c for c in state.claims if c.agent.lower() != proposer.name.lower()]
             bond = _bond_section(state, proposer, max_capital, bond_quote_wood, wood_balance)
-            if is_portfolio(record):
+            if plan:
+                prepare = preview_generic_call(
+                    state.fund, plan, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps,
+                    strategy_duration=strategy_duration, discovered=discovered,
+                )
+            elif is_portfolio(record):
                 prepare = self.portfolio_payload(state.fund, record, proposer=proposer.address, metadata_uri=metadata_uri)
             else:
                 prepare = self.propose_payload(state.fund, record, strategy=strategy, metadata_uri=metadata_uri)
@@ -525,8 +559,17 @@ class FundService:
             if not record.legs or int(record.max_capital or 0) <= 0:
                 raise RuleViolation(rules.deny("draft_not_ready", f"{record.proposer_agent} is still building {record.id}"))
             require(rules.check_cooldown(state, now))
+            if record.generic_call and not agent_signs:
+                raise RuleViolation(rules.deny("draft_not_ready", HOST_SIGNER_REFUSAL + ". The draft stays a draft."))
             if agent_signs:
-                record.propose_command = propose_portfolio_command(state.fund, record)
+                if record.generic_call:
+                    # Build (and so check) the command first: a refused ship leaves no plan file.
+                    path = generic_call_plan_path(self.backend, state.fund.name, record)
+                    command = propose_generic_call_command(state.fund, record, str(path))
+                    write_generic_call_plan(self.backend, state.fund.name, record)
+                    record.propose_command = command
+                else:
+                    record.propose_command = propose_portfolio_command(state.fund, record)
                 record.handed_out_at = None  # a fresh ship is listed again at once
             record.shipped_at = now
             record.shipped_by = str(caller_telegram_id or "")

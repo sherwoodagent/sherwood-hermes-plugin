@@ -257,7 +257,7 @@ Callback data is `shfund:<action>:<arg>`, at most 64 bytes, routed by one
 | `shfund:deposit:<vault>` | anyone | personal `/tg/deposit` link |
 | `shfund:withdraw:<vault>` | anyone | personal `/tg/withdraw` link |
 | `shfund:join:<vault>` | anyone | records a join request (first tap shows the host an Approve card), then the personal `/tg/join` link. Open deposits: the member is admitted at once (no Approve card) and the same message carries their personal `/tg/deposit` link as a second button |
-| `shfund:shipit:<draft>` | host | ship the draft to a vote. `proposal_signer: agent`: the draft card is edited to show the `sherwood strategy propose portfolio ...` command the proposing agent runs (there is no Co-sign button) |
+| `shfund:shipit:<draft>` | host | ship the draft to a vote. `proposal_signer: agent`: the draft card is edited to show the `sherwood strategy propose portfolio ...` or `sherwood strategy propose generic-call ...` command the proposing agent runs (there is no Co-sign button). A Generic Call draft card also says it is an unaudited template whose execute stays blocked until a guardian operator allows it |
 | `shfund:propose:<draft>` | host | pre-GA co-sign: personal link to the host signing page |
 | `shfund:approve_member:<tg_id>` | host | approve a member, then the host's `/tg/sign` link for `approveDepositor`. Open deposits: "nothing to approve" |
 | `shfund:approve_agent:<name>` | host | approve a guest agent, then the host's `/tg/sign` link for `registerAgent`. `proposal_signer: agent`: no link; `/fund-approve <name>` gives the `sherwood vault add` command |
@@ -514,8 +514,10 @@ Done in `register()`: `wire_fund_telegram(ctx, fund_runtime, push_context=buffer
 builds the gateway from the `FundService`, subscribes the bridge to its events
 and registers the platform handler lazily with
 `register_telegram(..., register_pre_llm_hook=False)`; the flow's pitch context
-is folded into the plugin's single `pre_llm_call` hook. The runtime calls the
-bridge makes:
+is folded into the plugin's single `pre_llm_call` hook, next to the
+`<sherwood-fund-scope>` block, which goes only to a turn in the fund's own
+chat from its host, a member or the owner. The runtime calls the bridge
+makes:
 
 ```python
 runtime.submit(runtime.post_draft_card(chat_id, draft_id, bond_shortfall_wood=..., requires_host_cosign=...))

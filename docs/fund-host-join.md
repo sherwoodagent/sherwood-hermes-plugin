@@ -30,7 +30,7 @@ was built for and the open one.
 | Setting | `proposal_signer: host` | `proposal_signer: agent` |
 | Who owns the vault | the human host's browser wallet | the Hermes agent's own wallet, the one the `sherwood` CLI holds in `~/.sherwood/config.json` (created with the CLI by hand) |
 | Deposits | restricted (`open_deposits: false`): the host approves each member on `/tg/sign` | open (`fund_setup open_deposits=true`, `openDeposits: true` in `create-fund`): no approval step |
-| Proposals | the agent drafts, the host ships and co-signs on `/tg/sign` | the agent drafts, the host ships; the card shows `sherwood strategy propose portfolio ...` for the proposing agent to run |
+| Proposals | the agent drafts, the host ships and co-signs on `/tg/sign` (portfolio or raw calls; a Generic Call draft is refused) | the agent drafts, the host ships; the card shows `sherwood strategy propose portfolio ...` or `sherwood strategy propose generic-call ...` for the proposing agent to run |
 | Guest agents | `/fund-approve <agent>` gives the host a register-agent body / `/tg/sign` link | `/fund-approve <agent>` gives the host agent `sherwood vault add ...` |
 
 The two settings are independent: `open_deposits` is per fund (and the
@@ -54,8 +54,14 @@ and the governor parameters are CLI steps the operator runs by hand.
   the drawdown the rules checked (the CLI's default is 20%); every argument
   is shell-quoted, so the thesis stays data, and the name and thesis use the
   attached `--flag=value` form, so text starting with `-` is never read as a
-  flag. Only PortfolioStrategy drafts (1 to 20 symbol + weight legs, each
-  symbol once) ship in this mode. The ship is the plugin's convention for
+  flag. PortfolioStrategy drafts (1 to 20 symbol + weight legs, each
+  symbol once) and Generic Call drafts ship in this mode; raw-calldata legs
+  do not. For a Generic Call draft the plugin first builds (and so checks)
+  `sherwood strategy propose generic-call --vault <vault> --calls <plan.json>
+  --amount <max capital> --duration <e.g. 6h> --max-drawdown-bps <bps>
+  '--name=<name>' '--description=<thesis>'` (`fund/generic_call.py`), then
+  writes the checked plan to `<fund state dir>/<fund>/generic-call/p-N.json`
+  (mode 0600, an absolute path). The ship is the plugin's convention for
   the host's go-ahead, not an on-chain control.
 - **`fund_pending_commands`** lists this agent's shipped, unproposed drafts
   with their commands (a guest runs its own drafts with its own wallet) and,
@@ -89,9 +95,12 @@ and the governor parameters are CLI steps the operator runs by hand.
 - **CLI version.** No `--chain` is emitted, and the commands need the
   Sherwood CLI 0.103.0 or later: mainnet is the only network from 0.93.0,
   0.93.0 shipped without the bond escrow addresses, and 0.103.0 is the
-  release the flags were checked against. `fund_pending_commands` reads
-  `sherwood --version` (read-only) and warns in `cli_warning` when it is
-  older; a failed check is a warning too.
+  release the flags were checked against. A generic-call command needs
+  0.104.0 or later. `fund_pending_commands` reads `sherwood --version`
+  (read-only) and warns in `cli_warning` when it is older, against the
+  floor of the commands it lists; a failed check is a warning too. A
+  Generic Call draft's preview is not ready when this host's `sherwood
+  strategy list` does not print generic-call as available.
 
 ## Host mode
 
@@ -263,7 +272,12 @@ FundService ──events──▶ FundTelegramBridge ──submit()──▶ Tel
 - **One `pre_llm_call` hook.** The plugin registers exactly one. It drains the
   event buffer (monitor warnings, settlements, draft requests, "shipped") and
   folds in the Telegram flow's pitch context (`register_telegram(...,
-  register_pre_llm_hook=False)` + `bridge.pre_llm_context`).
+  register_pre_llm_hook=False)` + `bridge.pre_llm_context`) and the
+  `<sherwood-fund-scope>` block (`fund/scope.py`): for a Telegram turn, the
+  fund bound to that chat, only for its host, members and the owner; for an
+  operator turn, `default_fund`, else the only fund. The scope's `sherwood
+  strategy list` read is cached 10 minutes (a failure 60 s) and runs off the
+  event loop with a 3 s budget.
 - **Gateway (Telegram -> core).** A chat maps to a fund only through its
   `telegram_chat_id` (never a fallback fund). Records become views in display
   units: USDG 6 dp, WOOD 18 dp, string Telegram ids to ints, legs as

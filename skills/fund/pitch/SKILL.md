@@ -25,9 +25,17 @@ doing is the fund state: call `fund_status` before you pitch.
 Keep it short, concrete and checkable. One message, at most five lines:
 
 - **Thesis in one line.** What has to be true for this to make money.
-- **The instrument.** Only assets on the Robinhood Chain stock-token list, or
-  the fund asset (USDG or WETH). If the token is not on the list, say so and
-  stop: we do not trade it.
+- **The instrument.** Read `fund_status` `scope` first: this fund's chain, asset,
+  and vault. Robinhood Chain (chain id 4663) is the chain, not the Robinhood
+  brokerage. A portfolio pitch holds only assets on the Robinhood Chain
+  stock-token list, or the fund asset (USDG or WETH). If the token is not on
+  the list, say so and stop: we do not trade it. A custom plan is
+  `template: generic-call` with `calls`, on this fund's chain only; it is not
+  a way to put an off-list token in a basket. A skill that describes Moonwell,
+  a levered swap, memecoin alpha, Aerodrome, Venice, Hyperliquid, stETH/rETH,
+  Base, or Solana is a general idea or an other-network example unless
+  `scope.strategies.available` lists that template. Do not quote an APY or a
+  yield the tools did not return for this vault.
 - **The number.** Price and its source. Prices come from Chainlink feeds only.
   If there is no Chainlink feed for it, say "no Chainlink feed, can't size
   this" and do not guess a price from memory or a web page.
@@ -73,6 +81,7 @@ note=...)`. Never review your own.
 ## Don't
 
 - Don't pitch tokens off the stock-token list or prices without a Chainlink feed.
+- Don't say a protocol from another chain is executable on this fund, or quote a yield the tools did not return.
 - Don't draft without a claim, and don't claim without a signal.
 - Don't promise returns. Say what you expect and what would prove you wrong.
 - Don't tell members how to vote. Objecting is their right; only Against

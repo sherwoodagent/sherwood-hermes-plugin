@@ -21,6 +21,9 @@ from .rules import RuleViolation
 from .runtime import FundRuntime
 from .service import FundServiceError
 from . import signed_cli
+from .generic_call import MIN_CLI_FOR_GENERIC_CALL, generic_call_legs, validate_generic_call_plan
+from . import scope as fund_scope_mod
+from .scope import fund_scope
 from .signed_cli import CLI_NOTE, HANDOUT_HOLD_SECONDS, SHIP_TTL_SECONDS, register_agent_command
 from .store import FundExists, FundNotFound, FundStoreError, scrub_paths
 
@@ -116,11 +119,24 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "fund_draft_proposal": _schema(
         "fund_draft_proposal",
         "Record a proposal draft after checking every coordination rule and the fund's max capital and "
-        "drawdown. Needs your claim on the topic. Returns the prepare/propose payload it maps to (with "
-        "anything still missing) and your bond plan. Builds no calldata and signs nothing.",
+        "drawdown. Needs your claim on the topic. A portfolio draft passes legs (symbol + weight_bps). "
+        "A Generic Call draft passes template generic-call and calls (executeCalls, settleCalls, "
+        "settlePatches, sweepTokens) and no legs. Returns an unsigned preview (prepare.signed is false; "
+        "prepare.execution_acceptance is false) and your bond plan. Builds no calldata and signs nothing. "
+        "A Generic Call plan is for this fund's chain only: it does not make a protocol from another chain executable here.",
         {
             "topic": {"type": "string"},
             "thesis": {"type": "string"},
+            "template": {
+                "type": "string",
+                "enum": ["portfolio", "generic-call"],
+                "description": "portfolio (symbol + weight legs) or generic-call (a calls plan). Omit with legs for a portfolio or raw-calldata draft.",
+            },
+            "calls": {
+                "type": "object",
+                "description": "Generic Call plan: executeCalls, settleCalls, settlePatches, sweepTokens. "
+                "Not a yield and not a strategy on another chain.",
+            },
             "legs": {"type": "array", "items": _LEG},
             "max_capital": {"type": "string", "description": "Asset units, e.g. '500' (USDG)"},
             "max_drawdown_bps": {"type": "integer"},
@@ -138,7 +154,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "bond_buffer_status": {"type": "string", "description": "That response's `bondBuffer.status` (swap, covered, insufficient-usdg, premium-over-cap, ...)"},
             "bond_buffer_note": {"type": "string", "description": "That response's `bufferNote`, or the 409 premium message"},
         },
-        ["topic", "thesis", "legs", "max_capital", "max_drawdown_bps"],
+        ["topic", "thesis", "max_capital", "max_drawdown_bps"],
     ),
     "fund_set_proposal_status": _schema(
         "fund_set_proposal_status",
@@ -211,7 +227,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "fund_pending_commands": _schema(
         "fund_pending_commands",
         "With proposal_signer: agent, the Sherwood CLI commands still to run (the CLI's wallet signs them): your "
-        "drafts the host shipped that are not proposed yet (`sherwood strategy propose portfolio ...`) and, if "
+        "drafts the host shipped that are not proposed yet (`sherwood strategy propose portfolio ...` or "
+        "`sherwood strategy propose generic-call ...`, which needs CLI 0.104.0) and, if "
         "you are the host, approved guest agents not registered yet (`sherwood vault add ...`). A listed propose "
         "command is marked handed out and held back for 30 minutes; propose commands are held while the vault "
         "has an open proposal on chain. Run each only in a `hermes -z` one-shot or an approve-mode cron, never "
@@ -241,6 +258,7 @@ class DraftArgs:
     idea_by: str
     strategy: str
     metadata_uri: str
+    generic_call: dict[str, Any]
 
 
 def parse_legs(raw: Any, decimals: int) -> list[Leg]:
@@ -263,12 +281,31 @@ def parse_draft_args(args: dict[str, Any], state: FundState) -> DraftArgs:
         raise UnitsError("max_drawdown_bps must be an integer") from exc
     quote = args.get("bond_quote_wood")
     balance = args.get("wood_balance")
+    max_capital = to_base_units(str(args.get("max_capital", "")), decimals)
+    template = str(args.get("template") or "").strip().lower()
+    calls = args.get("calls", None)
+    if template not in ("", "portfolio", "generic-call"):
+        raise RuleViolation(rules.deny("bad_template", "template must be portfolio or generic-call"))
+    generic: dict[str, Any] = {}
+    if template == "generic-call" or (isinstance(calls, dict) and template != "portfolio"):
+        if not isinstance(calls, dict):
+            raise RuleViolation(rules.deny("bad_plan", "a generic-call draft needs a calls object"))
+        if args.get("legs"):
+            raise RuleViolation(rules.deny(
+                "bad_plan", "a generic-call draft takes calls, not portfolio weights or calldata legs",
+            ))
+        generic = validate_generic_call_plan(calls, state.fund, pull_amount=max_capital)
+        legs = generic_call_legs(max_capital)
+    elif calls not in (None, "", {}):
+        raise RuleViolation(rules.deny("bad_plan", "a portfolio draft does not take a generic-call plan"))
+    else:
+        legs = parse_legs(args.get("legs") or [], decimals)
     return DraftArgs(
         fund=state.fund.name,
         topic=str(args.get("topic") or ""),
         thesis=str(args.get("thesis") or ""),
-        legs=parse_legs(args.get("legs") or [], decimals),
-        max_capital=to_base_units(str(args.get("max_capital", "")), decimals),
+        legs=legs,
+        max_capital=max_capital,
         max_drawdown_bps=drawdown,
         strategy_duration=int(args.get("strategy_duration_seconds") or 0),
         bond_quote_wood=None if quote in (None, "") else to_base_units(str(quote), WOOD_DECIMALS),
@@ -276,6 +313,7 @@ def parse_draft_args(args: dict[str, Any], state: FundState) -> DraftArgs:
         idea_by=str(args.get("idea_by") or ""),
         strategy=str(args.get("strategy") or ""),
         metadata_uri=str(args.get("metadata_uri") or ""),
+        generic_call=generic,
     )
 
 
@@ -295,6 +333,19 @@ def _guarded(fn: Callable[[dict[str, Any]], dict[str, Any]]) -> ToolHandler:
 
     handler.__name__ = fn.__name__
     return handler
+
+
+def _discovered(rt: FundRuntime) -> dict[str, Any]:
+    """This host's `sherwood strategy list` (cached in scope.py). A failure is ``ok: false``."""
+    try:
+        return fund_scope_mod.discover_strategy_templates(rt.sherwood_bin)
+    except Exception as exc:
+        return {"ok": False, "error": exc.__class__.__name__, "available": [], "unavailable": []}
+
+
+def _status_scope(rt: FundRuntime, state: FundState) -> dict[str, Any]:
+    """This fund's chain, vault, and whatever `sherwood strategy list` actually printed. No yields."""
+    return fund_scope(state, _discovered(rt))
 
 
 def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
@@ -327,6 +378,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             "cooldown_until": state.fund.cooldown_until,
             "pitch_claims": [asdict(c) for c in rules.active_claims(state, now) if c.idea_by],
             "deposits_open": state.fund.open_deposits,
+            "scope": _status_scope(rt, state),
         }
 
     def fund_setup(args: dict[str, Any]) -> dict[str, Any]:
@@ -462,6 +514,8 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             quote_usd_per_wood=str(args.get("quote_usd_per_wood") or ""),
             bond_buffer_status=str(args.get("bond_buffer_status") or ""),
             bond_buffer_note=str(args.get("bond_buffer_note") or ""),
+            generic_call=d.generic_call or None,
+            discovered=_discovered(rt) if d.generic_call else None,
         )
         return {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
 
@@ -703,7 +757,14 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
                     })
         out.update(proposals=proposals, registrations=registrations, held_back=held, expired=expired, note=CLI_NOTE)
         if proposals or registrations:
-            warning = signed_cli.cli_version_warning(rt.sherwood_bin)
+            floor = (
+                MIN_CLI_FOR_GENERIC_CALL
+                if any("propose generic-call" in str(p["command"]) for p in proposals)
+                else signed_cli.MIN_CLI_FOR_COMMANDS
+            )
+            warning = signed_cli.cli_version_warning(rt.sherwood_bin, floor)
+            if floor != signed_cli.MIN_CLI_FOR_COMMANDS:
+                out["note"] = CLI_NOTE + f" generic-call needs the Sherwood CLI {floor} or later."
             if warning:
                 out["cli_warning"] = warning
         if proposals and state.fund.cooldown_until and state.fund.cooldown_until > now:
