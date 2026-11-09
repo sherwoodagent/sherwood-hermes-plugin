@@ -636,6 +636,12 @@ APPROVAL_FORMS = tuple(sorted({g.label for g in _GRANTS.values()}))
 WRAPPER_FORMS = tuple(sig for sig, _, _ in _WRAPPERS.values())
 
 
+def wrapper_signature(data: bytes) -> str | None:
+    """The wrapper ``data`` calls (one of ``WRAPPER_FORMS``), or None when it is not one."""
+    entry = _WRAPPERS.get(data[:4].hex()) if len(data) >= 4 else None
+    return entry[0] if entry else None
+
+
 @dataclass(frozen=True)
 class Approval:
     """One approval a call makes: whose token, how much (None for an operator flag), and where."""

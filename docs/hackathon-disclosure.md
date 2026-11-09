@@ -67,8 +67,9 @@ plugin adds no contracts:
   patch, which writes a balance into a call at settle time, may write into
   a call that approves only that approval's amount word, only from the
   approved token's own balance, and never scaled up (`mulNum` above
-  `mulDen`). An operator approval or an approval inside a wrapper takes no
-  patch. A patched amount is therefore at most what the clone holds of that
+  `mulDen`). An operator approval and any call to one of the wrappers above
+  take no patch, since a patch into a wrapper could rewrite an inner call at
+  settle. A patched amount is therefore at most what the clone holds of that
   token at settle. The checks fail closed: a settle-leg approval of the
   asset above the pull is refused, and so is an approval inside a Multicall3
   `aggregate`, though the aggregator, not the clone, makes it. Approvals in

@@ -33,8 +33,8 @@ What 0.8.4 changes for consumers:
 - **Settle patches into approvals.** A settle patch into a call that
   approves may write only that approval's amount word, only from the
   approved token's own balance, and never scaled up (`approve_patch`,
-  `unlimited_approve`). An operator approval or a wrapped approval takes no
-  patch.
+  `unlimited_approve`). An operator approval or any call to an opened
+  wrapper (multicall, batch, Multicall3 `aggregate*`) takes no patch.
 - **Signatures.** A signature nesting deeper than 16 levels is refused
   cleanly, instead of raising RecursionError.
 - **XMTP sidecar location.** The plugin uses a built sidecar in its own

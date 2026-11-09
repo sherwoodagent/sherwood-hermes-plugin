@@ -34,6 +34,7 @@ from .callspec import (
     encode_call,
     parse_signature,
     patch_word_index,
+    wrapper_signature,
 )
 from .models import CHAIN_ID_ROBINHOOD, TOKEN_ADDRESSES_4663, Fund, Leg, ProposalRecord
 from .rules import RuleViolation, deny, is_address
@@ -491,6 +492,15 @@ def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) ->
         mul_den = int(scales.get("mulDen", 0))
         if (mul_num == 0) != (mul_den == 0):
             _fail("bad_plan", f"{where} must set mulNum and mulDen both, or neither (a half-set scale is rejected)")
+        wrapper = wrapper_signature(data)
+        if wrapper:
+            # A patch into a wrapper can rewrite an inner call (its selector, an aggregate row's
+            # target) at settle time, after every check here ran on the calls as written.
+            _fail(
+                "approve_patch",
+                f"{where} writes into settle call {call_index}, a {wrapper} wrapper; a patch may not write "
+                "into a wrapper call (it could turn an inner call into an approval at settle)",
+            )
         approving = approvals_in(data, settle_targets[call_index])
         if approving:
             _check_patch_into_approval(

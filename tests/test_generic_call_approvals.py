@@ -231,6 +231,35 @@ def test_p1_a_raw_balance_patch_of_the_approved_token_into_its_amount_is_allowed
     assert _settle_with(settle_call, patch)["settlePatches"]
 
 
+# -- W1 (review of #38 at 97b1974): no patch into a wrapper call, even one that approves nothing ----
+
+_AGGREGATE = {"target": ROUTER, "signature": "aggregate((address,bytes)[])", "args": [[[TARGET, _hex(SWAP)]]]}
+
+
+@pytest.mark.parametrize("settle_call,patch", [
+    ({"target": TARGET, "data": _hex(_multicall([SWAP]))}, {"wordIndex": 4, "token": TARGET}),  # inner selector word
+    ({"target": TARGET, "data": _hex(_multicall([SWAP]))}, {"wordIndex": 3, "token": TARGET}),  # inner length word
+    ({"target": TARGET, "data": _hex(_multicall([SWAP]))}, {"wordIndex": 6, "token": TARGET}),  # an inner argument
+    ({"target": TARGET, "signature": "multicall(uint256,bytes[])", "args": ["1", [_hex(SWAP)]]},
+     {"wordIndex": 0, "token": TARGET}),  # even the deadline word
+    (_AGGREGATE, {"wordIndex": 3, "token": TARGET}),  # an aggregate row's target word
+])
+def test_w1_a_patch_into_a_wrapper_call_is_refused(settle_call, patch):
+    with pytest.raises(RuleViolation) as exc:
+        _settle_with(settle_call, patch)
+    assert exc.value.code == "approve_patch" and "wrapper" in exc.value.reason
+
+
+def test_w1_an_unpatched_wrapper_and_a_patched_plain_call_still_pass():
+    stored = _validate(
+        {"target": TARGET, "data": _hex(_multicall([SWAP]))},
+        settle=[{"target": TARGET, "data": _hex(_multicall([SWAP]))},
+                {"target": TARGET, "signature": "swapExactIn(address,uint256,uint256)", "args": [USDG, "1", "0"]}],
+        patches=[{"callIndex": 1, "argIndex": 1, "token": TARGET}],
+    )
+    assert stored["settlePatches"] == [{"callIndex": 1, "argIndex": 1, "token": TARGET}]
+
+
 # -- N1': deep nesting is a refusal, not a RecursionError ----------------------------------------------
 
 
@@ -265,6 +294,7 @@ def test_the_disclosure_names_the_refused_forms_and_the_pull_bound():
     assert "unlimited approvals in any form" not in text
     assert "the most the clone receives" not in text  # the pull is what the clone takes at execute, not a ceiling
     assert "only from the approved token's own balance" in text
+    assert "any call to one of the wrappers above take no patch" in text
     readme = " ".join((Path(__file__).parent.parent / "README.md").read_text().split())
     for doc in (text, readme):
         assert "still pass" not in doc  # the three forms the 0.8.3 docs listed as passing are refused now
