@@ -24,14 +24,15 @@ from typing import Any, NoReturn
 
 from .callspec import (
     MAX_SAFE_INTEGER,
+    Approval,
     Binding,
     Function,
     SpecError,
     address_words,
+    approvals_in,
     decode_check,
     encode_call,
     parse_signature,
-    approvals_in,
     patch_word_index,
 )
 from .models import CHAIN_ID_ROBINHOOD, TOKEN_ADDRESSES_4663, Fund, Leg, ProposalRecord
@@ -207,6 +208,50 @@ def _check_approvals(compiled: bytes, target_key: str, where: str, fund: Fund, p
                 f"{pull_amount}; the clone never holds more of the asset than the pull. Approve at most the "
                 "pull ($pullAmount)",
             )
+
+
+def _check_patch_into_approval(
+    approving: list[Approval], *, where: str, call_index: int, word_index: int, token_key: str,
+    mul_num: int, mul_den: int,
+) -> None:
+    """A settle patch into a call that approves writes the amount at settle time, past the checks
+    on the amount written in the plan. So such a patch may write only that approval's amount word,
+    only from the approved token's own balance, and never scaled up: the allowance is then at most
+    what the clone holds of that token. An operator approval (a flag) or an approval inside a
+    wrapper takes no patch at all."""
+    if mul_num > mul_den:
+        # balance * mulNum / mulDen written into an approving call could be any size.
+        _fail(
+            "unlimited_approve",
+            f"{where} scales a balance up (mulNum {mul_num} > mulDen {mul_den}) into settle call {call_index}, "
+            "which approves; a patch into an approving call may write at most the balance (mulNum <= mulDen)",
+        )
+    wrapped = [a for a in approving if a.path]
+    if wrapped:
+        _fail(
+            "approve_patch",
+            f"{where} writes into settle call {call_index}, which approves inside a wrapper "
+            f"({wrapped[0].path}{wrapped[0].label}); a patch may not write into a wrapped approval",
+        )
+    grant = approving[0]
+    if grant.amount is None:
+        _fail(
+            "approve_patch",
+            f"{where} writes into settle call {call_index}, an operator approval ({grant.label}); "
+            "a patch may not write into one",
+        )
+    if word_index != grant.word:
+        _fail(
+            "approve_patch",
+            f"{where} writes word {word_index} of settle call {call_index} ({grant.label}); in an approving call "
+            f"only the amount word ({grant.word}) may be patched",
+        )
+    if token_key != grant.token:
+        _fail(
+            "approve_patch",
+            f"{where} writes the balance of {token_key} into the amount of settle call {call_index} "
+            f"({grant.label} of {grant.token}); a patched approval amount must be the approved token's own balance",
+        )
 
 
 def _json_index(value: Any, where: str) -> int:
@@ -446,12 +491,11 @@ def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) ->
         mul_den = int(scales.get("mulDen", 0))
         if (mul_num == 0) != (mul_den == 0):
             _fail("bad_plan", f"{where} must set mulNum and mulDen both, or neither (a half-set scale is rejected)")
-        if mul_num > mul_den and approvals_in(data, settle_targets[call_index]):
-            # balance * mulNum / mulDen written into an approving call could be any size.
-            _fail(
-                "unlimited_approve",
-                f"{where} scales a balance up (mulNum {mul_num} > mulDen {mul_den}) into settle call {call_index}, "
-                "which approves; a patch into an approving call may write at most the balance (mulNum <= mulDen)",
+        approving = approvals_in(data, settle_targets[call_index])
+        if approving:
+            _check_patch_into_approval(
+                approving, where=where, call_index=call_index, word_index=word_index,
+                token_key=token_key, mul_num=mul_num, mul_den=mul_den,
             )
         if (call_index, word_index) in patched:
             _fail("bad_plan", f"{where} writes word {word_index} of settle call {call_index}, which another patch already writes")

@@ -18,12 +18,15 @@ nothing until it is tagged. What changes for consumers:
 
   `approveAndCall` is covered too.
 - **Asset approvals are capped at the pull.** An approval of the vault
-  asset may not exceed the plan's pull (`approve_above_pull`). Another
-  token's approval is still refused only at or above 2^255 (2^159 for
-  Permit2), because the plan does not say how much of it the clone will
-  hold.
-- **Settle patches.** A settle patch may not scale a balance up into a call
-  that approves.
+  asset may not exceed the plan's pull (`approve_above_pull`): the asset the
+  clone takes from the vault at execute. Another token's approval is still
+  refused only at or above 2^255 (2^159 for Permit2), because the plan does
+  not say how much of it the clone will hold.
+- **Settle patches into approvals.** A settle patch into a call that
+  approves may write only that approval's amount word, only from the
+  approved token's own balance, and never scaled up (`approve_patch`,
+  `unlimited_approve`). An operator approval or a wrapped approval takes no
+  patch.
 - **Signatures.** A signature nesting deeper than 16 levels is refused
   cleanly, instead of raising RecursionError.
 - **Unchanged:** tools, hooks, slash commands, `requires_env`, crons,

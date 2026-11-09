@@ -59,12 +59,20 @@ plugin adds no contracts:
   ERC777 `authorizeOperator`, DAI `permit` with `allowed` true). It bounds
   `approve`, `increaseAllowance`, `increaseApproval`, `approveAndCall`,
   EIP-2612 `permit` and Permit2 `approve`. An approval of the vault asset
-  may not be above the plan's pull, the most the clone receives. An approval
-  of any other token is refused only at or above 2^255 (2^159 for Permit2),
-  because the plan does not say how much of that token the clone will hold.
-  A settle patch may not scale a balance up (`mulNum` above `mulDen`) into a
-  call that approves. Approvals in other forms, or behind other wrappers,
-  are not recognized. Guardians abstain on it (UNAUDITED_TEMPLATE), so execute stays
+  may not be above the plan's pull: the amount of the vault asset the clone
+  takes from the vault at execute (`--amount`, the draft's max capital). An
+  approval of any other token is refused only at or above 2^255 (2^159 for
+  Permit2), because the plan does not say how much of that token the clone
+  will hold. Those bounds check the amounts written in the plan. A settle
+  patch, which writes a balance into a call at settle time, may write into
+  a call that approves only that approval's amount word, only from the
+  approved token's own balance, and never scaled up (`mulNum` above
+  `mulDen`). An operator approval or an approval inside a wrapper takes no
+  patch. A patched amount is therefore at most what the clone holds of that
+  token at settle. The checks fail closed: a settle-leg approval of the
+  asset above the pull is refused, and so is an approval inside a Multicall3
+  `aggregate`, though the aggregator, not the clone, makes it. Approvals in
+  other forms, or behind other wrappers, are not recognized. Guardians abstain on it (UNAUDITED_TEMPLATE), so execute stays
   blocked (InsufficientApproveCoverage) and the vault stays locked until a
   guardian operator allows it or the proposal is cancelled. The plugin does
   not lift that gate.

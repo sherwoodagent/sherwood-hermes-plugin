@@ -646,6 +646,7 @@ class Approval:
     bits: int
     on: bool
     path: str  # "" at the top level, else the wrapper chain, e.g. "multicall(bytes[]) call 1: "
+    word: int | None = None  # argument word of the amount (or flag) in its own call; None: none
 
     @property
     def unlimited_bound(self) -> int:
@@ -684,8 +685,8 @@ def approvals_in(data: bytes, target: str, *, depth: int = 0, path: str = "") ->
             token_word = word(grant.token_word)
             token = "0x" + (token_word or 0).to_bytes(32, "big")[12:].hex()
         if grant.bits == 0:
-            return [Approval(grant.label, token, None, 0, bool(value), path)]
-        return [Approval(grant.label, token, value, grant.bits, True, path)]
+            return [Approval(grant.label, token, None, 0, bool(value), path, grant.word)]
+        return [Approval(grant.label, token, value, grant.bits, True, path, grant.word)]
     if selector in _WRAPPERS:
         signature = _WRAPPERS[selector][0]
         if depth >= MAX_WRAPPER_DEPTH:

@@ -185,6 +185,52 @@ def test_a_patch_may_not_scale_a_balance_up_into_an_approving_call():
         assert _validate(settle=settle, patches=[patch])["settlePatches"][0]["argIndex"] == 1
 
 
+# -- P1 (review of #38): a patch into an approving call writes only its amount, from that token ----
+
+OTHER = "0x" + "66" * 20  # another token the plan touches (a call target)
+PERMIT2_SETTLE = {"target": PERMIT2, "signature": "approve(address,address,uint160,uint48)", "args": [TARGET, ROUTER, "0", 0]}
+
+
+def _settle_with(settle_call: dict, patch: dict) -> dict:
+    return _validate(
+        {"target": OTHER, "data": _hex(SWAP)},  # OTHER and TARGET are call targets, so either may be a patch token
+        {"target": TARGET, "data": _hex(SWAP)},
+        settle=[settle_call], patches=[{"callIndex": 0, **patch}],
+    )
+
+
+@pytest.mark.parametrize("settle_call,patch", [
+    # the review's repro: another token's raw balance into an asset approve amount
+    ({"target": USDG, "signature": "approve(address,uint256)", "args": [ROUTER, "0"]}, {"argIndex": 1, "token": OTHER}),
+    ({"target": TARGET, "signature": "approve(address,uint256)", "args": [ROUTER, "0"]}, {"argIndex": 1, "token": OTHER}),
+    (PERMIT2_SETTLE, {"wordIndex": 0, "token": TARGET}),  # Permit2's token word
+    (PERMIT2_SETTLE, {"wordIndex": 1, "token": TARGET}),  # Permit2's spender word
+    (PERMIT2_SETTLE, {"wordIndex": 2, "token": OTHER}),  # amount, from the wrong token
+    (PERMIT2_SETTLE, {"wordIndex": 3, "token": TARGET}),  # expiration
+    ({"target": TARGET, "signature": "approveAndCall(address,uint256,bytes)", "args": [ROUTER, "0", "0x"]},
+     {"wordIndex": 2, "token": TARGET}),  # approveAndCall's bytes offset word
+    ({"target": TARGET, "signature": "setApprovalForAll(address,bool)", "args": [ROUTER, False]},
+     {"wordIndex": 1, "token": TARGET}),  # a balance written into the flag turns it on
+    ({"target": TARGET, "data": _hex(_multicall([APPROVE_SMALL]))}, {"wordIndex": 1, "token": TARGET}),  # wrapped
+])
+def test_p1_a_patch_into_an_approving_call_is_limited_to_its_own_amount(settle_call, patch):
+    with pytest.raises(RuleViolation) as exc:
+        _settle_with(settle_call, patch)
+    assert exc.value.code == "approve_patch", exc.value.reason
+
+
+@pytest.mark.parametrize("settle_call,patch", [
+    ({"target": USDG, "signature": "approve(address,uint256)", "args": [ROUTER, "0"]}, {"argIndex": 1, "token": USDG}),
+    ({"target": "$asset", "signature": "approve(address,uint256)", "args": [ROUTER, "0"]}, {"argIndex": 1, "token": "$asset"}),
+    ({"target": TARGET, "signature": "approve(address,uint256)", "args": [ROUTER, "0"]}, {"argIndex": 1, "token": TARGET}),
+    (PERMIT2_SETTLE, {"wordIndex": 2, "token": TARGET}),  # Permit2 amount from the approved token
+    ({"target": TARGET, "signature": "approveAndCall(address,uint256,bytes)", "args": [ROUTER, "0", "0x"]},
+     {"argIndex": 1, "token": TARGET}),
+])
+def test_p1_a_raw_balance_patch_of_the_approved_token_into_its_amount_is_allowed(settle_call, patch):
+    assert _settle_with(settle_call, patch)["settlePatches"]
+
+
 # -- N1': deep nesting is a refusal, not a RecursionError ----------------------------------------------
 
 
@@ -217,6 +263,8 @@ def test_ordinary_nesting_still_compiles():
 def test_the_disclosure_names_the_refused_forms_and_the_pull_bound():
     text = " ".join((Path(__file__).parent.parent / "docs" / "hackathon-disclosure.md").read_text().split())
     assert "unlimited approvals in any form" not in text
+    assert "the most the clone receives" not in text  # the pull is what the clone takes at execute, not a ceiling
+    assert "only from the approved token's own balance" in text
     readme = " ".join((Path(__file__).parent.parent / "README.md").read_text().split())
     for doc in (text, readme):
         assert "still pass" not in doc  # the three forms the 0.8.3 docs listed as passing are refused now
