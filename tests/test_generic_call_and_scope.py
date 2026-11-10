@@ -992,6 +992,19 @@ def test_other_chats_dms_and_strangers_get_no_fund_context(two_funds, kwargs):
 def test_an_operator_turn_gets_the_default_fund(two_funds):
     text = _scope(two_funds, session_id="s1")
     assert "Active fund alpha-fund" in text and VAULT in text
+    assert "<sherwood-fund-chat>" not in text  # the operator's terminal turn is not a group chat
+
+
+def test_a_fund_chat_turn_gets_the_group_path_rules(two_funds):
+    """Live group test 2026-11-10: the group agent loaded the generic `sherwood` skill, fetched the
+    prepare URL, typed a propose command for the host and offered a one-shot."""
+    text = _scope(two_funds, platform="telegram", chat_id=B_CHAT, sender_id="901")
+    block = text[text.index("<sherwood-fund-chat>"):]
+    assert block.rstrip().endswith("</sherwood-fund-chat>")
+    for phrase in ("no terminal", "propose command", "prepare", "🚀 Ship it", "fund-propose", "web search"):
+        assert phrase in block, phrase
+    # Strangers and other chats still get nothing at all.
+    assert _scope(two_funds, platform="telegram", chat_id=B_CHAT, sender_id="66") == ""
 
 
 def test_one_fund_and_no_default_is_that_fund_not_a_no_default_line(tmp_path, monkeypatch):
