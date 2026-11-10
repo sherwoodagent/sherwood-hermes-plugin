@@ -159,14 +159,23 @@ def test_proposal_card_voting_golden():
     ]
 
 
-def test_proposal_card_after_vote_has_no_vote_buttons():
+def test_proposal_card_after_vote_greys_out_the_vote_row():
+    """Past voting the 👍 / ❌ row stays as one disabled button (Bot API 10.3), so 📊 View fund does not move."""
     text, markup = render_proposal_card(
         proposal(status="vetoed", against_bps=2150), fund=fund(), people=PEOPLE, now=NOW
     )
     assert text.splitlines()[0] == "⛔ VETOED · <b>Proposal #42</b>"
     assert "Against 21.5% ▮▮▮▮▮▮▮▮ 20%" in text
     assert "ends in" not in text and "(≈$" not in text
-    assert kb(markup) == [[{"text": "📊 View fund", "url": FUND_URL}]]
+    assert kb(markup) == [[{"text": "⛔ Vetoed", "disabled": {}}], [{"text": "📊 View fund", "url": FUND_URL}]]
+    for status, label in (("passed", "🗳 Voting closed"), ("settled", "🗳 Voting closed"), ("cancelled", "✖️ Cancelled")):
+        assert kb(render_proposal_card(proposal(status=status), fund=fund(), now=NOW)[1])[0] == [
+            {"text": label, "disabled": {}}
+        ]
+    # A draft (never a vote card) gets no closed row.
+    assert kb(render_proposal_card(proposal(status="draft"), fund=fund(), now=NOW)[1]) == [
+        [{"text": "📊 View fund", "url": FUND_URL}]
+    ]
 
 
 def test_proposal_card_escapes_html_and_truncates():
@@ -204,7 +213,10 @@ def test_fund_card_golden():
             {"text": "💰 Deposit", "callback_data": f"shfund:deposit:{VAULT}"},
             {"text": "↩️ Withdraw", "callback_data": f"shfund:withdraw:{VAULT}"},
         ],
-        [{"text": "🎟 Join", "callback_data": f"shfund:join:{VAULT}"}],
+        [
+            {"text": "🎟 Join", "callback_data": f"shfund:join:{VAULT}"},
+            {"text": "👤 My position", "callback_data": f"shfund:position:{VAULT}"},
+        ],
     ]
 
 

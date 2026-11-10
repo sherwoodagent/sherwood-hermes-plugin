@@ -11,6 +11,11 @@
 * ``ProposalCards`` wires that to fund state: the countdown and veto meter
   refresh while a proposal is voting, one final edit lands when the window
   closes or the status leaves ``voting``, and the job stops.
+* A card with greyed-out buttons (Bot API 10.3 ``disabled``) that Telegram
+  refuses is posted / edited again without them, as before 10.3.
+* ``PositionWidgets`` sends a member's 👤 My position widget (Bot API 10.4)
+  to their DM, falling back to plain text, and rewrites its data when a card
+  re-read changes what it shows.
 """
 from __future__ import annotations
 
@@ -20,19 +25,37 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Awaitable, Callable, Mapping
 
 from telegram import InlineKeyboardMarkup, InputMediaPhoto, LinkPreviewOptions
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError, TimedOut
 
-from .cards import render_proposal_card
-from .types import FundGateway, Person, ProposalView, maybe_await
+from .cards import has_disabled, render_proposal_card, strip_disabled, view_fund_markup
+from .types import FundGateway, FundView, Person, ProposalView, maybe_await
+from .widget import (
+    WIDGET_HTML,
+    build_position,
+    data_fingerprint,
+    is_member_or_host,
+    position_text,
+    widget_data,
+)
 
 _log = logging.getLogger(__name__)
 
 CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4096
+# 👤 My position widgets kept per fund chat for refreshes (the latest tappers; older ones stay as sent).
+WIDGETS_PER_CHAT = 50
+# Widget data edits per refresh pass. A pass the cap cuts short is continued by a follow-up pass
+# after WIDGET_FOLLOW_UP_S; one cut short by RetryAfter after Telegram's wait (at most
+# RETRY_AFTER_MAX_S). At most WIDGET_FOLLOW_UPS_MAX delayed follow-ups run in a row.
+WIDGET_EDITS_PER_PASS = 20
+WIDGET_FOLLOW_UP_S = 1.0
+RETRY_AFTER_MAX_S = 60.0
+WIDGET_FOLLOW_UPS_MAX = 10
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 Tick = Callable[[], Awaitable[bool]]  # returns False when the card is final
@@ -111,15 +134,51 @@ class LiveCards:
             kwargs["reply_to_message_id"] = reply_to_message_id
         if message_thread_id is not None:
             kwargs["message_thread_id"] = message_thread_id
-        if image_url:
-            msg = await self.bot.send_photo(photo=image_url, caption=_clip(text, CAPTION_LIMIT), **kwargs)
-        else:
-            msg = await self.bot.send_message(
-                text=_clip(text, TEXT_LIMIT), link_preview_options=NO_PREVIEW, **kwargs
-            )
+        try:
+            msg = await self._send(text, image_url, kwargs)
+        except BadRequest as exc:
+            if not has_disabled(markup):
+                raise
+            # A server that refuses Bot API 10.3 disabled buttons gets the card without them.
+            _log.info("card post with disabled buttons refused (%s); posting without them", exc)
+            msg = await self._send(text, image_url, {**kwargs, "reply_markup": strip_disabled(markup)})
         ref = CardRef(chat_id=int(chat_id), message_id=int(msg.message_id), image_url=image_url)
         self._last[(ref.chat_id, ref.message_id)] = _fingerprint(text, markup, image_url)
         return ref
+
+    async def _send(self, text: str, image_url: str | None, kwargs: dict[str, Any]) -> Any:
+        if image_url:
+            return await self.bot.send_photo(photo=image_url, caption=_clip(text, CAPTION_LIMIT), **kwargs)
+        return await self.bot.send_message(text=_clip(text, TEXT_LIMIT), link_preview_options=NO_PREVIEW, **kwargs)
+
+    async def _edit_once(
+        self, ref: CardRef, text: str, markup: InlineKeyboardMarkup | None, image: str | None
+    ) -> None:
+        if image:
+            if image != ref.image_url:
+                await self.bot.edit_message_media(
+                    chat_id=ref.chat_id,
+                    message_id=ref.message_id,
+                    media=InputMediaPhoto(media=image, caption=_clip(text, CAPTION_LIMIT), parse_mode=ParseMode.HTML),
+                    reply_markup=markup,
+                )
+            else:
+                await self.bot.edit_message_caption(
+                    chat_id=ref.chat_id,
+                    message_id=ref.message_id,
+                    caption=_clip(text, CAPTION_LIMIT),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                )
+        else:
+            await self.bot.edit_message_text(
+                chat_id=ref.chat_id,
+                message_id=ref.message_id,
+                text=_clip(text, TEXT_LIMIT),
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+                link_preview_options=NO_PREVIEW,
+            )
 
     async def edit(
         self,
@@ -138,51 +197,32 @@ class LiveCards:
         fp = _fingerprint(text, markup, image)
         if self._last.get(key) == fp:
             return False
-        try:
-            if image:
-                if image != ref.image_url:
-                    await self.bot.edit_message_media(
-                        chat_id=ref.chat_id,
-                        message_id=ref.message_id,
-                        media=InputMediaPhoto(
-                            media=image, caption=_clip(text, CAPTION_LIMIT), parse_mode=ParseMode.HTML
-                        ),
-                        reply_markup=markup,
-                    )
-                else:
-                    await self.bot.edit_message_caption(
-                        chat_id=ref.chat_id,
-                        message_id=ref.message_id,
-                        caption=_clip(text, CAPTION_LIMIT),
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=markup,
-                    )
-            else:
-                await self.bot.edit_message_text(
-                    chat_id=ref.chat_id,
-                    message_id=ref.message_id,
-                    text=_clip(text, TEXT_LIMIT),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=markup,
-                    link_preview_options=NO_PREVIEW,
-                )
-        except BadRequest as exc:
-            if _is_not_modified(exc):
-                self._last[key] = fp
+        # A server that refuses Bot API 10.3 disabled buttons gets the card without them (as before 10.3).
+        candidates = [markup, strip_disabled(markup)] if has_disabled(markup) else [markup]
+        for i, candidate in enumerate(candidates):
+            try:
+                await self._edit_once(ref, text, candidate, image)
+            except BadRequest as exc:
+                if _is_not_modified(exc):
+                    self._last[key] = fp
+                    return False
+                if _is_gone(exc):
+                    self._last.pop(key, None)
+                    raise CardGone(str(exc)) from exc
+                if i + 1 < len(candidates):
+                    _log.info("card edit for %s with disabled buttons refused (%s); retrying without them", key, exc)
+                    continue
+                _log.warning("card edit failed for %s: %s", key, exc)
                 return False
-            if _is_gone(exc):
-                self._last.pop(key, None)
-                raise CardGone(str(exc)) from exc
-            _log.warning("card edit failed for %s: %s", key, exc)
-            return False
-        except RetryAfter as exc:
-            _log.info("card edit rate-limited for %s; retry in %ss", key, exc.retry_after)
-            return False
-        except TelegramError as exc:
-            _log.warning("card edit failed for %s: %s", key, exc)
-            return False
-        self._last[key] = fp
-        return True
+            except RetryAfter as exc:
+                _log.info("card edit rate-limited for %s; retry in %ss", key, exc.retry_after)
+                return False
+            except TelegramError as exc:
+                _log.warning("card edit failed for %s: %s", key, exc)
+                return False
+            self._last[key] = fp
+            return True
+        return False
 
     def forget(self, ref: CardRef) -> None:
         self._last.pop((int(ref.chat_id), int(ref.message_id)), None)
@@ -336,3 +376,243 @@ class ProposalCards:
 
     def unwatch(self, chat_id: int, proposal_id: str) -> None:
         self.live.stop_refresh(self.key(chat_id, proposal_id))
+
+
+class PositionWidgets:
+    """👤 My position: one member's position as a widget in their DM with the bot.
+
+    ``send`` delivers it. ``request`` asks for a refresh pass over the widgets already sent for a
+    fund chat and returns at once: the pass runs as its own task, one at a time per chat (requests
+    made while one runs collapse into a single follow-up), so it never holds a card lock or delays
+    a handler. A pass rewrites only widgets whose values changed, at most ``max_calls`` of them,
+    with ``editMessageWidgetData`` (the caption is a dated snapshot and is not edited). Every widget
+    a pass tries goes to the back of the queue, so the next pass starts with the ones not yet
+    served; a pass the cap or ``RetryAfter`` cut short is continued after a short wait. The latest
+    widget per member or host is kept in memory (``sent``: fund chat -> member -> (DM message id,
+    data fingerprint)), so after a restart a member's next tap sends a fresh one.
+    """
+
+    def __init__(
+        self,
+        gateway: FundGateway,
+        *,
+        base_url: str | None = None,
+        clock: Callable[[], float] = time.time,
+        max_calls: int = WIDGET_EDITS_PER_PASS,
+        sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    ) -> None:
+        self.gateway = gateway
+        self.base_url = base_url
+        self.clock = clock
+        self.max_calls = max_calls
+        self.sleep = sleep  # the wait before a follow-up pass (tests replace it)
+        self.sent: dict[int, dict[int, tuple[int, str]]] = {}
+        self._passes: dict[int, asyncio.Task] = {}
+        self._again: set[int] = set()
+
+    async def send(self, bot: Any, dm_chat_id: int, fund: FundView, user_id: int) -> str:
+        """Send ``user_id``'s position in ``fund`` to their private chat with the bot.
+
+        A widget first (Bot API 10.4 ``sendWidget`` through ``do_api_request``: PTB 22.8 speaks
+        10.0). Telegram shows widgets only in private chats in production, so ``dm_chat_id`` is
+        always the member's DM. A refusal of the widget (an older Bot API answers 404, which PTB
+        raises as ``EndPointNotFound``; a widget over a limit) sends the same plain text as a DM
+        message instead. Returns ``"widget"`` or ``"text"``.
+
+        Raises without stepping down: ``Forbidden`` (the bot may not write to this user yet),
+        ``TimedOut`` (the widget may have arrived: a text copy could be a duplicate) and
+        ``RetryAfter`` (Telegram asks to wait), and the text send's error. Only a member or the
+        host is remembered for refreshes.
+        """
+        now = self.clock()
+        pos = build_position(fund, user_id)
+        text = position_text(pos, now=now)
+        markup = view_fund_markup(fund.vault, self.base_url)
+        try:
+            sent = await bot.do_api_request(
+                "sendWidget",
+                api_kwargs={
+                    "chat_id": int(dm_chat_id),
+                    "html": WIDGET_HTML,
+                    "chat_data": widget_data(pos, now=now),
+                    "caption": text,  # what clients without widgets show, and the chat-list preview
+                    "reply_markup": markup,
+                },
+            )
+        except (Forbidden, TimedOut, RetryAfter):
+            raise
+        except Exception as exc:  # noqa: BLE001 - any other refusal of the widget falls back to the text
+            _log.info("sendWidget to %s failed (%s); sending the position as text", dm_chat_id, exc)
+        else:
+            message_id = sent.get("message_id") if isinstance(sent, dict) else getattr(sent, "message_id", None)
+            if message_id is not None and fund.telegram_chat_id is not None and is_member_or_host(fund, user_id):
+                self.note(int(fund.telegram_chat_id), user_id, int(message_id), data_fingerprint(pos))
+            return "widget"
+        # parse_mode=None: plain text whatever PTB Defaults say, so names and titles show literally.
+        await bot.send_message(
+            chat_id=int(dm_chat_id), text=text, parse_mode=None, reply_markup=markup, link_preview_options=NO_PREVIEW
+        )
+        return "text"
+
+    def note(self, chat_id: int, user_id: int, message_id: int, fingerprint: str) -> None:
+        """Remember a member's latest widget (one per member). Past the cap, the widget least recently
+        tapped or tried by a refresh drops."""
+        widgets = self.sent.setdefault(int(chat_id), {})
+        widgets.pop(int(user_id), None)
+        widgets[int(user_id)] = (int(message_id), fingerprint)
+        while len(widgets) > WIDGETS_PER_CHAT:
+            widgets.pop(next(iter(widgets)))
+
+    def request(self, bot: Any, chat_id: int, fund: FundView | None = None) -> asyncio.Task | None:
+        """Ask for a refresh pass of this fund chat's widgets; never waits for it.
+
+        Returns the task running the passes (None when there is nothing to refresh). A request made
+        while a pass runs (or waits to continue) collapses into one follow-up pass, which reads the
+        stored fund; a ``fund`` passed with it is not used.
+        """
+        chat = int(chat_id)
+        if not self.sent.get(chat):
+            return None
+        running = self._passes.get(chat)
+        if running is not None and not running.done():
+            self._again.add(chat)
+            return running
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        task = loop.create_task(self._run_passes(bot, chat, fund), name=f"shfund:widgets:{chat}")
+        self._passes[chat] = task
+        return task
+
+    async def idle(self) -> None:
+        """Wait until no refresh pass is running or waiting (tests)."""
+        while self._passes:
+            await asyncio.gather(*list(self._passes.values()), return_exceptions=True)
+
+    def cancel(self) -> None:
+        """Cancel every pending refresh pass (plugin shutdown). Safe from any thread."""
+        self._again.clear()
+        for task in list(self._passes.values()):
+            try:
+                task.get_loop().call_soon_threadsafe(task.cancel)
+            except RuntimeError:  # its loop is already closed: the task died with it
+                pass
+        self._passes.clear()
+
+    async def _run_passes(self, bot: Any, chat: int, fund: FundView | None) -> None:
+        """Passes for one chat, one at a time: a follow-up after a pass that was cut short (after
+        its wait) or that a request arrived during; then done."""
+        try:
+            _, wait = await self._pass(bot, chat, fund)
+            delayed = 0
+            while True:
+                if wait is not None:
+                    if delayed >= WIDGET_FOLLOW_UPS_MAX:
+                        self._again.discard(chat)  # the next request starts over
+                        break
+                    delayed += 1
+                    await self.sleep(wait)
+                elif chat not in self._again:
+                    break
+                self._again.discard(chat)
+                _, wait = await self._pass(bot, chat)
+        except Exception:  # noqa: BLE001 - a broken pass is logged, and the chat is not left queued
+            _log.exception("position widget refresh for %s failed", chat)
+            self._again.discard(chat)
+        finally:
+            if self._passes.get(chat) is asyncio.current_task():
+                self._passes.pop(chat, None)
+
+    def _restore(self, widgets: dict[int, tuple[int, str]], user_id: int, entry: tuple[int, str], last: str) -> None:
+        """Put the old fingerprint back so a later pass retries (unless a new tap replaced the widget)."""
+        if widgets.get(user_id) == entry:
+            widgets[user_id] = (entry[0], last)
+
+    def _forget(self, widgets: dict[int, tuple[int, str]], user_id: int, entry: tuple[int, str]) -> None:
+        if widgets.get(user_id) == entry:
+            widgets.pop(user_id, None)
+
+    async def refresh(self, bot: Any, chat_id: int, fund: FundView | None = None) -> int:
+        """One pass, without a follow-up: how many widgets were rewritten (see ``_pass``)."""
+        changed, _ = await self._pass(bot, chat_id, fund)
+        return changed
+
+    async def _pass(self, bot: Any, chat_id: int, fund: FundView | None = None) -> tuple[int, float | None]:
+        """Rewrite the data of this fund chat's widgets whose values changed, oldest-served first.
+
+        At most ``max_calls`` edits. Each widget tried goes to the back of the queue, so the next
+        pass starts with the ones this pass did not reach. The new fingerprint is recorded before
+        the edit. A widget is forgotten only when it is gone (deleted, not editable, the chat gone,
+        the bot blocked); on ``TimedOut`` / ``NetworkError`` it keeps its old fingerprint for a
+        later pass. Returns how many widgets were rewritten, and None when the pass got through or
+        else how long to wait before a follow-up (the cap: ``WIDGET_FOLLOW_UP_S``; ``RetryAfter``:
+        Telegram's wait, bounded). Raises only on an unexpected error (``_run_passes`` logs it).
+        """
+        widgets = self.sent.get(int(chat_id))
+        if not widgets:
+            return 0, None
+        fund = fund if fund is not None else await maybe_await(self.gateway.fund_for_chat(chat_id))
+        if fund is None:
+            return 0, None
+        now = self.clock()
+        calls = changed = 0
+        for user_id, (message_id, last) in list(widgets.items()):
+            if widgets.get(user_id) != (message_id, last):
+                continue  # re-tapped or forgotten while this pass ran
+            try:
+                pos = build_position(fund, user_id)
+                fp = data_fingerprint(pos)
+                data = widget_data(pos, now=now)
+            except Exception as exc:  # noqa: BLE001 - one member's data never stops the others
+                _log.warning("position widget %s/%s not built: %s", user_id, message_id, exc)
+                continue
+            if fp == last:
+                continue
+            if calls >= self.max_calls:
+                return changed, WIDGET_FOLLOW_UP_S  # changed widgets left: a follow-up continues here
+            entry = (message_id, fp)
+            widgets.pop(user_id, None)
+            widgets[user_id] = entry  # to the back; fingerprint before the await (no repeat edits)
+            calls += 1
+            try:
+                await bot.do_api_request(
+                    "editMessageWidgetData", api_kwargs={"chat_id": user_id, "message_id": message_id, "chat_data": data}
+                )
+            except RetryAfter as exc:
+                self._restore(widgets, user_id, entry, last)
+                wait = _retry_seconds(exc)
+                _log.info("position widget refresh for %s rate-limited; next pass in %.0fs", chat_id, wait)
+                return changed, wait
+            except Forbidden as exc:  # the bot was blocked or the user is gone
+                _log.debug("position widget %s/%s forgotten: %s", user_id, message_id, exc)
+                self._forget(widgets, user_id, entry)
+                continue
+            except BadRequest as exc:
+                if _is_not_modified(exc):
+                    changed += 1
+                elif _is_gone(exc):
+                    _log.debug("position widget %s/%s forgotten: %s", user_id, message_id, exc)
+                    self._forget(widgets, user_id, entry)
+                else:  # refused data: keep the widget, try again when the values change
+                    _log.info("position widget %s/%s edit refused: %s", user_id, message_id, exc)
+                continue
+            except TelegramError as exc:  # TimedOut, NetworkError, a 5xx: keep it for a later pass
+                _log.info("position widget %s/%s edit failed, kept: %s", user_id, message_id, exc)
+                self._restore(widgets, user_id, entry, last)
+                continue
+            changed += 1
+        return changed, None
+
+
+def _retry_seconds(exc: RetryAfter) -> float:
+    """Telegram's ``RetryAfter`` wait in seconds, bounded to [1, ``RETRY_AFTER_MAX_S``]. PTB 22.2+ keeps
+    it as a timedelta in ``_retry_after``; the public attribute warns about its type change."""
+    value: Any = getattr(exc, "_retry_after", None)
+    if not isinstance(value, timedelta):
+        value = exc.retry_after
+    try:
+        seconds = value.total_seconds() if isinstance(value, timedelta) else float(value)
+    except (TypeError, ValueError):
+        seconds = RETRY_AFTER_MAX_S
+    return min(max(seconds, 1.0), RETRY_AFTER_MAX_S)

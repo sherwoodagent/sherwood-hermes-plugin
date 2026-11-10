@@ -135,13 +135,33 @@ def fake_bot(bot_id: int = 999, username: str = "sherwoodagentbot") -> MagicMock
         counter["n"] += 1
         return SimpleNamespace(message_id=counter["n"], **{k: v for k, v in kwargs.items() if k == "chat_id"})
 
+    async def _api(endpoint, api_kwargs=None, **kwargs):  # Bot.do_api_request: methods PTB 22.8 does not know
+        if endpoint == "sendWidget":
+            counter["n"] += 1
+            return {"message_id": counter["n"], "chat": {"id": (api_kwargs or {}).get("chat_id")}}
+        return True
+
     bot.send_message = AsyncMock(side_effect=_send)
     bot.send_photo = AsyncMock(side_effect=_send)
+    bot.do_api_request = AsyncMock(side_effect=_api)
     bot.edit_message_text = AsyncMock(return_value=True)
     bot.edit_message_caption = AsyncMock(return_value=True)
     bot.edit_message_media = AsyncMock(return_value=True)
     bot.get_chat_member = AsyncMock(return_value=SimpleNamespace(status="member"))
     return bot
+
+
+def refusal_text(q, bot):
+    """What a tapper was told when a button did nothing: the alert's text, else the ephemeral reply to
+    the callback (Bot API 10.4: ``callback_query_id`` without ``receiver_user_id``)."""
+    call = q.answer.await_args
+    if call and call.kwargs.get("show_alert"):
+        return call.kwargs.get("text")
+    for sent in reversed(bot.send_message.await_args_list):
+        params = (sent.kwargs.get("api_kwargs") or {}).get("ephemeral_message_parameters") or {}
+        if params == {"callback_query_id": q.id}:
+            return sent.kwargs.get("text")
+    return None
 
 
 class FakeJob:

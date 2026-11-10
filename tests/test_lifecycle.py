@@ -135,6 +135,20 @@ def test_a_short_cli_command_starts_nothing(tmp_path, monkeypatch):
     assert rt["bg"].closed
 
 
+def test_teardown_closes_the_telegram_fund_bridge(tmp_path, monkeypatch):
+    """Shutdown also closes the fund's Telegram bridge, which cancels pending widget refreshes."""
+    import sherwood_monitor
+    from sherwood_monitor.fund import telegram as fund_telegram
+
+    bridge = MagicMock()
+    bridge.pre_llm_context = MagicMock(return_value=None)
+    monkeypatch.setattr(fund_telegram, "wire_fund_telegram", lambda *a, **k: bridge)
+    _boot(tmp_path, monkeypatch)
+    bridge.close.assert_not_called()
+    sherwood_monitor._RUNTIME["teardown"]()
+    bridge.close.assert_called_once_with()
+
+
 def test_boot_clears_a_status_file_left_by_a_dead_hermes(tmp_path, monkeypatch):
     (tmp_path / "stream_status.json").write_text(json.dumps(
         {"written_at": 0, "host_pid": 999999, "funds": [{"subdomain": "alpha", "pid": 999998}]}

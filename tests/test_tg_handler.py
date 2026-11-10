@@ -45,6 +45,7 @@ from tests.tg_fakes import (  # noqa: E402
     FakeJobQueue,
     fake_bot,
     make_proposal,
+    refusal_text,
 )
 
 SECRET = "sherwood-test-vector-secret"
@@ -161,25 +162,80 @@ async def test_back_toggles_social_backing_and_edits_card_in_place():
 async def test_host_only_callbacks_refuse_members(data):
     rt, gw, bot = make_runtime()
     q = await tap(rt, bot, data, BOB)
-    assert answered_text(q) == "Only the fund host can do that."
-    assert q.answer.await_args.kwargs["show_alert"] is True
+    # Bot API 10.4: an ephemeral reply to the callback (no receiver_user_id), seen only by the tapper.
+    sent = bot.send_message.await_args.kwargs
+    assert sent["text"] == "Only the fund host can do that." and sent["parse_mode"] is None
+    assert sent["api_kwargs"] == {"ephemeral_message_parameters": {"callback_query_id": "q1"}}
+    q.answer.assert_awaited_once()  # the query is still answered, with no pop-up
+    assert answered_text(q) is None
     assert gw.calls == []
+    assert bot.send_message.await_count == 1  # the refusal only: no link went out
+
+
+async def test_refusal_falls_back_to_the_alert():
+    """A server without 10.4 ephemeral replies, SHERWOOD_TG_PERSONAL_LINKS=dm, or a tap outside a group:
+    today's pop-up alert."""
+    rt, _, bot = make_runtime()
+    bot.send_message.side_effect = BadRequest("Bad Request: receiver_user_id is required")
+    q = await tap(rt, bot, "shfund:shipit:d7", BOB)
+    assert answered_text(q) == "Only the fund host can do that." and q.answer.await_args.kwargs["show_alert"] is True
+    q.answer.assert_awaited_once()
+    rt, _, bot = make_runtime(personal_link_mode="dm")
+    q = await tap(rt, bot, "shfund:shipit:d7", BOB)
+    assert answered_text(q) == "Only the fund host can do that." and q.answer.await_args.kwargs["show_alert"] is True
+    bot.send_message.assert_not_awaited()
+    rt, _, bot = make_runtime()
+    q = await tap(rt, bot, "shfund:shipit:d7", BOB, chat_type="private")
+    assert q.answer.await_args.kwargs["show_alert"] is True
     bot.send_message.assert_not_awaited()
 
 
-async def test_host_ship_it_calls_gateway_and_clears_buttons():
+async def test_host_ship_it_calls_gateway_and_greys_out_the_button():
     rt, gw, bot = make_runtime()
     q = await tap(rt, bot, "shfund:shipit:d7", HOST)
     assert gw.calls == [("ship_draft", "d7", HOST)]
     assert answered_text(q) == "🚀 Proposal submitted."
-    q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    markup = q.edit_message_reply_markup.await_args.kwargs["reply_markup"]
+    assert markup.to_dict() == {"inline_keyboard": [[{"text": "🚀 Shipped", "disabled": {}}]]}
+
+
+async def test_ship_it_keeps_the_co_sign_button_live():
+    """Host co-sign: the toast says "Tap ✍️ Co-sign", so only 🚀 Ship it greys out; if Telegram refuses
+    disabled buttons, the card keeps ✍️ Co-sign alone."""
+    from sherwood_monitor.telegram.cards import render_draft_card
+
+    rt, _, bot = make_runtime()
+    _, card = render_draft_card(make_proposal(id="d7", status="draft"), requires_host_cosign=True)
+    q = make_query("shfund:shipit:d7", HOST)
+    q.message.reply_markup = card
+    q.edit_message_reply_markup = AsyncMock(side_effect=[BadRequest("Bad Request: can't parse inline keyboard button"), True])
+    await FundHandlers(rt).on_callback(SimpleNamespace(callback_query=q), SimpleNamespace(bot=bot))
+    first, second = (c.kwargs["reply_markup"].to_dict()["inline_keyboard"] for c in q.edit_message_reply_markup.await_args_list)
+    assert first == [[{"text": "🚀 Shipped", "disabled": {}}, {"text": "✍️ Co-sign (host)", "callback_data": "shfund:propose:d7"}]]
+    assert second == [[{"text": "✍️ Co-sign (host)", "callback_data": "shfund:propose:d7"}]]
+
+
+async def test_co_sign_after_the_proposal_is_on_chain_says_so():
+    """✍️ Co-sign stays live after 🚀 Ship it; once the proposal is on chain the answer says that,
+    not "not ready" (and a cancelled draft says it was cancelled)."""
+    rt, gw, bot = make_runtime()
+    gw.signing_url = None  # host_signing_url only signs a draft
+    gw.proposals["d7"] = make_proposal(id="d7", status="draft")
+    q = await tap(rt, bot, "shfund:propose:d7", HOST)
+    assert refusal_text(q, bot) == "The signing page isn't ready for this draft yet."
+    gw.proposals["d7"] = make_proposal(id="d7", status="voting", onchain_id=9)
+    q = await tap(rt, bot, "shfund:propose:d7", HOST)
+    assert refusal_text(q, bot) == "Proposal #9 is already on chain: there is nothing left to co-sign."
+    gw.proposals["d7"] = make_proposal(id="d7", status="cancelled")
+    q = await tap(rt, bot, "shfund:propose:d7", HOST)
+    assert refusal_text(q, bot) == "This draft was cancelled: there is nothing to co-sign."
 
 
 async def test_ship_it_failure_shows_reason_and_keeps_buttons():
     rt, gw, bot = make_runtime()
     gw.fail_ship = True
     q = await tap(rt, bot, "shfund:shipit:d7", HOST)
-    assert answered_text(q) == "Bond swap still pending." and q.answer.await_args.kwargs["show_alert"]
+    assert refusal_text(q, bot) == "Bond swap still pending."
     q.edit_message_reply_markup.assert_not_awaited()
 
 
@@ -195,7 +251,7 @@ async def test_no_host_configured_refuses_everyone():
     gw = FakeGateway(host=None)
     rt, gw, bot = make_runtime(gw)
     q = await tap(rt, bot, "shfund:shipit:d7", HOST)
-    assert answered_text(q) == "Only the fund host can do that."
+    assert refusal_text(q, bot) == "Only the fund host can do that."
 
 
 async def test_vote_sends_ephemeral_signed_link():
@@ -279,8 +335,11 @@ async def test_link_guards():
     assert answered_text(q) == "Voting is closed for this proposal."
     rt._secret = lambda: None
     q = await tap(rt, bot, f"shfund:deposit:{VAULT}", BOB)
-    assert "not configured" in answered_text(q)
-    bot.send_message.assert_not_awaited()
+    assert "not configured" in refusal_text(q, bot)
+    # The only message is that ephemeral refusal: no link went out.
+    assert [c.kwargs["api_kwargs"] for c in bot.send_message.await_args_list] == [
+        {"ephemeral_message_parameters": {"callback_query_id": "q1"}}
+    ]
 
 
 async def test_unlinked_or_disallowed_chat():
