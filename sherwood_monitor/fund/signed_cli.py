@@ -31,7 +31,13 @@ import re
 import shlex
 
 from .models import Agent, Fund, ProposalRecord
-from .rules import RuleViolation, deny, is_address
+from .rules import (
+    MAX_PORTFOLIO_LEGS,
+    RuleViolation,
+    check_portfolio_legs,
+    deny,
+    is_address,
+)
 from .units import format_units
 
 _log = logging.getLogger(__name__)
@@ -48,9 +54,8 @@ CLI_NOTE = (
 HANDOUT_HOLD_SECONDS = 1800
 # A shipped command older than this is listed as expired, not runnable: the host ships it again.
 SHIP_TTL_SECONDS = 86400
-MAX_LEGS = 20  # prepare/propose-portfolio takes 1..20 legs; the CLI path matches it
+MAX_LEGS = MAX_PORTFOLIO_LEGS  # prepare/propose-portfolio takes 1..20 legs; the CLI path matches it
 
-_SYMBOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
 _AGENT_ID_RE = re.compile(r"^[0-9]{1,78}$")
 
 
@@ -84,22 +89,12 @@ def propose_portfolio_command(fund: Fund, record: ProposalRecord) -> str:
     """
     if not is_address(fund.vault):
         raise RuleViolation(deny("no_vault", "the fund has no vault address yet"))
+    verdict = check_portfolio_legs(record.legs)  # the same check the draft passed when it was recorded
+    if not verdict.ok:
+        raise RuleViolation(verdict)
     execute = [leg for leg in record.legs if leg.phase == "execute"]
     weights = [leg.weight_bps for leg in execute]
-    if not execute or not all(leg.symbol and w > 0 for leg, w in zip(execute, weights)) or sum(weights) != 10_000:
-        raise RuleViolation(deny(
-            "not_portfolio",
-            "with proposal_signer: agent the host agent proposes with `sherwood strategy propose portfolio`: "
-            "the draft needs legs with symbol + weight_bps summing to 10000",
-        ))
-    if len(execute) > MAX_LEGS:
-        raise RuleViolation(deny("too_many_legs", f"a portfolio takes at most {MAX_LEGS} legs, not {len(execute)}"))
     symbols = [leg.symbol.upper() for leg in execute]
-    for symbol in symbols:
-        if not _SYMBOL_RE.match(symbol):
-            raise RuleViolation(deny("bad_symbol", f"{symbol!r} is not a token symbol"))
-    if len(set(symbols)) != len(symbols):
-        raise RuleViolation(deny("duplicate_symbol", f"each symbol appears once in a portfolio: {','.join(symbols)}"))
     if not isinstance(record.strategy_duration, int) or record.strategy_duration <= 0:
         raise _not_ready(record, "has no strategy duration yet")
     try:

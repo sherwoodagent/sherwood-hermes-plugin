@@ -1,24 +1,85 @@
-"""pre_tool_call guard for fund drafts.
+"""pre_tool_call guard for fund drafts and for terminal proposes on a fund vault.
 
 Runs before `fund_draft_proposal` (the only fund tool that maps to calldata)
 and blocks the call when the draft would break a coordination rule or exceed
-the fund's max capital / drawdown. Unlike the CLI risk check, this fails
+the fund's max capital / drawdown. A terminal `sherwood strategy propose` /
+`sherwood proposal create` whose vault belongs to a fund on this host is held
+to the same ceilings, read from the local fund record (no chain read); one that
+passes is answered with `FUND_RULES_APPLIED`, so the general advisory sizing
+rule in hooks.py does not run on top. Unlike the CLI risk check, this fails
 CLOSED: fund state is local and authoritative, so "cannot check" means the
-draft is not safe to build.
+draft or propose is not safe to run.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from pathlib import Path
 
+from ..propose_cmd import (
+    ASSIGNMENT_RE,
+    CLI_DEFAULT_DRAWDOWN_BPS,
+    CLI_REPO,
+    ENV_WORDS,
+    FUND_RULES_APPLIED,
+    INDIRECTION_WORDS,
+    MAX_COMMAND_CHARS,
+    TERMINAL_TOOLS,
+    SAFE_LAUNCHERS,
+    ProposeInvocation,
+    Segment,
+    has_unquoted_hash,
+    is_address,
+    launcher_problem,
+    names_cli,
+    normalize,
+    parse_segments,
+    plain_variable_read,
+    shell_expansion,
+    tokens,
+)
+
+# The install / upgrade line preflight.py and the bundled skill tell the agent to run, and nothing else
+# on the line: `npm i -g @sherwoodagent/cli`, optionally `@X.Y.Z` or `@latest`.
+CLI_INSTALL_RE = re.compile(r"npm (?:i|install) -g @sherwoodagent/cli(?:@(?:\d+\.\d+\.\d+|latest))?")
+
+REFUSE_HINT = (
+    "Run the sherwood command on its own line with literal arguments (single-quote any value with spaces or "
+    "shell characters), as fund_pending_commands lists it"
+)
+
+
+def _refuse(code: str, why: str) -> str:
+    return f"fund propose blocked ({code}): {why}. {REFUSE_HINT}"
+
+
+CAST_SENDS = frozenset({"send", "s", "publish", "p", "mktx", "m"})
+
+
+def _unlisted(seg: Segment) -> str:
+    """The refusal for a command that is neither the CLI, a read-only tool nor the install line."""
+    word = seg.bare_command
+    lead = seg.leading_words
+    rest = lead[lead.index(word) + 1 :] if word in lead else []
+    if word == "cast" and rest and rest[0] in CAST_SENDS:
+        return ("fund propose blocked (cast_transaction): the guard does not let the agent send transactions "
+                "with cast on a fund host (cast send / publish / mktx). The host runs it in their own terminal")
+    if word == "hermes" and rest[:2] == ["sherwood", "fund-bind"]:
+        return ("fund propose blocked (host_command): `hermes sherwood fund-bind` rewrites the fund record (its "
+                "vault, governor, chat or host). The host types it in their own shell, never the agent")
+    return _refuse("unlisted_command", f"`{word or seg.words[0]}` is not one the guard lets run on a line that "
+                   "names the CLI or a fund vault (only the sherwood CLI, read-only tools such as echo, grep, cat, "
+                   "jq, cast call, and the CLI install line)")
 from ..session import current_caller
 from . import authz, rules
 from .generic_call import require_agent_signer
+from .models import FundState
 from .rules import RuleViolation
 from .runtime import FundRuntime
 from .store import FundNotFound, default_state_dir, scrub_paths
 from .tools import GUARD_ERRORS, parse_draft_args
+from .units import UnitsError, format_units, to_base_units
 
 GUARDED_TOOLS = frozenset({"fund_draft_proposal"}) | authz.HOST_TOOLS | {"fund_record_vote"}
 
@@ -62,7 +123,103 @@ def rebind_markers(rt: FundRuntime) -> tuple[str, ...]:
                 extra.append(p.rstrip("/").lower())
     return tuple(m.lower() for m in REBIND_MARKERS) + tuple(dict.fromkeys(extra))
 
-FundGuard = Callable[[str, dict[str, Any]], "str | dict | None"]
+FundGuard = Callable[[str, dict[str, Any]], Any]  # block reason | directive | FUND_RULES_APPLIED | None
+
+
+def _fund_states(rt: FundRuntime) -> list[FundState]:
+    """Every fund on this host that has a vault. Raises when fund state cannot be read."""
+    out = []
+    for name in rt.service.backend.list_funds():
+        st = rt.service.load(name)
+        if st.fund.vault:
+            out.append(st)
+    return out
+
+
+def _amount_text(units: int, st: FundState) -> str:
+    return f"{format_units(units, st.fund.asset_decimals)} {st.fund.asset}"
+
+
+# The flag whose value the CLI 0.103.0 deploys as the proposal's capital (its envelope maxCapital),
+# per template (dist: buildInitDataForTemplate / resolveChainInputsForTemplate). A template not in
+# this table is refused on a fund vault: the guard cannot tell what it would deploy.
+TEMPLATE_CAPITAL_FLAGS: dict[str, tuple[str, ...]] = {
+    "portfolio": ("--amount",),
+    "generic-call": ("--amount",),  # the pull amount
+    "morpho-supply": ("--amount",),
+    "concentrated-liquidity": ("--collateral-amount",),  # --amount is ignored; the borrow rides on top
+    "lighter-perp": ("--deposit", "--amount"),  # --amount is the alias
+    "launchpad": ("--asset-in",),
+}
+PROPOSAL_CREATE_CAPITAL_FLAGS: tuple[str, ...] = ("--max-capital",)
+# Templates that derive the drawdown themselves when the flag is omitted (launchpad: from --asset-in).
+DERIVED_DRAWDOWN_TEMPLATES = frozenset({"launchpad"})
+
+
+def check_propose_ceilings(inv: ProposeInvocation, st: FundState) -> str | None:
+    """A propose for fund `st`'s vault against the fund's own ceilings: a block reason, or None.
+
+    The capital is the flag the CLI deploys for that template (TEMPLATE_CAPITAL_FLAGS;
+    `--max-capital` on `proposal create`), in human asset units; every other capital-like
+    flag on the command counts too, and the largest value is checked. An unmapped template,
+    a missing mapped flag or an unreadable amount is refused. `--max-drawdown-bps` omitted
+    means the CLI default (2000 bps), checked like a typed one; if it is given more than
+    once, the largest counts.
+    """
+    f = st.fund
+    name = f.name
+    if inv.kind == "proposal create":
+        required = PROPOSAL_CREATE_CAPITAL_FLAGS
+    else:
+        mapped = TEMPLATE_CAPITAL_FLAGS.get(inv.template)
+        if mapped is None:
+            return (
+                f"fund propose blocked (unmapped_template): the guard does not know which flag carries the "
+                f"capital of template {inv.template or '(none)'!r}, so it cannot hold it to {name}'s ceilings. "
+                f"Fund vaults take {', '.join(sorted(TEMPLATE_CAPITAL_FLAGS))} from the terminal"
+            )
+        required = mapped
+    if not any(flag in required for flag, _ in inv.capital):
+        return (
+            f"fund propose blocked (no_amount): a {inv.template or inv.kind} propose for {name}'s vault must "
+            f"name its capital with {' or '.join(required)}, so the fund ceiling can be checked"
+        )
+    amounts: list[int] = []
+    for flag, raw in inv.capital:
+        try:
+            amounts.append(to_base_units(raw, f.asset_decimals))
+        except (UnitsError, ValueError):
+            return f"fund propose blocked (bad_amount): cannot read {flag} {raw!r} as an amount of {f.asset} for {name}"
+    capital = max(amounts)
+    if f.max_capital is not None and capital > int(f.max_capital):
+        return (
+            f"fund propose blocked (exceeds_max_capital): {_amount_text(capital, st)} is above the fund "
+            f"ceiling {_amount_text(int(f.max_capital), st)} for {name}"
+        )
+    if not inv.drawdowns:
+        if inv.template in DERIVED_DRAWDOWN_TEMPLATES:
+            return (
+                f"fund propose blocked (no_drawdown): {inv.template} derives its drawdown when "
+                f"--max-drawdown-bps is omitted; pass it so {name}'s ceiling can be checked"
+            )
+        drawdown, typed = CLI_DEFAULT_DRAWDOWN_BPS, False
+    else:
+        values: list[int] = []
+        for raw in inv.drawdowns:
+            try:
+                values.append(int(raw))
+            except ValueError:
+                return f"fund propose blocked (bad_drawdown): cannot read --max-drawdown-bps {raw!r} as bps for {name}"
+        drawdown, typed = max(values), True
+    if f.max_drawdown_bps is not None and drawdown > f.max_drawdown_bps:
+        what = f"max drawdown {drawdown} bps" if typed else (
+            f"no --max-drawdown-bps: the CLI default {drawdown} bps"
+        )
+        return (
+            f"fund propose blocked (exceeds_max_drawdown): {what} is above the fund ceiling "
+            f"{f.max_drawdown_bps} bps for {name}"
+        )
+    return None
 
 
 def make_fund_guard(rt: FundRuntime) -> FundGuard:
@@ -113,10 +270,144 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
             return f"fund action blocked ({verdict.code}): {verdict.reason}"
         return authz.approve_directive(tool_name, fund, args or {})
 
-    def guard(tool_name: str, args: dict[str, Any]) -> str | dict | None:
+    def terminal_propose(args: dict[str, Any]) -> Any:
+        """A terminal propose on a fund vault: the fund's ceilings, or None (not a fund propose).
+
+        This checks the agent's own command text; it does not run the shell. On a host with a
+        vaulted fund it therefore refuses what it cannot read: a command that cannot be split,
+        an unquoted `#`, a `--vault` that is not a literal address, no `--vault` (CLI 0.103.0
+        requires it), or a fund vault address in a propose-looking command that no readable
+        `sherwood ... propose` names as its --vault (`bash -c`, `eval`, `$(...)`, a variable).
+        Any shell expansion (`$`, backticks, braces, globs, process substitution) or a launcher
+        that may add arguments (`xargs`) in a propose is refused too: bash would hand the CLI
+        words the guard never read. A propose built entirely at run time, with no literal fund
+        address, is not seen.
+        """
+        command = str((args or {}).get("command") or "")
+        norm = normalize(command)
+        if not ("0x" in norm or "sherwood" in norm or CLI_REPO in norm):
+            return None  # names neither the CLI nor any vault address
+        if CLI_INSTALL_RE.fullmatch(command.strip()):
+            return None  # the install line preflight and the skill hand out, exactly
+        if len(command) > MAX_COMMAND_CHARS:
+            try:
+                fund_host = bool(_fund_states(rt))
+            except GUARD_ERRORS:
+                fund_host = True  # cannot tell: refuse
+            return _refuse("command_too_long", f"{len(command)} characters is more than the {MAX_COMMAND_CHARS} "
+                           "the guard reads") if fund_host else None
+        cli = names_cli(command)
+        try:
+            states = _fund_states(rt)
+        except GUARD_ERRORS as exc:
+            if not cli:
+                return None
+            return f"fund propose blocked: cannot read fund state to check the fund ceilings ({scrub_paths(exc)})"
+        if not states:
+            return None  # no fund on this host: the general advisory check applies
+        by_vault = {st.fund.vault.lower(): st for st in states}
+        present = {v for v in by_vault if v in norm}
+        if not cli and not present:
+            return None  # a command that names neither the CLI nor a fund vault is not this guard's
+        # From here the command names the CLI or a fund vault on a fund host: it must be readable as
+        # plain words, or it is refused.
+        segments = parse_segments(command)
+        if segments is None:
+            return _refuse("unreadable_command", "its quotes do not balance, so it cannot be split into commands")
+        expansion = None if plain_variable_read(command) else shell_expansion(command)
+        if expansion:
+            return _refuse("shell_expansion", f"it contains {expansion}, so bash may hand the CLI words the guard "
+                           "never read")
+        words = [w for seg in segments for w in seg.words]
+        if (any(op.startswith("<<") for seg in segments for op in seg.operators)
+                or "()" in (tokens(command) or [])
+                or any(w.rsplit("/", 1)[-1] in INDIRECTION_WORDS for w in words)
+                or any(seg.command_word == "." for seg in segments)):
+            return _refuse("shell_indirection", "it runs text through a shell, eval, source, an alias, a function, "
+                           "a here-doc or here-string, or shopt, which the guard reads only as data")
+        if any(w in ENV_WORDS for w in words) or any(
+                (seg.leading_words and ASSIGNMENT_RE.match(seg.leading_words[0]))
+                or (seg.command_word == "printf" and "-v" in seg.words) for seg in segments):
+            return _refuse("environment", "it sets environment (export, read, printf -v or an assignment such as "
+                           "NODE_OPTIONS= or PATH=) that can change what runs")
+        if has_unquoted_hash(command):
+            return _refuse("unquoted_hash", "a # outside quotes makes bash and the guard read different words")
+        invocations: list[ProposeInvocation] = []
+        for seg in segments:
+            if seg.cli_index >= 0:
+                problem = launcher_problem(seg.words[: seg.cli_index])
+                if problem == "env":
+                    return _refuse("environment", "an assignment before the CLI (e.g. NODE_OPTIONS, PATH) can change "
+                                   "what it runs")
+                if problem and seg.words[0].rsplit("/", 1)[-1] not in SAFE_LAUNCHERS:
+                    return _unlisted(seg)  # `file /x/sherwood`, `xargs sherwood`: not a launcher at all
+                if problem:
+                    return _refuse("unsafe_launcher", "the CLI is started through a command or flag that may add or "
+                                   "change its arguments (allowed before it: env -u/-i, npx -y, pnpm dlx, node, exec, "
+                                   "time, nohup, nice -n, timeout [-s SIG] [-k DUR] DURATION)")
+                if seg.invocation is not None:
+                    invocations.append(seg.invocation)
+                    on_fund = {v for v in by_vault if any(v in w.lower() for w in seg.words)}
+                    if on_fund - {seg.invocation.vault.lower()}:
+                        return _refuse("unreadable_propose", "it names a fund vault in a propose whose --vault is "
+                                       "another address")
+            elif not (seg.read_only or seg.is_cli_install or seg.is_closer):
+                # Rule 1: on a line that names the CLI or a fund vault, every command is the CLI, a
+                # read-only tool or the install line. Anything else may run or write what the guard
+                # cannot read (chmod and ./p, xargs, an interpreter, a tool writing a file).
+                return _unlisted(seg)
+        # A read-only command that carries the CLI's name or a fund vault (or reads one from a pipe)
+        # may only hand its output to another read-only command or to a CLI command that is not a
+        # propose: never a file, `tee`, `xargs`, an interpreter.
+        carried = False
+        for i, seg in enumerate(segments):
+            piped_in = i > 0 and segments[i - 1].after in ("|", "|&")
+            carried = seg.read_only and (
+                (piped_in and carried)
+                or any(names_cli(w) or any(v in normalize(w) for v in by_vault) for w in seg.words)
+            )
+            if not carried:
+                continue
+            nxt = segments[i + 1] if seg.after in ("|", "|&") and i + 1 < len(segments) else None
+            if seg.writes_output or (nxt is not None and not (
+                    nxt.read_only or (nxt.cli_index >= 0 and nxt.invocation is None))):
+                return _refuse("unreadable_propose", f"`{seg.command_word}` prints the CLI or a fund vault into a "
+                               "file or another program, which may run it")
+        names = ", ".join(sorted(st.fund.name for st in states))
+        checked = False
+        for inv in invocations:
+            if inv.help:
+                continue  # usage only (no --vault, no amount)
+            if not inv.vault:
+                return (
+                    f"fund propose blocked (no_vault): this host runs fund {names}; CLI 0.103.0 requires "
+                    "--vault on a propose, and the guard needs it to apply the fund ceilings"
+                )
+            if any(not is_address(v) for v in inv.vaults):
+                bad = next(v for v in inv.vaults if not is_address(v))
+                return (
+                    f"fund propose blocked (vault_not_literal): --vault {bad!r} is not a literal 0x address, so "
+                    f"the guard cannot tell whether it is {names}'s vault (the CLI takes only an address). "
+                    + REFUSE_HINT
+                )
+            st = by_vault.get(inv.vault.lower())
+            if st is None:
+                continue  # another vault: the general advisory check applies
+            reason = check_propose_ceilings(inv, st)
+            if reason:
+                return reason
+            checked = True
+        proposing = [inv for inv in invocations if not inv.help]
+        if checked and all(inv.vault.lower() in by_vault for inv in proposing):
+            return FUND_RULES_APPLIED
+        return None
+
+    def guard(tool_name: str, args: dict[str, Any]) -> Any:
         blocked = rebind_block(tool_name, args)
         if blocked:
             return blocked
+        if tool_name in TERMINAL_TOOLS:
+            return terminal_propose(args)
         if tool_name not in GUARDED_TOOLS:
             return None
         if tool_name != "fund_draft_proposal":
@@ -135,6 +426,7 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
                 max_drawdown_bps=d.max_drawdown_bps,
                 legs=d.legs,
                 now=rt.service.clock(),
+                require_portfolio=rt.service.proposal_signer == "agent" and not d.generic_call,
             )
         except RuleViolation as exc:
             return f"fund draft blocked ({exc.code}): {exc.reason}"

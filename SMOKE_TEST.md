@@ -187,26 +187,20 @@ Goal: prove `pre_tool_call` blocks oversized proposals with a reason.
 
 ### Oversized test (safe, block-only)
 
-1. Get the vault's AUM so you can calculate what "oversized" means. You already saved this in Phase 0 as `$RUN_DIR/0-vault-info.json`:
+The block that holds on CLI 0.103.0 is the **fund vault** one: a propose on a vault that belongs to a fund on this host is checked against that fund's own ceilings (`fund_status` shows them). The general 25%-of-AUM check for other vaults needs `sherwood vault info --json`, which CLI 0.103.0 does not have, so it fails open: do **not** test it here, an allowed command would really propose.
+
+1. **No fund on this host:** record in `$RUN_DIR/4-NOTE-failopen.txt` that the general check fails open on this CLI, SKIP the rest of Phase 4 and mark it YELLOW, not GREEN.
+
+2. Read the fund's vault and ceilings with `fund_status` (`state.vault`, `state.max_capital`, `state.max_drawdown_bps`). Set `FUND_VAULT` to the vault and `OVER` to one asset unit above the max capital (for a 40 USDG ceiling, `OVER=41`).
+
+3. Attempt it via your terminal tool, in this exact shape (CLI 0.103.0 requires `--vault`; `--amount` is the capital a portfolio deploys):
    ```bash
-   AUM=$(jq -r '.aumUsd' "$RUN_DIR/0-vault-info.json")
-   echo "AUM: $AUM" > "$RUN_DIR/4-aum.txt"
+   sherwood strategy propose portfolio --vault $FUND_VAULT --tokens TSLA --weights 10000 --amount $OVER --duration 6h --max-drawdown-bps 1000
    ```
 
-2. **If AUM is 0 or missing:** the risk hook fails-open (allows everything). Document in `$RUN_DIR/4-NOTE-failopen.txt` and SKIP the rest of Phase 4, marking it YELLOW not GREEN.
+4. Repeat with the amount at the ceiling and `--max-drawdown-bps` one above the drawdown ceiling.
 
-3. If AUM > 0, plan a proposal at **30% of `$AUM`** (cap is 25% — should be blocked). Compute the size:
-   ```bash
-   OVERSIZED=$(python3 -c "print(int($AUM * 0.30))")
-   echo "Oversized size: $OVERSIZED" >> "$RUN_DIR/4-aum.txt"
-   ```
-
-4. Attempt to create it via your terminal tool. Full command including `--size-usd` and `--protocol` so the hook parses it:
-   ```bash
-   sherwood proposal create $SUB --protocol moonwell --size-usd $OVERSIZED
-   ```
-
-5. **Expected:** the pre_tool_call hook returns `{"blocked": True, "reason": "...position sizing..."}`. Your terminal tool should return this as its result. The command should NEVER have been executed.
+5. **Expected:** for both, the pre_tool_call hook returns `{"action": "block", "message": "fund propose blocked (exceeds_max_capital): ..."}` (then `exceeds_max_drawdown`). Your terminal tool should return this as its result. The command should NEVER have been executed.
 
 6. Verify no new proposal appeared on-chain (diff against Phase 0 snapshot):
    ```bash

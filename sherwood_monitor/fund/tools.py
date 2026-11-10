@@ -23,6 +23,7 @@ from .service import FundServiceError
 from . import signed_cli
 from .generic_call import MIN_CLI_FOR_GENERIC_CALL, generic_call_legs, validate_generic_call_plan
 from . import scope as fund_scope_mod
+from . import symbols as fund_symbols
 from .scope import fund_scope
 from .signed_cli import CLI_NOTE, HANDOUT_HOLD_SECONDS, SHIP_TTL_SECONDS, register_agent_command
 from .store import FundExists, FundNotFound, FundStoreError, scrub_paths
@@ -170,6 +171,12 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "onchain_id": {"type": "integer"},
             "tx_hash": {"type": "string"},
             "card_message_id": {"type": "string"},
+            "correct_onchain_id": {
+                "type": "boolean",
+                "description": "Host only, while the vote is open: replace a wrong onchain_id recorded earlier "
+                               "with this onchain_id (repeat the current status). Refused if another proposal "
+                               "already has that id.",
+            },
         },
         ["proposal_id", "status"],
     ),
@@ -267,10 +274,42 @@ def parse_legs(raw: Any, decimals: int) -> list[Leg]:
     legs = []
     for item in raw:
         leg = Leg.from_dict(item)
+        leg.symbol = (leg.symbol or "").strip()  # " TSLA" is TSLA, not an unknown symbol
         leg.cap = str(to_base_units(leg.cap or "0", decimals))
         leg.value = str(parse_base_units(leg.value or "0"))
         legs.append(leg)
     return legs
+
+
+def check_leg_symbols(state: FundState, legs: list[Leg], tx_builder_url: str) -> str:
+    """Refuse a portfolio leg whose symbol the tx-builder's `/sources/prices` does not cover on this
+    fund's chain (it has no Chainlink feed / token there, so the strategy cannot price it).
+
+    Returns "" when checked (or nothing to check), or a note when the source could not be read
+    (the draft then goes ahead unchecked: fails open, said in the tool result). Raises
+    RuleViolation (`unknown_symbol`) when a symbol is not covered.
+    """
+    symbols = list(dict.fromkeys(leg.symbol.upper() for leg in legs if leg.phase == "execute" and leg.symbol))
+    if not symbols or state.fund.chain_id != fund_symbols.PRICES_CHAIN_ID or not tx_builder_url:
+        return ""
+    covered = fund_symbols.source_for(tx_builder_url)()
+    if covered is None:
+        return (
+            f"not checked: the Sherwood prices source ({tx_builder_url.rstrip('/')}/sources/prices) could not be "
+            f"read, so {', '.join(symbols)} were not verified as tradable on chain {state.fund.chain_id}. Say so "
+            "in the chat."
+        )
+    missing = [s for s in symbols if s not in covered]
+    if missing:
+        listed = sorted(covered)
+        shown = ", ".join(listed[:60]) + (f" and {len(listed) - 60} more" if len(listed) > 60 else "")
+        raise RuleViolation(rules.deny(
+            "unknown_symbol",
+            f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in the Sherwood prices source for "
+            f"chain {state.fund.chain_id} (no token or Chainlink feed there), so a portfolio cannot hold "
+            f"{'it' if len(missing) == 1 else 'them'}. Priced symbols: {shown}",
+        ))
+    return ""
 
 
 def parse_draft_args(args: dict[str, Any], state: FundState) -> DraftArgs:
@@ -496,7 +535,9 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
 
     def fund_draft_proposal(args: dict[str, Any]) -> dict[str, Any]:
         fund = rt.fund_for(args.get("fund"))
-        d = parse_draft_args(args, svc.load(fund))
+        state = svc.load(fund)
+        d = parse_draft_args(args, state)
+        symbol_note = "" if d.generic_call else check_leg_symbols(state, d.legs, svc.tx_builder_url)
         result = svc.draft_proposal(
             fund,
             rt.agent_name(),
@@ -517,7 +558,10 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             generic_call=d.generic_call or None,
             discovered=_discovered(rt) if d.generic_call else None,
         )
-        return {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
+        out: dict[str, Any] = {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
+        if symbol_note:
+            out["symbol_check"] = symbol_note
+        return out
 
     def fund_set_proposal_status(args: dict[str, Any]) -> dict[str, Any]:
         onchain = args.get("onchain_id")
@@ -531,6 +575,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             onchain_id=None if onchain in (None, "") else int(onchain),
             tx_hash=str(args.get("tx_hash") or ""),
             card_message_id=str(args.get("card_message_id") or ""),
+            correct_onchain_id=as_bool(args.get("correct_onchain_id", False)),
         )
         return {"proposal": asdict(record)}
 

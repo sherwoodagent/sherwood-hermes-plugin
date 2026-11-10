@@ -286,9 +286,15 @@ def test_chat_turn_cannot_reach_the_rebind_path(as_caller, tool, args, tmp_path)
     as_caller("telegram", ATTACKER, "-100500")
     out = asyncio.run(hook(tool_name=tool, args=args))
     assert out["action"] == "block" and "operator" in out["message"] and "fund-bind" not in out["message"]
-    # The operator's own CLI turn is not touched (the guard is for chat turns).
+    # The operator's own CLI turn is not touched by the chat-turn rule. `hermes sherwood fund-bind`
+    # from any agent terminal call on a fund host is refused by the propose guard instead: the host
+    # types it in their own shell (review of PR #41, N2).
     as_caller()
-    assert asyncio.run(hook(tool_name=tool, args=args)) is None
+    out = asyncio.run(hook(tool_name=tool, args=args))
+    if "fund-bind" in str(args.get("command", "")):
+        assert out["action"] == "block" and "(host_command)" in out["message"]
+    else:
+        assert out is None
 
 
 def test_harmless_terminal_use_in_chat_is_untouched(as_caller):

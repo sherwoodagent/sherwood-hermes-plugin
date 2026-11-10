@@ -6,13 +6,19 @@ import inspect
 import json
 import logging
 import re
-import shlex
 from typing import Any, Awaitable, Callable
 
 from .config import Config
 from .childenv import child_env
 from .event_buffer import EventBuffer
 from .memory import MemoryWriter, build_record
+from .propose_cmd import (
+    FUND_RULES_APPLIED,
+    MAX_COMMAND_CHARS,
+    TERMINAL_TOOLS,
+    is_address,
+    parse_propose_invocations,
+)
 from .risk import ProposeParams, evaluate_propose
 from .supervisor import Supervisor
 
@@ -148,60 +154,34 @@ def make_pre_llm_call_hook(
     return hook
 
 
-# Match `sherwood proposal create <sub>` or `sherwood strategy propose <sub|template>`
-_SHERWOOD_PROPOSE_RE = re.compile(
-    r"\bsherwood\s+(?:strategy\s+propose|proposal\s+create)\s+(\S+)"
-)
-_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
-_TERMINAL_TOOLS = {"bash", "terminal", "shell"}
+_TERMINAL_TOOLS = TERMINAL_TOOLS
 
 StateFetcher = Callable[[str], Awaitable[dict]]
 
 
 def _parse_propose_command(command: str) -> tuple[str, float, str] | None:
-    """Return (fund, size_usd, protocol) or None if not a propose command.
+    """Return (fund, size, protocol) for the first propose in `command`, or None if there is none.
 
     The fund is the positional argument, except when the command names its vault
     with `--vault <0x address>` (or `--vault=<address>`): then the positional is a
     strategy template (`sherwood strategy propose portfolio --vault 0x..`), not a
-    fund, and the vault address is what the state fetcher reads.
+    fund, and the vault address is what the state fetcher reads. The size is
+    `--size-usd`, else the capital flag the CLI really takes (`--amount`, or
+    `--max-capital` on `proposal create`), in the vault asset's units.
     """
-    m = _SHERWOOD_PROPOSE_RE.search(command)
-    if not m:
+    invocations = [inv for inv in parse_propose_invocations(command) or [] if not inv.help]  # --help proposes nothing
+    if not invocations:
         return None
-    subdomain = m.group(1)
-
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return None
-
-    size_usd = 0.0
-    protocol = ""
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok == "--size-usd" and i + 1 < len(tokens):
-            try:
-                size_usd = float(tokens[i + 1])
-            except ValueError:
-                pass
-            i += 2
+    inv = invocations[0]
+    subdomain = inv.vault if is_address(inv.vault) else (inv.positional or inv.vault)
+    size = 0.0
+    for raw in ([inv.size_usd] if inv.size_usd is not None else []) + [v for _, v in inv.capital]:
+        try:
+            size = float(raw)
+            break
+        except (TypeError, ValueError):
             continue
-        if tok == "--protocol" and i + 1 < len(tokens):
-            protocol = tokens[i + 1]
-            i += 2
-            continue
-        vault = ""
-        if tok == "--vault" and i + 1 < len(tokens):
-            vault = tokens[i + 1]
-        elif tok.startswith("--vault="):
-            vault = tok.partition("=")[2]
-        if _ADDRESS_RE.match(vault):
-            subdomain = vault  # the positional is a strategy template, not a fund
-        i += 1
-
-    return subdomain, size_usd, protocol
+    return subdomain, size, inv.protocol
 
 
 # A guard returns a block reason, a ready Hermes directive (e.g. the approval
@@ -235,6 +215,8 @@ def make_pre_tool_call_hook(state_fetcher: StateFetcher, fund_guard: ToolGuard |
                 from .fund.store import scrub_paths
 
                 reason = f"fund guard error: {scrub_paths(exc)}"
+            if reason is FUND_RULES_APPLIED:
+                return None  # a fund vault's propose, inside the fund's own ceilings: no general rule on top
             if isinstance(reason, dict):
                 return reason
             if reason:
@@ -242,6 +224,8 @@ def make_pre_tool_call_hook(state_fetcher: StateFetcher, fund_guard: ToolGuard |
         if tool_name not in _TERMINAL_TOOLS:
             return None
         command = payload.get("command", "")
+        if not isinstance(command, str) or len(command) > MAX_COMMAND_CHARS:
+            return None  # the advisory check does not parse an oversized command (the fund guard ran first)
         parsed = _parse_propose_command(command)
         if parsed is None:
             return None
@@ -254,14 +238,15 @@ def make_pre_tool_call_hook(state_fetcher: StateFetcher, fund_guard: ToolGuard |
             return None
 
         # Fail-open contract: state_fetcher returns None when vault state is
-        # unknown (e.g., `sherwood vault info --json` not yet shipped in the
-        # installed CLI). Do NOT synthesize zero-defaults — that would make
-        # every proposal trip the AUM==0 guard and fail-closed.
+        # unknown (CLI 0.103.0's `sherwood vault info` has no machine-readable
+        # output). Do NOT synthesize zero-defaults — that would make every
+        # proposal trip the AUM==0 guard and fail-closed. This general rule is
+        # advisory; a fund vault's own ceilings are enforced by the fund guard.
         if state is None:
             _log.warning(
-                "risk check for %s %s skipped: vault state unavailable — allowing",
+                "risk check for %s skipped: vault state unavailable (the installed Sherwood CLI gives no "
+                "machine-readable vault state) — allowing; the general sizing rule is advisory and fails open",
                 subdomain,
-                command,
             )
             return None
 
