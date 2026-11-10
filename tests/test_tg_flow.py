@@ -3,7 +3,13 @@ from __future__ import annotations
 
 import pytest
 
-from sherwood_monitor.telegram.flow import IncomingMessage, PitchFlow, ReactionChange
+from sherwood_monitor.telegram.flow import (
+    NOTICE_ALREADY_DRAFTED,
+    NOTICE_WHICH_PITCH,
+    IncomingMessage,
+    PitchFlow,
+    ReactionChange,
+)
 
 CHAT = -1001
 HOST = 1
@@ -270,13 +276,58 @@ async def test_bare_host_ship_it_with_no_open_pitch_says_so():
     assert events == []
 
 
-async def test_bare_ship_it_ignores_drafted_pitches_when_counting():
+async def test_bare_ship_it_with_a_drafted_pitch_still_open_asks_which():
+    """Review M1 (PR #45): the host shipped A; a member pitches B; the host's bare "ship it" may still
+    mean A. A drafted pitch inside its TTL counts, so the bare form is ambiguous and drafts nothing."""
     flow, events, notices = make_noticed_flow()
     await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
     assert await flow.on_message(msg(101, HOST, "ship it", reply_to_message_id=100)) is not None
     await flow.on_message(msg(110, BOB, "@sherwoodagentbot short $TSLA, margins", mentions_bot=True))
-    ev = await flow.on_message(msg(111, HOST, "@sherwoodagentbot ship it", mentions_bot=True))
-    assert ev is not None and ev.source_message_id == 110 and notices == []
+    assert await flow.on_message(msg(111, HOST, "ship it")) is None
+    assert len(events) == 1 and [t for _, t, _ in notices] == [NOTICE_WHICH_PITCH]
+    # Replying to B (or naming $TSLA) still ships it.
+    ev = await flow.on_message(msg(112, HOST, "ship it $TSLA"))
+    assert ev is not None and ev.source_message_id == 110
+
+
+async def test_bare_ship_it_right_after_a_ship_points_at_the_card():
+    """Review L1: not "No open pitch... mention me with the idea"."""
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(101, HOST, "ship it")) is not None
+    assert await flow.on_message(msg(102, HOST, "ship it")) is None
+    assert [t for _, t, _ in notices] == [NOTICE_ALREADY_DRAFTED]
+
+
+async def test_host_replying_ship_it_to_a_draft_card_is_told_to_tap_the_button():
+    flow, events, notices = make_noticed_flow()
+    flow.note_bot_card(CHAT, 150)  # the draft card
+    assert await flow.on_message(msg(151, HOST, "ship it", reply_to_message_id=150, reply_to_is_bot=True)) is None
+    assert [t for _, t, _ in notices] == [NOTICE_ALREADY_DRAFTED]
+
+
+async def test_a_declined_draft_leaves_the_pitch_shippable_again():
+    """Review M3: a refusal (DraftDeclined: e.g. an unpriced symbol) does not mark the pitch drafted, logs
+    no warning, and the agent's turn is told the plugin already answered."""
+    from sherwood_monitor.telegram.types import DraftDeclined
+
+    calls = []
+
+    def decline_once(event):
+        calls.append(event)
+        if len(calls) == 1:
+            raise DraftDeclined("NFLX is not priced")
+
+    notices = []
+    flow = PitchFlow(host_for_chat=lambda chat: HOST, on_draft_requested=decline_once, clock=Clock(),
+                     on_notice=lambda chat, text, reply_to: notices.append(text))
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(101, HOST, "@sherwoodagentbot ship it", mentions_bot=True)) is None
+    assert flow.open_pitches(CHAT)[0].drafted is False and notices == []
+    out = flow.make_pre_llm_call_hook()(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST), user_message="ship it")
+    assert out is not None and "cannot be drafted" in out["context"] and "Do not" in out["context"]
+    ev = await flow.on_message(msg(102, HOST, "ship it", reply_to_message_id=100))
+    assert ev is not None and len(calls) == 2
 
 
 async def test_named_ship_it_that_matches_nothing_never_falls_back_to_the_one_pitch():

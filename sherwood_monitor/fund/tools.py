@@ -328,13 +328,32 @@ def _priced_list(covered: frozenset[str]) -> str:
     return ", ".join(listed[:60]) + (f" and {len(listed) - 60} more" if len(listed) > 60 else "")
 
 
-_DOLLAR_TICKER_RE = re.compile(r"(?<![\w$])\$([A-Za-z][A-Za-z0-9]{0,9})\b")
+_DOLLAR_TICKER_RE = re.compile(r"(?<![\w$])\$([A-Za-z][A-Za-z0-9]{0,9}(?:\.[A-Za-z]{1,2}\b)?)")
 _BARE_TICKER_RE = re.compile(r"(?<![\w$])([A-Z]{3,5})\b")
 
 
 def topic_tickers(text: str) -> list[str]:
-    """The $TICKERs a claim topic or a pitch names (upper-cased, in order)."""
-    return [t.upper() for t in _DOLLAR_TICKER_RE.findall(text or "")]
+    """The $TICKERs a claim topic or a pitch names (upper-cased, in order; `$BRK.B` stays whole)."""
+    return list(dict.fromkeys(t.upper() for t in _DOLLAR_TICKER_RE.findall(text or "")))
+
+
+def unpriced_pitch_symbols(state: FundState, text: str, tx_builder_url: str) -> list[str]:
+    """The ship-it check on the Telegram message path: the pitch's $TICKERs when NONE of them is in
+    the prices source (nothing in it could be held), else []. Cache only, never the network: a
+    cold cache, another chain or no $TICKER is [] (the draft check still runs)."""
+    tickers = topic_tickers(text)
+    if not tickers or state.fund.chain_id != fund_symbols.PRICES_CHAIN_ID or not tx_builder_url:
+        return []
+    covered = fund_symbols.source_for(tx_builder_url).peek()
+    if covered is None or any(t in covered for t in tickers):
+        return []
+    return tickers
+
+
+def priced_examples(tx_builder_url: str, n: int = 8) -> str:
+    """A few priced symbols from the cached source ("" when cold)."""
+    covered = fund_symbols.source_for(tx_builder_url).peek() if tx_builder_url else None
+    return ", ".join(sorted(covered)[:n]) if covered else ""
 
 
 def check_claim_symbols(state: FundState, topic: str, tx_builder_url: str) -> str:

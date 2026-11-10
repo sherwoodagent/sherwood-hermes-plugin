@@ -44,6 +44,7 @@ from ..telegram.runtime import TelegramRuntime
 from ..telegram.settings import TelegramSettings, link_secret
 from ..telegram.types import (
     DEFAULT_THRESHOLD_BPS,
+    DraftDeclined,
     DraftRequested,
     FundActionError,
     FundView,
@@ -720,6 +721,7 @@ class FundTelegramBridge:
         self._secret = secret
         self.runtime: TelegramRuntime | None = None
         self._card_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._declined_said: dict[tuple[int, int], float] = {}  # (chat, pitch message) -> when said
         self._join_cards: dict[tuple[str, str], float] = {}
         # Agent context bound to a chat (and the senders whose turn may receive it).
         self._chat_context: collections.deque[tuple[float, str, frozenset[str], str]] = collections.deque(maxlen=50)
@@ -991,16 +993,36 @@ class FundTelegramBridge:
         draft card when that draft is recorded. A rule refusal (fund full,
         cooldown, the agent busy) is said in the chat once; it is not raised,
         so the flow does not retry on every further 🔥.
+
+        A pitch whose $TICKERs are all unpriced (from the prices cache only; no
+        network here) raises DraftDeclined after saying so: the pitch stays
+        shippable, and the same pitch drafts once the source prices it. A 🔥 retry
+        is not answered again within 10 minutes.
         """
         st = await asyncio.to_thread(self.state_for_chat, event.chat_id)
         if st is None:
             return
         who = event.idea_by_name or f"user{event.idea_by}"
-        from .tools import check_symbols, topic_tickers
+        from .tools import priced_examples, unpriced_pitch_symbols
 
+        unpriced = unpriced_pitch_symbols(st, event.text, self.service.tx_builder_url)
+        if unpriced:
+            key = (int(event.chat_id), int(event.source_message_id))
+            now = time.time()
+            if event.trigger != "fire" or now - self._declined_said.get(key, -1e18) > 600:
+                self._declined_said[key] = now
+                names = ", ".join(unpriced)
+                examples = priced_examples(self.service.tx_builder_url)
+                await self._say(
+                    event.chat_id,
+                    f"Can't draft {who}'s idea: {names} {'is' if len(unpriced) == 1 else 'are'} not in the Sherwood "
+                    f"prices source on chain {st.fund.chain_id}, so the fund cannot hold "
+                    f"{'it' if len(unpriced) == 1 else 'them'}. Pitch it again with priced $TICKERs only"
+                    + (f" (e.g. {examples})." if examples else "."),
+                    reply_to=event.source_message_id,
+                )
+            raise DraftDeclined(", ".join(unpriced))
         try:
-            # The draft-time symbol check, from its cache only: no network on the message path.
-            check_symbols(st, topic_tickers(event.text), self.service.tx_builder_url, cached_only=True)
             await asyncio.to_thread(
                 lambda: self.service.request_draft(
                     st.fund.name,

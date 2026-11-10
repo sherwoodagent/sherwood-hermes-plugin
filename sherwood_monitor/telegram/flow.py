@@ -12,10 +12,12 @@
    $TICKERs or the author's @handle), the flow emits :class:`DraftRequested`
    once per pitch through ``on_draft_requested`` (wired by plugin-core).
    A bare "ship it" from the host (not a reply, naming nothing) ships the
-   chat's one open undrafted pitch. When the host's "ship it" resolves to no
-   pitch (none open, several open, a name that matches none), the flow sends
-   one short line through ``on_notice`` instead of falling through silently;
-   it never picks "the latest".
+   chat's only open pitch, and only while no other pitch is open there
+   (drafted ones count until they expire: the host may still mean one of
+   them). When the host's "ship it" resolves to no pitch (none open, several
+   open, a name that matches none, a pitch already drafted, a reply to a card),
+   the flow sends one short line through ``on_notice`` instead of falling
+   through silently; it never picks "the latest".
 
 Only senders the gateway authorizes count: the handler runs Hermes' own
 allowlist check (``authorized`` here, or the adapter helper in handler.py)
@@ -43,7 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from ..session import current_caller
-from .types import DraftRequested, maybe_await
+from .types import DraftDeclined, DraftRequested, maybe_await
 
 _log = logging.getLogger(__name__)
 
@@ -328,25 +330,43 @@ class PitchFlow:
                 pitch = self._pitch_for_target(
                     chat_id, int(msg.reply_to_message_id), target_is_bot=msg.reply_to_is_bot
                 )
-            undrafted = [p for p in self.open_pitches(chat_id) if not p.drafted]
+            open_now = self.open_pitches(chat_id)
+            undrafted = [p for p in open_now if not p.drafted]
             if pitch is None:
                 # Not a reply to a pitch: the host names it ($TICKER or the author's @handle),
                 # and exactly one open pitch has to match; never "the latest".
                 named = [p for p in undrafted if _names_pitch(msg.text, p)]
                 pitch = named[0] if len(named) == 1 else None
-            if pitch is None and msg.reply_to_message_id is None and not _names_anything(msg) and len(undrafted) == 1:
-                # A bare "ship it" (no reply, names nothing) with ONE open undrafted pitch here.
-                pitch = undrafted[0]
+            bare = msg.reply_to_message_id is None and not _names_anything(msg)
+            if pitch is None and bare and len(open_now) == 1 and not open_now[0].drafted:
+                # A bare "ship it" (no reply, names nothing) while the chat has ONE open pitch at all.
+                # A drafted pitch still open counts: the host may mean it (review M1, PR #45).
+                pitch = open_now[0]
             if pitch is None or pitch.drafted:
-                if pitch is not None:
+                to_card = msg.reply_to_message_id is not None and int(msg.reply_to_message_id) in self._cards.get(
+                    chat_id, set()
+                )
+                if pitch is not None or to_card or (open_now and not undrafted):
                     notice = NOTICE_ALREADY_DRAFTED
-                elif not undrafted:
+                elif not open_now:
                     notice = NOTICE_NO_PITCH
                 else:
                     notice = NOTICE_WHICH_PITCH
                 await self._notice(msg, notice)
                 return None
-            event = await self._emit(pitch, trigger="ship_it", by=int(msg.user_id))
+            declined: list[bool] = []
+            event = await self._emit(pitch, trigger="ship_it", by=int(msg.user_id), declined=declined)
+            if declined and (msg.mentions_bot or msg.reply_to_is_bot):
+                self._queue_context(
+                    msg.text,
+                    chat_id,
+                    int(msg.user_id),
+                    "<sherwood-fund-ship-it-unresolved>\n"
+                    "The host said \"ship it\", and the plugin already replied in the group that this idea cannot "
+                    "be drafted as pitched. Do not claim a topic, do not draft, and do not pick another pitch. "
+                    "Add nothing, or at most one short line that says the same.\n"
+                    "</sherwood-fund-ship-it-unresolved>",
+                )
             if event is not None and (msg.mentions_bot or msg.reply_to_is_bot):
                 self._queue_context(
                     msg.text,
@@ -423,7 +443,9 @@ class PitchFlow:
             return None
         return await self._emit(pitch, trigger=trigger, by=by)
 
-    async def _emit(self, pitch: Pitch, *, trigger: str, by: int) -> DraftRequested | None:
+    async def _emit(
+        self, pitch: Pitch, *, trigger: str, by: int, declined: list[bool] | None = None
+    ) -> DraftRequested | None:
         pitch.drafted = True
         event = DraftRequested(
             idea_by=pitch.author_id,
@@ -439,6 +461,11 @@ class PitchFlow:
         if self.on_draft_requested is not None:
             try:
                 await maybe_await(self.on_draft_requested(event))
+            except DraftDeclined:
+                pitch.drafted = False  # already said in the chat; shippable again once that changes
+                if declined is not None:
+                    declined.append(True)
+                return None
             except Exception as exc:
                 pitch.drafted = False  # let the next 🔥 / ship it retry
                 _log.warning("on_draft_requested failed: %s", exc)

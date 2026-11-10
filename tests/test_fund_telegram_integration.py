@@ -459,8 +459,46 @@ async def test_ship_it_on_an_unpriced_pitch_is_refused_in_the_group_from_the_cac
     await settle_tasks()
     (call,) = bot.send_message.await_args_list
     assert call.kwargs["reply_to_message_id"] == 41
-    assert "NFLX is not in the Sherwood prices source" in call.kwargs["text"] and "NVDA" in call.kwargs["text"]
+    text = call.kwargs["text"]
+    assert "NFLX is not in the Sherwood prices source" in text and "NVDA" in text
+    assert "Pitch it again with priced $TICKERs only" in text
     assert ctx.call_tool("fund_status")["pitch_claims"] == []
+    # Review M3: the host is not stuck. The pitch stays shippable; once the source prices NFLX it drafts.
+    assert rt.flow.open_pitches(CHAT)[0].drafted is False
+    priced = {"data": {"records": PRICES["data"]["records"] + [{"symbol": "NFLX", "address": "0x" + "33" * 20}]}}
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: priced)
+    symbols._SOURCES.clear()
+    symbols.source_for(bridge.service.tx_builder_url)()
+    ev = await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=43, user_id=HOST_TG, username="host",
+                                                  text="ship it", reply_to_message_id=41))
+    assert ev is not None
+    await settle_tasks()
+    assert [c["topic"] for c in ctx.call_tool("fund_status")["pitch_claims"]] == ["NFLX pitch"]
+
+
+async def test_ship_it_symbol_check_refuses_only_when_no_ticker_is_priced(tmp_path, monkeypatch):
+    """Review M3: "long $NVDA vs $SPY" names a priced leg; the plugin does not refuse it on $SPY
+    (the draft check still refuses an unpriced leg)."""
+    from sherwood_monitor.fund import symbols
+
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: PRICES)
+    symbols.source_for(bridge.service.tx_builder_url)()
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=41, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot long $NVDA vs $SPY", mentions_bot=True))
+    assert await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                                    text="ship it", reply_to_message_id=41)) is not None
+    await settle_tasks()
+    assert bot.send_message.await_args_list == []
+    assert [c["topic"] for c in ctx.call_tool("fund_status")["pitch_claims"]] == ["NVDA SPY pitch"]
+
+
+def test_dotted_tickers_are_read_whole():
+    from sherwood_monitor.fund.tools import topic_tickers
+
+    assert topic_tickers("long $BRK.B and $nvda. Then $TSLA") == ["BRK.B", "NVDA", "TSLA"]
 
 
 async def test_ship_it_with_a_cold_prices_cache_claims_without_a_network_call(tmp_path, monkeypatch):

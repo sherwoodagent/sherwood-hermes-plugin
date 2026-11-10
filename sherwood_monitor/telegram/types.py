@@ -183,6 +183,12 @@ class FundActionError(Exception):
     """Raised by a gateway action with a short, user-facing reason (shown as a toast)."""
 
 
+class DraftDeclined(Exception):
+    """Raised by ``on_draft_requested`` when the idea cannot be drafted as pitched and the gateway has
+    already said so in the chat (e.g. no symbol in it is priced). The flow leaves the pitch undrafted,
+    so it can be shipped again once that changes, and logs nothing."""
+
+
 MaybeAwaitable = Any  # T | Awaitable[T]; callers use maybe_await()
 
 
