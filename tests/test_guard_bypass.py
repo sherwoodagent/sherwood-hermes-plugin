@@ -767,3 +767,32 @@ def test_delta4_review_row(row, command, expected):
 def test_delta4_lines_that_still_pass(command):
     out, _, _ = run(command)
     assert out is None, out
+
+
+# == Fifth delta review of ff80b8f: test -v evaluates an array subscript ======================================
+@pytest.mark.parametrize("command", [
+    f"test -v 'x[$({OVER_P})]'",  # M1: bash 4.3+ runs the single-quoted $(...) in the subscript
+    f"if test -v 'x[$({OVER_P})]'; then true; fi",
+    f"test -v 'x[$({OVER_P})]' && sherwood --version",
+    f"test -R 'x[`{OVER_P}`]'",
+    f"test -n {VAULT}",
+])
+def test_m1_test_is_not_a_read_only_tool(command):
+    out, _verdict, _ = run(command)
+    assert out is not None and "(unlisted_command)" in out["message"], out
+
+
+@pytest.mark.parametrize("command", [
+    f"sherwood proposal list --vault {VAULT} --json | jq '.[] | select(.state==\"Pending\")'",
+    f"sherwood proposal list --vault {VAULT} | grep Pending",
+    f"sherwood proposal show 9 --vault {VAULT} 2>&1 | head -40",
+    f"cd /tmp && sherwood vault info --vault {VAULT}",
+    f"sherwood vault info --vault {VAULT} && echo done",
+    "npm i -g @sherwoodagent/cli@0.103.0",
+    f"cast call {VAULT} 'totalAssets()(uint256)'",
+    "cast 4byte 0x095ea7b3",
+    f"printf '%s' 'Proposal 9 on {VAULT}' | sherwood chat --cohort send --stdin",
+])
+def test_m1_flows_still_pass(command):
+    out, _, _ = run(command)
+    assert out is None, out

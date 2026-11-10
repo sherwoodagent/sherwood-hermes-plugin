@@ -550,7 +550,9 @@ On such a line, every command must be one of these:
   `@X.Y.Z` or `@latest`);
 - a read-only tool, by bare name: `echo`, `printf` (without `-v`), `grep`,
   `egrep`, `fgrep`, `cat`, `head`, `tail`, `wc`, `ls`, `jq`, `which`, `type`,
-  `stat`, `cut`, `tr`, `true`, `false`, `test`, `[`, `cd` or `pwd`;
+  `stat`, `cut`, `tr`, `true`, `false`, `cd` or `pwd` (`test` and `[` are not
+  on the list: bash 4.3+ runs a command substitution quoted inside
+  `test -v 'x[…]'`);
 - `cast call`, `cast calldata`, `cast chain-id` or `cast 4byte`;
 - `curl` to an http(s) URL with no option that writes or uploads a file;
 - `hermes sherwood start`, `stop`, `status`, `tail` or `install-cron`.

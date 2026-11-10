@@ -54,8 +54,9 @@ ENV_WORDS = frozenset({"export", "declare", "typeset", "readonly", "read", "mapf
 # and file's decompressors do, so they are not here). Only the bare name counts (`/x/echo` is not echo).
 READ_ONLY_TOOLS = frozenset({
     "echo", "printf", "grep", "egrep", "fgrep", "cat", "head", "tail", "wc", "ls", "jq", "which", "type",
-    "stat", "cut", "tr", "true", "false", "test", "[", "cd", "pwd",
-})  # `uniq` is not here: `uniq IN OUT` writes OUT
+    "stat", "cut", "tr", "true", "false", "cd", "pwd",
+})  # Not here: `uniq IN OUT` writes OUT; `test -v 'x[$(...)]'` / `[ -v ... ]` (bash 4.3+) evaluate an
+# array subscript and run the quoted command substitution in it.
 # Shell keywords that open or continue a compound command; a command line's words after them are
 # classified. A segment of closing keywords alone (`fi`, `done`, `}`) runs nothing.
 SHELL_KEYWORDS = frozenset({"if", "then", "else", "elif", "do", "while", "until", "!", "{", "time"})
