@@ -124,11 +124,11 @@ ROWS = [
     ("M1 bash -c", lambda: "bash -c " + shlex.quote(over()), "unreadable_propose"),
     ('M1 sh -c "..."', lambda: 'sh -c "' + over().replace("'", "") + '"', "unreadable_propose"),
     ("M1 eval", lambda: "eval " + shlex.quote(over()), "unreadable_propose"),
-    ("M1 $(echo sherwood)", lambda: over().replace("sherwood ", "$(echo sherwood) ", 1), "unreadable_propose"),
-    ("M1 `which sherwood`", lambda: over().replace("sherwood ", "`which sherwood` ", 1), "unreadable_propose"),
-    ("M1 $S binary", lambda: "S=sherwood; " + over().replace("sherwood ", "$S ", 1), "unreadable_propose"),
-    ("M1 --vault $V", lambda: f"V={VAULT}; " + over().replace(f"--vault {VAULT}", "--vault $V"), "vault_not_literal"),
-    ("M1 --vault $(cat f)", lambda: over().replace(f"--vault {VAULT}", "--vault $(cat /tmp/v)"), "vault_not_literal"),
+    ("M1 $(echo sherwood)", lambda: over().replace("sherwood ", "$(echo sherwood) ", 1), "shell_expansion"),
+    ("M1 `which sherwood`", lambda: over().replace("sherwood ", "`which sherwood` ", 1), "shell_expansion"),
+    ("M1 $S binary", lambda: "S=sherwood; " + over().replace("sherwood ", "$S ", 1), "shell_expansion"),
+    ("M1 --vault $V", lambda: f"V={VAULT}; " + over().replace(f"--vault {VAULT}", "--vault $V"), "shell_expansion"),
+    ("M1 --vault $(cat f)", lambda: over().replace(f"--vault {VAULT}", "--vault $(cat /tmp/v)"), "shell_expansion"),
     ("M1 npx @sherwoodagent/cli", lambda: over().replace("sherwood ", "npx @sherwoodagent/cli ", 1), "exceeds_max_capital"),
     ("M1 node .../@sherwoodagent/cli/dist/index.js", lambda: over().replace("sherwood ", "node /x/node_modules/@sherwoodagent/cli/dist/index.js ", 1), "exceeds_max_capital"),
     ("M1 npx @sherwoodagent/cli within the ceiling", lambda: shipped().replace("sherwood ", "npx @sherwoodagent/cli@0.103.0 ", 1), "pass"),
@@ -189,7 +189,6 @@ def test_execute_code_is_outside_the_terminal_guard():
     "sherwood strategy propose --help",
     "sherwood strategy propose portfolio --help",
     "sherwood proposal create --help",
-    f"sherwood --calldata-only strategy propose portfolio --vault {VAULT} --amount 4000 -h",
     f"sherwood vault info --vault {VAULT}",
     f"sherwood vault info --vault {VAULT} # check NAV",
     "grep -n 'strategy propose' README.md",
@@ -353,3 +352,124 @@ async def test_the_help_probe_kills_a_hung_child_and_is_not_retried():
         assert await state_fetcher.vault_info_supports_json("sherwood") is False
     assert getattr(proc, "killed", False) and len(calls) == 1
     state_fetcher._SUPPORTS_JSON.clear()
+
+
+# == Delta review of b79f378 =====================================================================
+BASE_P = f"sherwood strategy propose portfolio --vault {VAULT} --tokens TSLA --weights 10000 --duration 6h"
+OK_P = BASE_P + " --amount 40 --max-drawdown-bps 1000"
+OVER_P = BASE_P + " --amount 4000 --max-drawdown-bps 9000"
+
+DELTA_ROWS = [
+    # N1: commander runs these (the help token is an option's value, or an operand after `--`).
+    ("N1 --name -h", OVER_P + " --name -h", "exceeds_max_capital"),
+    ("N1 --description --help", OVER_P + " --description --help", "exceeds_max_capital"),
+    ("N1 -- -h", OVER_P + " -- -h", "exceeds_max_capital"),
+    ("N1 a help call does not hide a fund vault", f"sherwood strategy propose --vault {VAULT} --help; bash -c {shlex.quote(OVER_P)}", "unmapped_template"),
+    ("N1 help with --vault and an amount is checked", f"sherwood --calldata-only strategy propose portfolio --vault {VAULT} --amount 4000 -h", "exceeds_max_capital"),
+    # N2: expansions bash performs before the CLI sees its words.
+    ("N2 $'...' desync hides --amount", OK_P + " --name $'\\'' --amount 4000 x\\'", "shell_expansion"),
+    ("N2 $'...' desync hides --max-drawdown-bps", OK_P + " --name $'\\'' --max-drawdown-bps 9000 x\\'", "shell_expansion"),
+    ("N2 brace expansion", OK_P + " --{amount,amount}=4000", "shell_expansion"),
+    ("N2 ${X:-...}", OK_P + " ${X:---amount=4000}", "shell_expansion"),
+    ("N2 $(...) inside a readable propose", OK_P + " $(echo --amount=4000)", "shell_expansion"),
+    ("N2 backticks", OK_P + " `printf -- --amou%s=4000 nt`", "shell_expansion"),
+    ('N2 "$X" in double quotes', OK_P + ' "$X"', "shell_expansion"),
+    ("N2 glob that a planted file would match", OK_P + " --amou?t=4000", "shell_expansion"),
+    ("N2 process substitution", OK_P + " <(true) --amount 4000", "shell_expansion"),
+    ("N2 xargs adds arguments", "echo --amount=4000 | xargs " + OK_P, "unsafe_launcher"),
+    ("N2 sudo", "sudo " + OVER_P.replace("4000", "40").replace("9000", "1000"), "unsafe_launcher"),
+    # The splitter: an escaped backslash before a newline is not a continuation.
+    ("escaped backslash then newline", "echo x\\\\\n" + OVER_P, "exceeds_max_capital"),
+    # Own re-read of the parser against bash + commander.
+    ("SHERWOOD in capitals (macOS runs it)", "SHERWOOD" + OVER_P[len("sherwood"):], "exceeds_max_capital"),
+    ("a propose built from variables, no literal fund address", "$CLI strategy propose portfolio --vault $V --amount 4000", "shell_expansion"),
+    ("watch reruns it", "watch -n 5 " + OK_P, "unsafe_launcher"),
+    ("find -exec adds {}", f"find . -name x -exec {OK_P} {{}} \\;", "shell_expansion"),
+    ("a value-taking legacy flag cannot swallow --amount", OK_P.replace("--amount 40", "--protocol --amount 4000"), "exceeds_max_capital"),
+]
+
+
+@pytest.mark.parametrize("row, command, expected", DELTA_ROWS, ids=[r[0] for r in DELTA_ROWS])
+def test_delta_review_row(row, command, expected):
+    out, _verdict, _ = run(command)
+    assert out is not None and f"({expected})" in out["message"], (row, out)
+
+
+@pytest.mark.parametrize("command", [
+    OK_P,
+    OK_P + " '--description=a; b && c | d # e $HOME `x` {a,b} *'",  # all of it single-quoted
+    OK_P + " --name=a\\#b",  # an escaped # is literal in bash too
+    OK_P + " 2>&1 | tee /tmp/log",
+    "timeout 600 " + OK_P,
+    "npx -y @sherwoodagent/cli@0.103.0 " + OK_P[len("sherwood "):],
+    "SHERWOOD_X=1 env " + OK_P,
+    "if true; then " + OK_P + "; fi",
+    "cd /tmp && " + OK_P,
+])
+def test_literal_proposes_still_pass(command):
+    out, verdict, _ = run(command)
+    assert out is None and verdict is FUND_RULES_APPLIED, out
+
+
+def test_the_plugins_own_commands_pass_with_spaces_and_shell_characters():
+    """Both shipped commands quote every value: a thesis with ; ' # $ ` and a plan path with spaces pass."""
+    from sherwood_monitor.fund.generic_call import propose_generic_call_command
+
+    st = rt().service.load("alpha-fund")
+    thesis = "route; it's #1 $HOME `x` {a,b} *? [x] <(y)"
+    record = ProposalRecord(
+        id="p-1", proposer_agent="alpha", thesis=thesis, topic="my topic #2 $X",
+        legs=[Leg(summary="TSLA", symbol="TSLA", weight_bps=10000)],
+        max_capital="40000000", max_drawdown_bps=1000, strategy_duration=21600,
+    )
+    portfolio = propose_portfolio_command(st.fund, record)
+    gc = ProposalRecord(id="p-2", proposer_agent="alpha", thesis=thesis, topic="t", max_capital="40000000",
+                        max_drawdown_bps=1000, strategy_duration=21600,
+                        generic_call={"executeCalls": [], "settleCalls": [], "settlePatches": [], "sweepTokens": []})
+    generic = propose_generic_call_command(st.fund, gc, "/Users/My Name/.hermes/plugins/sherwood-monitor/funds/a b/p-2.json")
+    for command in (portfolio, generic):
+        out, verdict, _ = run(command)
+        assert out is None and verdict is FUND_RULES_APPLIED, (command, out)
+
+
+def test_a_huge_command_is_refused_quickly():
+    import time as _time
+
+    command = OK_P + " '--description=" + "x" * (1024 * 1024) + "'"
+    t0 = _time.monotonic()
+    out, _, _ = run(command)
+    assert _time.monotonic() - t0 < 2.0
+    assert out is not None and "(command_too_long)" in out["message"]
+    assert run("echo " + "y" * 40_000)[0] is None  # not a propose: not this guard's business
+
+
+def test_a_repeated_status_refuses_a_conflicting_or_duplicate_onchain_id():
+    from sherwood_monitor.fund.rules import RuleViolation
+
+    svc = make_rt().service
+    for topic in ("a", "b"):
+        svc.claim_topic("alpha-fund", "alpha", topic)
+        svc.draft_proposal("alpha-fund", "alpha", topic=topic, thesis="t",
+                           legs=[Leg(summary="TSLA", symbol="TSLA", weight_bps=10000)],
+                           max_capital=40_000_000, max_drawdown_bps=1000, strategy_duration=21600)
+        if topic == "a":
+            svc.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=9)
+            svc.set_proposal_status("alpha-fund", "alpha", "p-1", "vetoed")
+            clock = svc.clock
+            clock.advance(3601)  # past the veto cooldown
+    with pytest.raises(RuleViolation) as exc:
+        svc.set_proposal_status("alpha-fund", "alpha", "p-2", "proposed", onchain_id=9)
+    assert exc.value.code == "duplicate_onchain_id" and "p-1" in exc.value.reason
+    svc.set_proposal_status("alpha-fund", "alpha", "p-2", "proposed", onchain_id=10)
+    with pytest.raises(RuleViolation) as exc:
+        svc.set_proposal_status("alpha-fund", "alpha", "p-2", "voting", onchain_id=11)
+    assert exc.value.code == "onchain_id_conflict" and "#10" in exc.value.reason
+    assert svc.load("alpha-fund").proposal("p-2").onchain_id == 10
+    assert svc.set_proposal_status("alpha-fund", "alpha", "p-2", "voting", onchain_id=10).onchain_id == 10  # same id: fine
+
+
+@pytest.mark.parametrize("period, stored", [("3600000", 3600), ("30", 3600), ("7200", 7200), ("2592000", 2592000)])
+def test_cooldown_period_is_bounded_like_the_cooldown_end(period, stored):
+    svc = make_rt().service
+    svc.apply_chain_card("alpha-fund", {"data": {"governor": {"cooldownPeriod": period}}})
+    assert svc.load("alpha-fund").fund.cooldown_period == stored
