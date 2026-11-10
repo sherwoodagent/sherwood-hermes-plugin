@@ -20,13 +20,15 @@ from pathlib import Path
 from ..propose_cmd import (
     ASSIGNMENT_RE,
     CLI_DEFAULT_DRAWDOWN_BPS,
-    CLI_PACKAGE,
+    CLI_REPO,
     ENV_WORDS,
     FUND_RULES_APPLIED,
     INDIRECTION_WORDS,
     MAX_COMMAND_CHARS,
     TERMINAL_TOOLS,
+    SAFE_LAUNCHERS,
     ProposeInvocation,
+    Segment,
     has_unquoted_hash,
     is_address,
     launcher_problem,
@@ -50,6 +52,25 @@ REFUSE_HINT = (
 
 def _refuse(code: str, why: str) -> str:
     return f"fund propose blocked ({code}): {why}. {REFUSE_HINT}"
+
+
+CAST_SENDS = frozenset({"send", "s", "publish", "p", "mktx", "m"})
+
+
+def _unlisted(seg: Segment) -> str:
+    """The refusal for a command that is neither the CLI, a read-only tool nor the install line."""
+    word = seg.bare_command
+    lead = seg.leading_words
+    rest = lead[lead.index(word) + 1 :] if word in lead else []
+    if word == "cast" and rest and rest[0] in CAST_SENDS:
+        return ("fund propose blocked (cast_transaction): the guard does not let the agent send transactions "
+                "with cast on a fund host (cast send / publish / mktx). The host runs it in their own terminal")
+    if word == "hermes" and rest[:2] == ["sherwood", "fund-bind"]:
+        return ("fund propose blocked (host_command): `hermes sherwood fund-bind` rewrites the fund record (its "
+                "vault, governor, chat or host). The host types it in their own shell, never the agent")
+    return _refuse("unlisted_command", f"`{word or seg.words[0]}` is not one the guard lets run on a line that "
+                   "names the CLI or a fund vault (only the sherwood CLI, read-only tools such as echo, grep, cat, "
+                   "jq, cast call, and the CLI install line)")
 from ..session import current_caller
 from . import authz, rules
 from .generic_call import require_agent_signer
@@ -264,7 +285,7 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         """
         command = str((args or {}).get("command") or "")
         norm = normalize(command)
-        if not ("0x" in norm or "sherwood" in norm or CLI_PACKAGE in norm):
+        if not ("0x" in norm or "sherwood" in norm or CLI_REPO in norm):
             return None  # names neither the CLI nor any vault address
         if CLI_INSTALL_RE.fullmatch(command.strip()):
             return None  # the install line preflight and the skill hand out, exactly
@@ -305,10 +326,10 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
             return _refuse("shell_indirection", "it runs text through a shell, eval, source, an alias, a function, "
                            "a here-doc or here-string, or shopt, which the guard reads only as data")
         if any(w in ENV_WORDS for w in words) or any(
-                (seg.words and all(ASSIGNMENT_RE.match(w) for w in seg.words))
+                (seg.leading_words and ASSIGNMENT_RE.match(seg.leading_words[0]))
                 or (seg.command_word == "printf" and "-v" in seg.words) for seg in segments):
-            return _refuse("environment", "it sets environment (export or an assignment) that can change what the "
-                           "CLI runs, e.g. NODE_OPTIONS or PATH")
+            return _refuse("environment", "it sets environment (export, read, printf -v or an assignment such as "
+                           "NODE_OPTIONS= or PATH=) that can change what runs")
         if has_unquoted_hash(command):
             return _refuse("unquoted_hash", "a # outside quotes makes bash and the guard read different words")
         invocations: list[ProposeInvocation] = []
@@ -318,6 +339,8 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
                 if problem == "env":
                     return _refuse("environment", "an assignment before the CLI (e.g. NODE_OPTIONS, PATH) can change "
                                    "what it runs")
+                if problem and seg.words[0].rsplit("/", 1)[-1] not in SAFE_LAUNCHERS:
+                    return _unlisted(seg)  # `file /x/sherwood`, `xargs sherwood`: not a launcher at all
                 if problem:
                     return _refuse("unsafe_launcher", "the CLI is started through a command or flag that may add or "
                                    "change its arguments (allowed before it: env -u/-i, npx -y, pnpm dlx, node, exec, "
@@ -328,9 +351,11 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
                     if on_fund - {seg.invocation.vault.lower()}:
                         return _refuse("unreadable_propose", "it names a fund vault in a propose whose --vault is "
                                        "another address")
-            elif not seg.read_only and any(names_cli(w) or any(v in normalize(w) for v in by_vault) for w in seg.words):
-                return _refuse("unreadable_propose", f"`{seg.command_word}` takes the CLI or a fund vault as data and "
-                               "may run it in a way the guard cannot read")
+            elif not (seg.read_only or seg.is_cli_install or seg.is_closer):
+                # Rule 1: on a line that names the CLI or a fund vault, every command is the CLI, a
+                # read-only tool or the install line. Anything else may run or write what the guard
+                # cannot read (chmod and ./p, xargs, an interpreter, a tool writing a file).
+                return _unlisted(seg)
         # A read-only command that carries the CLI's name or a fund vault (or reads one from a pipe)
         # may only hand its output to another read-only command or to a CLI command that is not a
         # propose: never a file, `tee`, `xargs`, an interpreter.
