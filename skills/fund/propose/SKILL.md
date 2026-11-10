@@ -125,12 +125,13 @@ Raw calldata legs do not.
      clone, pinned metadata URI, leg calldata) before you sign. The draft
      keeps your slot meanwhile. If the thesis or legs change, cancel it and
      draft again.
-3. Post the card in the group: thesis, legs, max capital, max drawdown, bond,
-   voting window, and "object with an Against vote if you disagree".
-4. Sign from your own wallet, in order: the swap (only if
-   `bond.swap_first`), the exact approve, then propose (`prepare.body` to
-   `POST {tx_builder_url}/prepare/propose`, or the CLI).
-5. `fund_set_proposal_status(proposal_id, status="proposed", onchain_id,
+3. The plugin posts the draft card in the group with 🚀 Ship it and
+   ✍️ Co-sign. Do not post your own card; say one short line, as the
+   result's `next` says. Do not call `prepare.url` from the chat.
+4. The host taps 🚀 Ship it, then ✍️ Co-sign, and signs on the signing page
+   from their own wallet (the swap only if needed, the exact approve, then
+   propose).
+5. Once it is on chain: `fund_set_proposal_status(proposal_id, status="proposed", onchain_id,
    tx_hash)`. This opens voting on the card (the record moves to `voting`).
 6. If anything fails before step 5, `fund_set_proposal_status(...,
    status="cancelled")` so the slot frees up, and say so in chat.

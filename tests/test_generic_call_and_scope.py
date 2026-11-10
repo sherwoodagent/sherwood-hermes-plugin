@@ -1003,8 +1003,22 @@ def test_a_fund_chat_turn_gets_the_group_path_rules(two_funds):
     assert block.rstrip().endswith("</sherwood-fund-chat>")
     for phrase in ("no terminal", "propose command", "prepare", "🚀 Ship it", "fund-propose", "web search"):
         assert phrase in block, phrase
+    # Review M2 (#45): the default signer is the host. Its path is ✍️ Co-sign on the signing page,
+    # not an operator terminal.
+    assert "✍️ Co-sign" in block and "signing page" in block and "operator" not in block
     # Strangers and other chats still get nothing at all.
     assert _scope(two_funds, platform="telegram", chat_id=B_CHAT, sender_id="66") == ""
+
+
+def test_an_agent_signer_fund_chat_gets_the_operator_path(tmp_path, monkeypatch):
+    monkeypatch.setattr("sherwood_monitor.fund.scope.discover_strategy_templates", lambda *a, **k: {
+        "ok": False, "error": "not checked", "available": [], "unavailable": [],
+    })
+    rt = _runtime(tmp_path, proposal_signer="agent")
+    rt.service.create_fund(fund(), host_agent())
+    block = _scope(rt, platform="telegram", chat_id="-100500", sender_id="900")
+    block = block[block.index("<sherwood-fund-chat>"):]
+    assert "operator runs the propose from a terminal" in block and "Co-sign" not in block
 
 
 def test_one_fund_and_no_default_is_that_fund_not_a_no_default_line(tmp_path, monkeypatch):
