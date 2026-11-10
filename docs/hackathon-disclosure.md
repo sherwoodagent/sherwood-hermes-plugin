@@ -46,8 +46,11 @@ plugin adds no contracts:
   `proposal_signer: agent` a proposal can instead be a Generic Call clone:
   an unaudited template (tier 2 at full notional, never certified) that runs
   a fixed list of calls. The plugin checks the plan's shape the way the CLI
-  0.104.0 compiles it, refuses unlimited approvals in any form, and refuses
-  calls to the vault or the governor; the CLI refuses the rest it reads from
+  0.104.0 compiles it, refuses unlimited approvals given as approve,
+  increaseAllowance, Permit2 approve, permit or setApprovalForAll (a
+  multicall-wrapped approve, `increaseApproval` and ERC777
+  `authorizeOperator` still pass, pending a follow-up), and refuses calls to
+  the vault or the governor; the CLI refuses the rest it reads from
   the chain. Guardians abstain on it (UNAUDITED_TEMPLATE), so execute stays
   blocked (InsufficientApproveCoverage) and the vault stays locked until a
   guardian operator allows it or the proposal is cancelled. The plugin does
