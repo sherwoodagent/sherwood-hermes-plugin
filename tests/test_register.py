@@ -8,19 +8,6 @@ import pytest
 TEST_KEY = "0x" + "11" * 32
 
 
-def _first_turn(mock_ctx) -> None:
-    """Fire the plugin's pre_llm_call (the first turn starts the plugin's own loop),
-    then give that loop a moment and stop it."""
-    import asyncio
-
-    import sherwood_monitor
-
-    (pre_llm,) = [c.args[1] for c in mock_ctx.register_hook.call_args_list if c.args[0] == "pre_llm_call"]
-    asyncio.run(pre_llm(session_id="s1"))
-    sherwood_monitor._RUNTIME["bg"].run(asyncio.sleep(0.2), timeout=5)
-    sherwood_monitor._RUNTIME["teardown"]()
-
-
 def test_register_calls_all_ctx_methods(tmp_path: Path, mock_ctx, monkeypatch):
     monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
 
@@ -105,25 +92,41 @@ def test_register_with_a_malformed_key_still_loads(tmp_path: Path, mock_ctx, mon
 
 
 def test_an_install_with_a_built_xmtp_sidecar_on_disk_still_loads(tmp_path: Path, mock_ctx, monkeypatch):
-    """Upgrading from 0.8.x: a built sidecar, its database and an old config are left on disk.
+    """Upgrading from 0.8.x with files 0.8.x left on disk.
 
-    The plugin loads as usual, says nothing about them, starts no node process at the
-    first turn and leaves the files alone.
+    `hermes plugins install --force --ref` carries untracked files into the new tree except
+    `node_modules/`, so a built `xmtp_sidecar/dist/` and its logs may remain; an unpinned
+    `hermes plugins update` (git pull) also keeps `node_modules/`. Seeded here: all three,
+    the sidecar database under ~/.hermes/xmtp/ and a config that still has `xmtp_summaries`.
+    With `auto_start: true` the first turn starts the fund's stream: the only process spawned
+    is `sherwood session check <fund> --stream --no-xmtp` (no node), its event arrives, nothing
+    mentions a sidecar or XMTP, and the leftovers are untouched.
     """
     import asyncio
 
+    import yaml
+
     import sherwood_monitor
     from sherwood_monitor.event_buffer import EventBuffer
+    from tests.test_lifecycle import _stub_sherwood, _wait_for
 
     monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
     plugin_dir = tmp_path / ".hermes" / "plugins" / "sherwood-monitor"
-    for rel in ("xmtp_sidecar/dist/index.js", "xmtp_sidecar/node_modules/@xmtp/node-sdk/package.json"):
+    leftovers = (
+        "xmtp_sidecar/dist/index.js",
+        "xmtp_sidecar/npm-debug.log",
+        "xmtp_sidecar/node_modules/@xmtp/node-sdk/package.json",
+    )
+    for rel in leftovers:
         (plugin_dir / rel).parent.mkdir(parents=True, exist_ok=True)
         (plugin_dir / rel).write_text("// left by 0.8.x")
     db = tmp_path / ".hermes" / "xmtp" / "sidecar.db"
     db.parent.mkdir(parents=True)
     db.write_bytes(b"old-db")
-    (plugin_dir / "config.yaml").write_text("funds: [alpha-fund]\nxmtp_summaries: true\n")
+    stub = _stub_sherwood(tmp_path)
+    (plugin_dir / "config.yaml").write_text(yaml.safe_dump({
+        "funds": ["alpha-fund"], "auto_start": True, "sherwood_bin": str(stub), "xmtp_summaries": True,
+    }))
 
     pushed: list[str] = []
     original_push = EventBuffer.push
@@ -133,10 +136,11 @@ def test_an_install_with_a_built_xmtp_sidecar_on_disk_still_loads(tmp_path: Path
         return original_push(self, msg)
 
     spawned: list[tuple] = []
+    real_spawn = asyncio.create_subprocess_exec
 
     async def record_spawn(*args, **kwargs):
-        spawned.append(args)
-        raise RuntimeError("no process in this test")
+        spawned.append(tuple(str(a) for a in args))
+        return await real_spawn(*args, **kwargs)
 
     fake_version = MagicMock(returncode=0, stdout="0.71.0")
     with patch("pathlib.Path.home", return_value=tmp_path), \
@@ -144,11 +148,17 @@ def test_an_install_with_a_built_xmtp_sidecar_on_disk_still_loads(tmp_path: Path
          patch.object(EventBuffer, "push", capture), \
          patch.object(asyncio, "create_subprocess_exec", record_spawn):
         sherwood_monitor.register(mock_ctx)
-        _first_turn(mock_ctx)
+        (pre_llm,) = [c.args[1] for c in mock_ctx.register_hook.call_args_list if c.args[0] == "pre_llm_call"]
+        try:
+            asyncio.run(pre_llm(session_id="s1"))  # the first turn starts the auto_start stream
+            assert _wait_for(lambda: any('type="VoteCast"' in m for m in pushed)), "the stream's event never arrived"
+        finally:
+            sherwood_monitor._RUNTIME["teardown"]()
 
     assert mock_ctx.register_tool.call_count == 17
     assert mock_ctx.register_hook.call_count == 5
+    assert spawned == [(str(stub), "session", "check", "alpha-fund", "--stream", "--no-xmtp")]
     assert not any("sidecar" in m.lower() or "xmtp" in m.lower() for m in pushed)
-    assert not any("node" in str(a).lower() or "index.js" in str(a) for args in spawned for a in args)
     assert db.read_bytes() == b"old-db"
-    assert (plugin_dir / "xmtp_sidecar" / "dist" / "index.js").read_text() == "// left by 0.8.x"
+    for rel in leftovers:
+        assert (plugin_dir / rel).read_text() == "// left by 0.8.x"

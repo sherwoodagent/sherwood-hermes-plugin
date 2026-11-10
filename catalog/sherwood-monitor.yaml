@@ -49,8 +49,9 @@ description: >-
   SHERWOOD_PRIVATE_KEY (use a dedicated monitor key; only its address is
   derived, for the gas watchdog) and SHERWOOD_AGENT_ADDRESS. The plugin reads no file
   outside its own data. Writes fund state and stream/watchdog state under
-  ~/.hermes/plugins/sherwood-monitor/. Pure Python: the install builds
-  nothing and downloads only the declared Python dependencies. No telemetry.
+  ~/.hermes/plugins/sherwood-monitor/. Pure Python, with no Node build:
+  the install fetches only Python packages (the declared dependencies and
+  the setuptools build backend). No telemetry.
 maintainer: Sherwood
 tier: community
 category: tools

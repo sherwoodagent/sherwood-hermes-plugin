@@ -230,13 +230,11 @@ def test_gas_defaults_to_the_public_robinhood_rpc(monkeypatch, tmp_path):
 
 
 def test_gas_derives_the_address_from_the_key(monkeypatch, tmp_path):
-    from sherwood_monitor.key_derivation import address_from_private_key
-
     _redirect_paths(monkeypatch, tmp_path)
     monkeypatch.setenv("SHERWOOD_PRIVATE_KEY", TEST_KEY)
     with patch("sherwood_monitor.cli_watchdog._eth_balance", return_value=0.001) as bal:
         out = wd._gas(_cfg(gas_alert_min_eth=0.002))
-    expected = address_from_private_key(TEST_KEY)
+    expected = "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A"  # the address of TEST_KEY (pinned)
     assert bal.call_args.args[1] == expected
     assert expected in out
     assert TEST_KEY not in out

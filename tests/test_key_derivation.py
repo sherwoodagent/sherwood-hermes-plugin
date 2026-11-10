@@ -8,6 +8,8 @@ from sherwood_monitor.key_derivation import (
 )
 
 _KNOWN_PRIMARY = "0x" + "11" * 32
+# The address of _KNOWN_PRIMARY (secp256k1, keccak-256, EIP-55), computed independently.
+_KNOWN_ADDRESS = "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A"
 
 
 def test_derived_address_format():
@@ -20,6 +22,11 @@ def test_derived_address_format():
     assert hex_part != hex_part.lower() or hex_part == hex_part.upper(), (
         "address should be EIP-55 checksummed"
     )
+
+
+def test_known_key_gives_the_known_address():
+    """Pinned vector: the gas watchdog checks this address for this key."""
+    assert address_from_private_key(_KNOWN_PRIMARY) == _KNOWN_ADDRESS
 
 
 def test_address_strips_0x_prefix():

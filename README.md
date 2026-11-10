@@ -26,7 +26,7 @@ If you're new to Sherwood, the model is simple:
 
 - Hermes Agent installed and running
 - Python ≥ 3.11
-- Node ≥ 22 and npm for the Sherwood CLI (`npm i -g`); the plugin itself is pure Python and builds nothing
+- Node ≥ 22 and npm for the Sherwood CLI (`npm i -g`); the plugin itself is pure Python, with no Node build
 - Sherwood CLI installed and configured; the monitor runs it as a subprocess (`sherwood session check`), and the CLI reads its own config. The plugin never reads the CLI's config file:
 
 ```bash
@@ -102,8 +102,13 @@ what 0.8.x left behind is ignored:
 
 - `xmtp_summaries` in `config.yaml` is ignored (one log line at load); delete
   the line when convenient.
-- A built `xmtp_sidecar/` in the plugin directory and `~/.hermes/xmtp/` are
-  no longer used. Delete them if you like.
+- `hermes plugins install --force --ref` carries files the repo does not
+  track into the new tree, but not `node_modules/`: a built
+  `xmtp_sidecar/dist/` (and any `xmtp_sidecar/*.log`) may remain in the
+  plugin directory, and `~/.hermes/xmtp/` stays. Neither is used; delete
+  them if you like. (An unpinned `hermes plugins update`, a `git pull`,
+  also keeps `xmtp_sidecar/node_modules/`; the root `.gitignore` keeps it
+  ignored.)
 - `SHERWOOD_PRIVATE_KEY` is now only the gas watchdog's fallback for its
   address. If you set it for the sidecar, set `SHERWOOD_AGENT_ADDRESS` instead
   and remove the key from the profile `.env`.
@@ -135,7 +140,7 @@ SHERWOOD_PRIVATE_KEY=0x...      # optional, secret: the address is derived from 
    dependencies. Hermes installs the `sherwood_monitor` package, editable,
    from a copy of the plugin in its dependency workspace
    (`$HERMES_HOME/installs/…/workspace/plugin-sources/sherwood-monitor-…`).
-2. Nothing is built: the plugin is pure Python.
+2. There is no Node build step: the plugin is pure Python.
 
 ## Configure
 

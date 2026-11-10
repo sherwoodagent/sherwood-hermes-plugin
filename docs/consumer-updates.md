@@ -21,8 +21,12 @@ What 0.9.0 changes for consumers:
   Docs should say to set `SHERWOOD_AGENT_ADDRESS` and leave the key unset.
 - **`xmtp_summaries`** is gone from `config.yaml`; an old config that has it
   still loads (one log line).
-- **Upgrades** leave a built `xmtp_sidecar/` and `~/.hermes/xmtp/` on disk,
-  unused; the README's "Upgrading from 0.8.x" says they can be deleted.
+- **Upgrades:** `hermes plugins install --force --ref` carries a built
+  `xmtp_sidecar/dist/` (and any `xmtp_sidecar/*.log`) into the new tree,
+  but not `node_modules/`; `~/.hermes/xmtp/` stays. Both are unused; the
+  README's "Upgrading from 0.8.x" says they can be deleted. Only an
+  unpinned `hermes plugins update` (a `git pull`) also keeps
+  `xmtp_sidecar/node_modules/`.
 - **Unchanged:** the tools (17), hooks (5), slash commands (5), skills (4),
   the Telegram platform handler, `requires_env` names, the five crons,
   `MIN_CLI_VERSION` (`0.71.0`) and the CLI floors (0.103.0 portfolio,

@@ -198,8 +198,9 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   list, so the entry's `capabilities.requires_env` mirrors `requires_env`
   only.
 - **Rule 17 (no unscannable payloads).** Nothing binary is committed, and
-  the install builds nothing: the plugin is pure Python and downloads only
-  its declared Python dependencies.
+  there is no Node build: the plugin is pure Python, and the install fetches
+  only Python packages (its declared dependencies and the setuptools build
+  backend).
 - **Uninstall deletes state on a default install.** The plugin keeps its
   config and state under `~/.hermes/plugins/sherwood-monitor/` in the user's
   home (`_plugin_root()` in `sherwood_monitor/__init__.py`; `funds/` from
