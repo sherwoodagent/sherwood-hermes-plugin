@@ -996,7 +996,11 @@ class FundTelegramBridge:
         if st is None:
             return
         who = event.idea_by_name or f"user{event.idea_by}"
+        from .tools import check_symbols, topic_tickers
+
         try:
+            # The draft-time symbol check, from its cache only: no network on the message path.
+            check_symbols(st, topic_tickers(event.text), self.service.tx_builder_url, cached_only=True)
             await asyncio.to_thread(
                 lambda: self.service.request_draft(
                     st.fund.name,

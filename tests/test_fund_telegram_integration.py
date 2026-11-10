@@ -438,6 +438,46 @@ async def test_bare_host_ship_it_claims_the_one_open_pitch_and_the_draft_card_re
     assert draft_call.kwargs["reply_to_message_id"] == 41
 
 
+PRICES = {"data": {"records": [
+    {"symbol": "TSLA", "address": "0x" + "31" * 20}, {"symbol": "NVDA", "address": "0x" + "32" * 20},
+]}}
+
+
+async def test_ship_it_on_an_unpriced_pitch_is_refused_in_the_group_from_the_cached_prices(tmp_path, monkeypatch):
+    from sherwood_monitor.fund import symbols
+
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: PRICES)
+    symbols.source_for(bridge.service.tx_builder_url)()  # a claim or draft warmed the cache earlier
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: pytest.fail("no network on the message path"))
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=41, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot 100% $NFLX for 6 hours", mentions_bot=True))
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot ship it", mentions_bot=True))
+    await settle_tasks()
+    (call,) = bot.send_message.await_args_list
+    assert call.kwargs["reply_to_message_id"] == 41
+    assert "NFLX is not in the Sherwood prices source" in call.kwargs["text"] and "NVDA" in call.kwargs["text"]
+    assert ctx.call_tool("fund_status")["pitch_claims"] == []
+
+
+async def test_ship_it_with_a_cold_prices_cache_claims_without_a_network_call(tmp_path, monkeypatch):
+    from sherwood_monitor.fund import symbols
+
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: pytest.fail("no network on the message path"))
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=41, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot 100% $NFLX for 6 hours", mentions_bot=True))
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot ship it", mentions_bot=True))
+    await settle_tasks()
+    assert [c["topic"] for c in ctx.call_tool("fund_status")["pitch_claims"]] == ["NFLX pitch"]
+
+
 async def test_ambiguous_host_ship_it_is_answered_in_the_group_by_the_plugin(tmp_path, monkeypatch):
     ctx = boot(tmp_path, monkeypatch, ChainStub())
     _setup(ctx)

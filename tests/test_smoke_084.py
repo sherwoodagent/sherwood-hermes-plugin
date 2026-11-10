@@ -537,6 +537,53 @@ def test_an_unreachable_prices_source_fails_open_with_a_note(as_caller):
     assert "NFLX were not verified" in out["symbol_check"]
 
 
+def _claim_tool(rt):
+    import json as _json
+
+    from sherwood_monitor.fund.tools import make_fund_tool_handlers
+
+    tools = make_fund_tool_handlers(rt)
+    return lambda topic: _json.loads(tools["fund_claim_topic"]({"topic": topic}))
+
+
+def test_claiming_an_unpriced_ticker_is_refused_before_any_draft(as_caller, monkeypatch):
+    """Live group test 2026-11-10: "100% $NFLX for 6 hours" got a riff saying NFLX was live on
+    Robinhood Chain and a claim; only the draft refused it. The claim now does, with the same list."""
+    from sherwood_monitor.fund import symbols
+
+    seen = []
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: seen.append(url) or PRICES)
+    rt = guard_rt()
+    claim = _claim_tool(rt)
+    out = claim("$NFLX 100% 6h")
+    assert out["ok"] is False and out["code"] == "unknown_symbol"
+    assert out["error"].startswith("NFLX is not in the Sherwood prices source for chain 4663")
+    assert "TSLA" in out["error"]
+    assert rt.service.load("alpha-fund").claims == []
+    out = claim("$tsla into the close")
+    assert out["ok"] is True and "symbol_check" not in out
+    assert len(seen) == 1  # the draft check's cached source, not a second list
+
+
+def test_a_bare_unpriced_symbol_in_a_claim_is_flagged_not_refused(as_caller, monkeypatch):
+    from sherwood_monitor.fund import symbols
+
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: PRICES)
+    rt = guard_rt()
+    out = _claim_tool(rt)("100% NFLX 6h")
+    assert out["ok"] is True
+    assert "NFLX" in out["symbol_check"] and "not in the Sherwood prices source" in out["symbol_check"]
+    rt.service.release_claim("alpha-fund", "alpha")
+    out = _claim_tool(rt)("AI capex NVDA")
+    assert out["ok"] is True and "symbol_check" not in out  # NVDA is priced; "AI" is not a ticker
+
+
+def test_claim_symbol_check_fails_open_when_the_source_is_down(as_caller):
+    rt = guard_rt()  # conftest: unreachable
+    out = _claim_tool(rt)("$NFLX 100% 6h")
+    assert out["ok"] is True  # the draft-time check still runs (and says it could not)
+
+
 # == 6. a chain read never clears a cooldown the plugin just started ======================
 def test_a_stale_chain_read_does_not_clear_the_settle_cooldown(svc, clock):
     """Smoke 9h-9l: right after fund_record_settle the next /fund read (cooldownUntil "0", cached from

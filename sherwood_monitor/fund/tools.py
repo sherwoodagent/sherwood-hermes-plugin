@@ -9,6 +9,7 @@ Rule failures come back as `{"ok": false, "blocked": true, "code", "error"}`.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
@@ -289,11 +290,23 @@ def check_leg_symbols(state: FundState, legs: list[Leg], tx_builder_url: str) ->
     (the draft then goes ahead unchecked: fails open, said in the tool result). Raises
     RuleViolation (`unknown_symbol`) when a symbol is not covered.
     """
-    symbols = list(dict.fromkeys(leg.symbol.upper() for leg in legs if leg.phase == "execute" and leg.symbol))
+    return check_symbols(state, [leg.symbol for leg in legs if leg.phase == "execute" and leg.symbol], tx_builder_url)
+
+
+def check_symbols(state: FundState, names: list[str], tx_builder_url: str, *, cached_only: bool = False) -> str:
+    """The draft-time symbol check for any list of symbols: legs, a claim topic's $TICKERs, a pitch's.
+
+    One source, one refusal. ``cached_only`` never reads the network: a cold cache returns ""
+    (not checked here; the draft checks it).
+    """
+    symbols = list(dict.fromkeys(s.strip().upper() for s in names if s and s.strip()))
     if not symbols or state.fund.chain_id != fund_symbols.PRICES_CHAIN_ID or not tx_builder_url:
         return ""
-    covered = fund_symbols.source_for(tx_builder_url)()
+    source = fund_symbols.source_for(tx_builder_url)
+    covered = source.peek() if cached_only else source()
     if covered is None:
+        if cached_only:
+            return ""
         return (
             f"not checked: the Sherwood prices source ({tx_builder_url.rstrip('/')}/sources/prices) could not be "
             f"read, so {', '.join(symbols)} were not verified as tradable on chain {state.fund.chain_id}. Say so "
@@ -301,15 +314,48 @@ def check_leg_symbols(state: FundState, legs: list[Leg], tx_builder_url: str) ->
         )
     missing = [s for s in symbols if s not in covered]
     if missing:
-        listed = sorted(covered)
-        shown = ", ".join(listed[:60]) + (f" and {len(listed) - 60} more" if len(listed) > 60 else "")
         raise RuleViolation(rules.deny(
             "unknown_symbol",
             f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in the Sherwood prices source for "
             f"chain {state.fund.chain_id} (no token or Chainlink feed there), so a portfolio cannot hold "
-            f"{'it' if len(missing) == 1 else 'them'}. Priced symbols: {shown}",
+            f"{'it' if len(missing) == 1 else 'them'}. Priced symbols: {_priced_list(covered)}",
         ))
     return ""
+
+
+def _priced_list(covered: frozenset[str]) -> str:
+    listed = sorted(covered)
+    return ", ".join(listed[:60]) + (f" and {len(listed) - 60} more" if len(listed) > 60 else "")
+
+
+_DOLLAR_TICKER_RE = re.compile(r"(?<![\w$])\$([A-Za-z][A-Za-z0-9]{0,9})\b")
+_BARE_TICKER_RE = re.compile(r"(?<![\w$])([A-Z]{3,5})\b")
+
+
+def topic_tickers(text: str) -> list[str]:
+    """The $TICKERs a claim topic or a pitch names (upper-cased, in order)."""
+    return [t.upper() for t in _DOLLAR_TICKER_RE.findall(text or "")]
+
+
+def check_claim_symbols(state: FundState, topic: str, tx_builder_url: str) -> str:
+    """fund_claim_topic: a $TICKER the prices source does not cover is refused (RuleViolation, the
+    draft check's error). A bare all-caps word that is not priced is flagged in the returned note,
+    not refused ("ETF" is a word too). Fails open when the source cannot be read."""
+    check_symbols(state, topic_tickers(topic), tx_builder_url)
+    dollar = set(topic_tickers(topic))
+    bare = [t for t in dict.fromkeys(_BARE_TICKER_RE.findall(topic or "")) if t not in dollar]
+    if not bare or state.fund.chain_id != fund_symbols.PRICES_CHAIN_ID or not tx_builder_url:
+        return ""
+    covered = fund_symbols.source_for(tx_builder_url)()
+    missing = [t for t in bare if covered is not None and t not in covered]
+    if not missing:
+        return ""
+    return (
+        f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in the Sherwood prices source for chain "
+        f"{state.fund.chain_id}: a portfolio cannot hold {'it' if len(missing) == 1 else 'them'} and "
+        "fund_draft_proposal will refuse it. If that is meant as a stock, tell the group it is not tradable here "
+        f"and release the claim (fund_release_claim). Priced symbols: {_priced_list(covered)}"  # type: ignore[arg-type]
+    )
 
 
 def draft_next_step(draft_id: str, *, agent_signs: bool) -> str:
@@ -548,8 +594,15 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         return out
 
     def fund_claim_topic(args: dict[str, Any]) -> dict[str, Any]:
-        claim = svc.claim_topic(rt.fund_for(args.get("fund")), rt.agent_name(), str(args.get("topic") or ""))
-        return {"claim": asdict(claim), "say": f"drafting {claim.topic} (claim held 10 min)"}
+        fund = rt.fund_for(args.get("fund"))
+        agent = rt.agent_name()
+        topic = str(args.get("topic") or "")
+        symbol_note = check_claim_symbols(svc.load(fund), topic, svc.tx_builder_url)
+        claim = svc.claim_topic(fund, agent, topic)
+        out: dict[str, Any] = {"claim": asdict(claim), "say": f"drafting {claim.topic} (claim held 10 min)"}
+        if symbol_note:
+            out["symbol_check"] = symbol_note
+        return out
 
     def fund_release_claim(args: dict[str, Any]) -> dict[str, Any]:
         n = svc.release_claim(rt.fund_for(args.get("fund")), rt.agent_name(), args.get("topic") or None)
