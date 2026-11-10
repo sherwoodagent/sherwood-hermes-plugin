@@ -18,10 +18,14 @@ from pathlib import Path
 
 from ..propose_cmd import (
     CLI_DEFAULT_DRAWDOWN_BPS,
+    CLI_PACKAGE,
     FUND_RULES_APPLIED,
     TERMINAL_TOOLS,
     ProposeInvocation,
+    has_unquoted_hash,
+    is_address,
     looks_like_propose,
+    mentions_propose,
     parse_propose_invocations,
 )
 from ..session import current_caller
@@ -93,20 +97,49 @@ def _amount_text(units: int, st: FundState) -> str:
     return f"{format_units(units, st.fund.asset_decimals)} {st.fund.asset}"
 
 
+# The flag whose value the CLI 0.103.0 deploys as the proposal's capital (its envelope maxCapital),
+# per template (dist: buildInitDataForTemplate / resolveChainInputsForTemplate). A template not in
+# this table is refused on a fund vault: the guard cannot tell what it would deploy.
+TEMPLATE_CAPITAL_FLAGS: dict[str, tuple[str, ...]] = {
+    "portfolio": ("--amount",),
+    "generic-call": ("--amount",),  # the pull amount
+    "morpho-supply": ("--amount",),
+    "concentrated-liquidity": ("--collateral-amount",),  # --amount is ignored; the borrow rides on top
+    "lighter-perp": ("--deposit", "--amount"),  # --amount is the alias
+    "launchpad": ("--asset-in",),
+}
+PROPOSAL_CREATE_CAPITAL_FLAGS: tuple[str, ...] = ("--max-capital",)
+# Templates that derive the drawdown themselves when the flag is omitted (launchpad: from --asset-in).
+DERIVED_DRAWDOWN_TEMPLATES = frozenset({"launchpad"})
+
+
 def check_propose_ceilings(inv: ProposeInvocation, st: FundState) -> str | None:
     """A propose for fund `st`'s vault against the fund's own ceilings: a block reason, or None.
 
-    The capital is the command's `--amount` (`--max-capital` on `proposal create`;
-    `--deposit` / `--asset-in` on the templates that take those), in human asset units.
-    A missing or unreadable amount is refused. `--max-drawdown-bps` omitted means the
-    CLI default (2000 bps), which is checked like a typed one.
+    The capital is the flag the CLI deploys for that template (TEMPLATE_CAPITAL_FLAGS;
+    `--max-capital` on `proposal create`), in human asset units; every other capital-like
+    flag on the command counts too, and the largest value is checked. An unmapped template,
+    a missing mapped flag or an unreadable amount is refused. `--max-drawdown-bps` omitted
+    means the CLI default (2000 bps), checked like a typed one; if it is given more than
+    once, the largest counts.
     """
     f = st.fund
     name = f.name
-    if not inv.capital:
+    if inv.kind == "proposal create":
+        required = PROPOSAL_CREATE_CAPITAL_FLAGS
+    else:
+        mapped = TEMPLATE_CAPITAL_FLAGS.get(inv.template)
+        if mapped is None:
+            return (
+                f"fund propose blocked (unmapped_template): the guard does not know which flag carries the "
+                f"capital of template {inv.template or '(none)'!r}, so it cannot hold it to {name}'s ceilings. "
+                f"Fund vaults take {', '.join(sorted(TEMPLATE_CAPITAL_FLAGS))} from the terminal"
+            )
+        required = mapped
+    if not any(flag in required for flag, _ in inv.capital):
         return (
-            f"fund propose blocked (no_amount): a propose for {name}'s vault must name its capital with "
-            f"--amount (or --max-capital), so the fund ceiling can be checked"
+            f"fund propose blocked (no_amount): a {inv.template or inv.kind} propose for {name}'s vault must "
+            f"name its capital with {' or '.join(required)}, so the fund ceiling can be checked"
         )
     amounts: list[int] = []
     for flag, raw in inv.capital:
@@ -120,13 +153,21 @@ def check_propose_ceilings(inv: ProposeInvocation, st: FundState) -> str | None:
             f"fund propose blocked (exceeds_max_capital): {_amount_text(capital, st)} is above the fund "
             f"ceiling {_amount_text(int(f.max_capital), st)} for {name}"
         )
-    if inv.drawdown is None:
+    if not inv.drawdowns:
+        if inv.template in DERIVED_DRAWDOWN_TEMPLATES:
+            return (
+                f"fund propose blocked (no_drawdown): {inv.template} derives its drawdown when "
+                f"--max-drawdown-bps is omitted; pass it so {name}'s ceiling can be checked"
+            )
         drawdown, typed = CLI_DEFAULT_DRAWDOWN_BPS, False
     else:
-        try:
-            drawdown, typed = int(inv.drawdown), True
-        except ValueError:
-            return f"fund propose blocked (bad_drawdown): cannot read --max-drawdown-bps {inv.drawdown!r} as bps for {name}"
+        values: list[int] = []
+        for raw in inv.drawdowns:
+            try:
+                values.append(int(raw))
+            except ValueError:
+                return f"fund propose blocked (bad_drawdown): cannot read --max-drawdown-bps {raw!r} as bps for {name}"
+        drawdown, typed = max(values), True
     if f.max_drawdown_bps is not None and drawdown > f.max_drawdown_bps:
         what = f"max drawdown {drawdown} bps" if typed else (
             f"no --max-drawdown-bps: the CLI default {drawdown} bps"
@@ -187,30 +228,54 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         return authz.approve_directive(tool_name, fund, args or {})
 
     def terminal_propose(args: dict[str, Any]) -> Any:
-        """A terminal propose on a fund vault: the fund's ceilings, or None (not a fund propose)."""
+        """A terminal propose on a fund vault: the fund's ceilings, or None (not a fund propose).
+
+        This checks the agent's own command text; it does not run the shell. On a host with a
+        vaulted fund it therefore refuses what it cannot read: a command that cannot be split,
+        an unquoted `#`, a `--vault` that is not a literal address, no `--vault` (CLI 0.103.0
+        requires it), or a fund vault address in a propose-looking command that no readable
+        `sherwood ... propose` names as its --vault (`bash -c`, `eval`, `$(...)`, a variable).
+        A propose built entirely at run time, with no literal fund address, is not seen.
+        """
         command = str((args or {}).get("command") or "")
-        if not looks_like_propose(command):
-            return None
+        if not (looks_like_propose(command) or mentions_propose(command) or CLI_PACKAGE in command):
+            return None  # no propose spelled anywhere in it (a parsed propose always is)
         try:
             states = _fund_states(rt)
         except GUARD_ERRORS as exc:
             return f"fund propose blocked: cannot read fund state to check the fund ceilings ({scrub_paths(exc)})"
         if not states:
             return None  # no fund on this host: the general advisory check applies
+        by_vault = {st.fund.vault.lower(): st for st in states}
+        low = command.lower()
+        present = {v for v in by_vault if v in low}
         invocations = parse_propose_invocations(command)
         if invocations is None:
-            low = command.lower()
-            if any(st.fund.vault.lower() in low for st in states):
-                return "fund propose blocked (unreadable_command): cannot parse this propose for a fund vault"
+            if present or looks_like_propose(command):
+                return "fund propose blocked (unreadable_command): this command cannot be split into shell commands with confidence (unbalanced quotes)"
             return None
-        by_vault = {st.fund.vault.lower(): st for st in states}
-        handled = False
+        if (present or invocations) and has_unquoted_hash(command):
+            return (
+                "fund propose blocked (unquoted_hash): a # outside quotes makes bash and this guard read "
+                "different flags; quote it (the commands fund_pending_commands hands out already do)"
+            )
+        names = ", ".join(sorted(st.fund.name for st in states))
+        claimed: set[str] = set()
+        checked = False
         for inv in invocations:
+            if inv.help:
+                claimed.update(v.lower() for v in inv.vaults)  # prints usage, proposes nothing
+                continue
             if not inv.vault:
-                names = ", ".join(sorted(st.fund.name for st in states))
                 return (
-                    "fund propose blocked (no_vault): this host runs fund "
-                    f"{names}; name the vault with --vault so the fund ceilings can be checked"
+                    f"fund propose blocked (no_vault): this host runs fund {names}; CLI 0.103.0 requires "
+                    "--vault on a propose, and the guard needs it to apply the fund ceilings"
+                )
+            if any(not is_address(v) for v in inv.vaults):
+                bad = next(v for v in inv.vaults if not is_address(v))
+                return (
+                    f"fund propose blocked (vault_not_literal): --vault {bad!r} is not a literal 0x address, so "
+                    f"the guard cannot tell whether it is {names}'s vault (the CLI takes only an address)"
                 )
             st = by_vault.get(inv.vault.lower())
             if st is None:
@@ -218,8 +283,19 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
             reason = check_propose_ceilings(inv, st)
             if reason:
                 return reason
-            handled = True
-        if handled and all(inv.vault.lower() in by_vault for inv in invocations):
+            claimed.add(inv.vault.lower())
+            checked = True
+        unclaimed = present - claimed
+        if unclaimed:
+            fund_names = ", ".join(sorted(by_vault[v].fund.name for v in unclaimed))
+            return (
+                f"fund propose blocked (unreadable_propose): this command names {fund_names}'s vault and "
+                "looks like a propose, but no `sherwood strategy propose` / `sherwood proposal create` in it "
+                "takes that vault as a literal --vault the guard can read (bash -c, eval, $(...) or a variable). "
+                "Run the command as fund_pending_commands lists it"
+            )
+        proposing = [inv for inv in invocations if not inv.help]
+        if checked and all(inv.vault.lower() in by_vault for inv in proposing):
             return FUND_RULES_APPLIED
         return None
 
