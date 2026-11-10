@@ -12,7 +12,13 @@ from .config import Config
 from .childenv import child_env
 from .event_buffer import EventBuffer
 from .memory import MemoryWriter, build_record
-from .propose_cmd import FUND_RULES_APPLIED, TERMINAL_TOOLS, is_address, parse_propose_invocations
+from .propose_cmd import (
+    FUND_RULES_APPLIED,
+    MAX_COMMAND_CHARS,
+    TERMINAL_TOOLS,
+    is_address,
+    parse_propose_invocations,
+)
 from .risk import ProposeParams, evaluate_propose
 from .supervisor import Supervisor
 
@@ -218,6 +224,8 @@ def make_pre_tool_call_hook(state_fetcher: StateFetcher, fund_guard: ToolGuard |
         if tool_name not in _TERMINAL_TOOLS:
             return None
         command = payload.get("command", "")
+        if not isinstance(command, str) or len(command) > MAX_COMMAND_CHARS:
+            return None  # the advisory check does not parse an oversized command (the fund guard ran first)
         parsed = _parse_propose_command(command)
         if parsed is None:
             return None

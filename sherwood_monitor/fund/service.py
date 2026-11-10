@@ -706,8 +706,13 @@ class FundService:
         onchain_id: int | None = None,
         tx_hash: str = "",
         card_message_id: str = "",
+        correct_onchain_id: bool = False,
     ) -> ProposalRecord:
         """Move a proposal along its lifecycle (draft -> proposed -> ... ). Proposer or host only.
+
+        `correct_onchain_id`: replace a wrong on-chain id recorded earlier, only while the vote is open
+        (`proposed` / `voting`), never with an id another record holds. The tool that passes it is
+        host-gated (the host's chat turn, or the operator's approval).
 
         Recording `proposed` opens the vote at once: the governor is optimistic veto and a
         solo propose lands in `Pending` (LP voting) in the propose block, so the record goes
@@ -738,13 +743,21 @@ class FundService:
                 # way when the first record had none.
                 changed = False
                 if onchain_id is not None and record.onchain_id != int(onchain_id):
-                    if record.onchain_id is not None:
+                    if record.onchain_id is not None and not correct_onchain_id:
                         raise RuleViolation(rules.deny(
                             "onchain_id_conflict",
                             f"proposal {record.id} is already recorded as on-chain #{record.onchain_id}; a repeated "
-                            f"{status} does not change it to #{int(onchain_id)}. A wrong id is corrected only with "
-                            "the next real status change, as before this release",
+                            f"{status} does not change it to #{int(onchain_id)}. If #{record.onchain_id} is wrong, "
+                            "the host corrects it with correct_onchain_id=true while the vote is open",
                         ))
+                    if record.onchain_id is not None and record.status not in ("proposed", "voting"):
+                        raise RuleViolation(rules.deny(
+                            "onchain_id_conflict",
+                            f"proposal {record.id} is {record.status}: its on-chain id is corrected only while the "
+                            "vote is open",
+                        ))
+                    if record.onchain_id is not None:
+                        record.against_bps, record.chain_synced_at = 0, None  # read for the wrong id
                     record.onchain_id, changed = int(onchain_id), True
                 if tx_hash and record.status in ("proposed", "voting") and record.propose_tx != tx_hash:
                     record.propose_tx, changed = tx_hash, True

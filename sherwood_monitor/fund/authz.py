@@ -70,6 +70,7 @@ APPROVAL_KEYS = (
     "member", "address", "agent", "proposal_id", "status", "onchain_id", "pnl", "pnl_bps", "tx_hash",
     "host_telegram_id", "telegram_chat_id", "vault", "governor", "max_capital", "max_drawdown_bps",
     "agent_fee_bps", "voting_period", "asset", "voter", "side", "voter_kind", "open_deposits",
+    "correct_onchain_id",  # the approving human sees that the call replaces a recorded on-chain id
 )
 
 
