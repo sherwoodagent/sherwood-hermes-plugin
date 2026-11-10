@@ -213,9 +213,13 @@ def check_fee_recorded(state: FundState) -> Verdict:
 
 
 def _hhmm(ts: float) -> str:
+    """HH:MM UTC; never raises (a time no calendar holds reads as "an unknown time")."""
     import time as _time
 
-    return _time.strftime("%H:%M", _time.gmtime(ts))
+    try:
+        return _time.strftime("%H:%M", _time.gmtime(ts))
+    except (OverflowError, OSError, ValueError, TypeError):
+        return "an unknown time"
 
 
 # -- claims ------------------------------------------------------------------------------
@@ -302,9 +306,22 @@ NOT_PORTFOLIO_REASON = (
     "with proposal_signer: agent the host agent proposes with `sherwood strategy propose portfolio`: "
     "the draft needs legs with symbol + weight_bps summing to 10000"
 )
+# proposal_signer: host, a draft of symbol + weight legs only (no calldata): prepare/propose-portfolio.
+HOST_PORTFOLIO_REASON = (
+    "a portfolio draft (symbol + weight_bps legs, no calldata) needs weights summing to 10000; "
+    "raw-calldata legs (target + data) are drafted as they are"
+)
 
 
-def check_portfolio_legs(legs: list[Leg]) -> Verdict:
+def is_weight_only(legs: list[Leg]) -> bool:
+    """Every execute leg is a symbol/weight leg with no calldata, and at least one carries a weight."""
+    execute = [leg for leg in legs if leg.phase == "execute"]
+    return bool(execute) and not any(leg.target or leg.data for leg in execute) and any(
+        leg.weight_bps > 0 for leg in execute
+    )
+
+
+def check_portfolio_legs(legs: list[Leg], *, reason: str = NOT_PORTFOLIO_REASON) -> Verdict:
     """The legs `sherwood strategy propose portfolio` takes: 1..20 distinct symbols, each with a
     weight above zero, weights summing to 10000. Checked when the draft is recorded and again when
     the host ships it, with the same reasons."""
@@ -312,7 +329,7 @@ def check_portfolio_legs(legs: list[Leg]) -> Verdict:
     weights = [leg.weight_bps for leg in execute]
     if not execute or not all(leg.symbol and w > 0 for leg, w in zip(execute, weights)) or sum(weights) != BPS:
         got = f"; these sum to {sum(weights)}" if execute and sum(weights) != BPS else ""
-        return deny("not_portfolio", NOT_PORTFOLIO_REASON + got)
+        return deny("not_portfolio", reason + got)
     if len(execute) > MAX_PORTFOLIO_LEGS:
         return deny("too_many_legs", f"a portfolio takes at most {MAX_PORTFOLIO_LEGS} legs, not {len(execute)}")
     symbols = [leg.symbol.upper() for leg in execute]
@@ -368,7 +385,8 @@ def check_draft(
 
     `require_portfolio` (`proposal_signer: agent`, not a Generic Call plan): the legs must be
     what Ship it will build `sherwood strategy propose portfolio` from. Under the host signer,
-    legs that carry weights must still make 100%; raw-calldata legs without weights pass.
+    only a pure portfolio draft (symbol + weight legs, no calldata) must make 100%; any draft
+    with calldata legs is drafted as before (weights there are display-only).
     """
     v = first_failure([
         check_agent_can_act(state, agent),
@@ -388,8 +406,10 @@ def check_draft(
     if normalize_topic(claim.topic) != normalize_topic(topic):
         return deny("claim_mismatch", f"{agent} claimed {claim.topic!r}, not {topic!r}")
     checks = [check_envelope(state, max_capital, max_drawdown_bps), check_legs(legs, max_capital)]
-    if require_portfolio or any(leg.phase == "execute" and leg.weight_bps > 0 for leg in legs):
+    if require_portfolio:
         checks.append(check_portfolio_legs(legs))
+    elif is_weight_only(legs):  # host signer, a pure portfolio draft: prepare/propose-portfolio needs 100%
+        checks.append(check_portfolio_legs(legs, reason=HOST_PORTFOLIO_REASON))
     return first_failure(checks)
 
 
