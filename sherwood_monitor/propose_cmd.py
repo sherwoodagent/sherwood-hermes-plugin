@@ -23,10 +23,22 @@ DRAWDOWN_FLAG = "--max-drawdown-bps"
 # `--max-drawdown-bps` omitted: the CLI proposes with 2000 (its help text, 0.103.0).
 CLI_DEFAULT_DRAWDOWN_BPS = 2000
 HELP_FLAGS = frozenset({"-h", "--help"})
+# The guard reads a command in time linear in its size; past this it refuses instead of parsing.
+MAX_COMMAND_CHARS = 32 * 1024
+# Words that may stand before the CLI in its command and still run it with exactly the words
+# that follow (anything else, e.g. `xargs`, may add arguments the guard cannot see).
+SAFE_LAUNCHERS = frozenset({
+    "env", "npx", "pnpm", "dlx", "yarn", "bunx", "exec", "command", "time", "nohup", "node", "nice", "timeout",
+    # shell keywords that start a command without adding words to it
+    "if", "then", "else", "elif", "do", "while", "until", "!", "{",
+})
+_LAUNCHER_ARG_RE = re.compile(r"^(?:-[\w-]*|[A-Za-z_][A-Za-z0-9_]*=.*|\d+[smhd]?)$")  # -y, X=1, 60, 5m
 
-_PROPOSE_RE = re.compile(r"\bsherwood\b.*?\b(?:strategy\s+propose|proposal\s+create)\b", re.DOTALL)
-# Words a propose is spelled with once quotes and backslashes are gone (`strategy 'propose'`, `pro\pose`).
-_PROPOSE_WORDS_RE = re.compile(r"\bpropose\b|\bproposal\b[\s\S]*\bcreate\b")
+_SHERWOOD_WORD_RE = re.compile(r"\bsherwood\b")
+_SUBCOMMAND_RE = re.compile(r"\b(?:strategy\s+propose|proposal\s+create)\b")
+_PROPOSE_WORD_RE = re.compile(r"\bpropose\b")
+_PROPOSAL_WORD_RE = re.compile(r"\bproposal\b")
+_CREATE_WORD_RE = re.compile(r"\bcreate\b")
 _PUNCTUATION = "();<>|&\n"
 _REDIRECTION_RE = re.compile(r"^(?:[<>]{1,3}&?|&>>?|<>)$")  # `>`, `>>`, `2>&1`'s `>&`, `<<<`, `&>`
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -57,7 +69,11 @@ class ProposeInvocation:
     size_usd: str | None = None  # legacy --size-usd
     protocol: str = ""
     positional: str = ""  # first positional after the subcommand (legacy fund subdomain)
-    help: bool = False  # -h / --help: prints usage, proposes nothing
+    # -h / --help before `--` on an invocation with no --vault and no capital flag: usage only. A
+    # help token next to --vault or an amount may be an option's value (`--name -h`), which
+    # commander runs, so such an invocation is never treated as help.
+    help: bool = False
+    launcher_ok: bool = True  # only an env assignment or a SAFE_LAUNCHERS word precedes the CLI
 
     @property
     def drawdown(self) -> str | None:
@@ -65,17 +81,91 @@ class ProposeInvocation:
 
 
 def looks_like_propose(command: str) -> bool:
-    return bool(_PROPOSE_RE.search(command or ""))
+    """`sherwood` followed somewhere by `strategy propose` / `proposal create` (linear time)."""
+    text = command or ""
+    m = _SHERWOOD_WORD_RE.search(text)
+    return bool(m and _SUBCOMMAND_RE.search(text, m.end()))
 
 
 def mentions_propose(command: str) -> bool:
     """The command spells a propose once quotes and backslashes are dropped (it may hide it in
-    `bash -c '...'`, `eval`, a quoted or escaped subcommand word)."""
-    return bool(_PROPOSE_WORDS_RE.search(re.sub(r"[\\'\"]", "", command or "")))
+    `bash -c '...'`, `eval`, a quoted or escaped subcommand word). Linear time."""
+    text = re.sub(r"[\\'\"]", "", command or "")
+    if _PROPOSE_WORD_RE.search(text):
+        return True
+    m = _PROPOSAL_WORD_RE.search(text)
+    return bool(m and _CREATE_WORD_RE.search(text, m.end()))
+
+
+def shell_expansion(command: str) -> str | None:
+    """The first thing bash would expand or substitute into the command's words, or None.
+
+    Reads quoting the way bash does: inside single quotes nothing expands; inside double quotes `$`
+    and backticks still do; a backslash outside single quotes escapes the next character. Reported:
+    `$` (variables, `$(...)`, `$'...'`, `${...}`, arithmetic), backticks, an unquoted `{` that starts a
+    brace expansion (`{a,b}`, `{1..3}`), unquoted glob characters (`*`, `?`, `[`) and process
+    substitution (`<(`, `>(`). Each can hand the CLI words the guard never read.
+    """
+    text = command or ""
+    single = double = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if single:
+            if c == "'":
+                single = False
+        elif c == "\\":
+            i += 2
+            continue
+        elif c == "'" and not double:
+            single = True
+        elif c == '"':
+            double = not double
+        elif c == "$":
+            return "a `$` expansion"
+        elif c == "`":
+            return "a backtick substitution"
+        elif not double:
+            if c == "{" and nxt and not nxt.isspace():
+                return "a brace expansion"
+            if c in "*?[":
+                return f"an unquoted glob character {c!r}"
+            if c in "<>" and nxt == "(":
+                return "a process substitution"
+        i += 1
+    return None
+
+
+def _join_continuations(text: str) -> str:
+    """Drop a backslash-newline where bash does: outside single quotes, and only when the
+    backslash is not itself escaped (`x\\\\` then a newline is an escaped backslash and a newline)."""
+    out: list[str] = []
+    single = double = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if single:
+            single = c != "'"
+            out.append(c)
+        elif c == "\\":
+            pair = text[i : i + 2]
+            if pair != "\\\n":
+                out.append(pair)
+            i += 2
+            continue
+        else:
+            if c == "'" and not double:
+                single = True
+            elif c == '"':
+                double = not double
+            out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _lex(command: str, *, comments: bool) -> list[str]:
-    lexer = shlex.shlex(command.replace("\\\n", ""), posix=True, punctuation_chars=_PUNCTUATION)
+    lexer = shlex.shlex(_join_continuations(command), posix=True, punctuation_chars=_PUNCTUATION)
     lexer.whitespace = " \t\r"  # a newline ends a command: it is a punctuation token here
     lexer.whitespace_split = True
     lexer.commenters = "#" if comments else ""
@@ -105,10 +195,12 @@ def _is_separator(tok: str) -> bool:
 
 def _is_sherwood(tok: str) -> bool:
     """The CLI as a word: `sherwood`, a path to it, `npx @sherwoodagent/cli[@x]`, or
-    `node .../@sherwoodagent/cli/dist/index.js`."""
+    `node .../@sherwoodagent/cli/dist/index.js`. Case-insensitive for the binary name: macOS
+    file systems run `SHERWOOD` as `sherwood`."""
+    low = tok.lower()
     return (
-        tok == "sherwood"
-        or tok.endswith("/sherwood")
+        low == "sherwood"
+        or low.endswith("/sherwood")
         or tok == CLI_PACKAGE
         or tok.startswith(CLI_PACKAGE + "@")
         or (CLI_PACKAGE + "/") in tok
@@ -134,10 +226,15 @@ def parse_propose_invocations(command: str) -> list[ProposeInvocation] | None:
             if _is_sherwood(word):
                 inv = _parse_one(segment[i + 1 :])
                 if inv is not None:
+                    inv.launcher_ok = all(_launcher_word(w) for w in segment[:i])
                     out.append(inv)
                 break
         segment = []
     return out
+
+
+def _launcher_word(word: str) -> bool:
+    return word.rsplit("/", 1)[-1] in SAFE_LAUNCHERS or bool(_LAUNCHER_ARG_RE.match(word))
 
 
 def _flag(tok: str, name: str, nxt: str | None) -> tuple[str | None, int]:
@@ -161,7 +258,9 @@ def _parse_one(args: list[str]) -> ProposeInvocation | None:
             break
     if not kind:
         return None
-    inv = ProposeInvocation(kind=kind, help=any(a in HELP_FLAGS for a in args))
+    inv = ProposeInvocation(kind=kind)
+    before_end = args[: args.index("--")] if "--" in args else args  # after `--` commander sees operands
+    help_token = any(a in HELP_FLAGS for a in before_end)
     rest = args[start:]
     if rest and not rest[0].startswith("-"):
         inv.positional = rest[0]  # the template (strategy propose) or a legacy fund subdomain
@@ -192,8 +291,10 @@ def _parse_one(args: list[str]) -> ProposeInvocation | None:
             inv.vault = value or ""
             k += used
             continue
+        # Legacy flags of the advisory check only: never let one swallow a following flag.
+        legacy_nxt = nxt if nxt is not None and not nxt.startswith("-") else None
         for name, attr in (("--size-usd", "size_usd"), ("--protocol", "protocol")):
-            value, used = _flag(tok, name, nxt)
+            value, used = _flag(tok, name, legacy_nxt)
             if used:
                 setattr(inv, attr, value or "")
                 k += used
@@ -202,6 +303,7 @@ def _parse_one(args: list[str]) -> ProposeInvocation | None:
         if matched:
             continue
         k += 1
+    inv.help = help_token and not inv.vaults and not inv.capital
     return inv
 
 

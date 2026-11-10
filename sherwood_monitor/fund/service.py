@@ -724,12 +724,27 @@ class FundService:
             if record is None:
                 raise RuleViolation(rules.deny("unknown_proposal", f"no proposal {proposal_id}"))
             _require_proposer_or_host(state, actor, record)
+            if onchain_id is not None:
+                holder = next((p for p in state.proposals if p.id != record.id and p.onchain_id == int(onchain_id)), None)
+                if holder is not None:
+                    raise RuleViolation(rules.deny(
+                        "duplicate_onchain_id",
+                        f"on-chain #{int(onchain_id)} is already recorded for proposal {holder.id}; one on-chain "
+                        "proposal maps to one record",
+                    ))
             if status == record.status or (status == "proposed" and record.status == "voting"):
                 # Already there (a retried record, or `voting` after the auto-open): keep the status,
                 # store the fields this call adds or corrects. The agent records the on-chain id this
                 # way when the first record had none.
                 changed = False
                 if onchain_id is not None and record.onchain_id != int(onchain_id):
+                    if record.onchain_id is not None:
+                        raise RuleViolation(rules.deny(
+                            "onchain_id_conflict",
+                            f"proposal {record.id} is already recorded as on-chain #{record.onchain_id}; a repeated "
+                            f"{status} does not change it to #{int(onchain_id)}. A wrong id is corrected only with "
+                            "the next real status change, as before this release",
+                        ))
                     record.onchain_id, changed = int(onchain_id), True
                 if tx_hash and record.status in ("proposed", "voting") and record.propose_tx != tx_hash:
                     record.propose_tx, changed = tx_hash, True
@@ -839,7 +854,12 @@ class FundService:
         if gov or gate or fee is not None or deposit_order or deposits_open is not None or nav is not None:
             def fund_mutate(state: FundState) -> None:
                 if str(gov.get("cooldownPeriod") or "").isdigit():
-                    state.fund.cooldown_period = int(gov["cooldownPeriod"])
+                    period = int(gov["cooldownPeriod"])
+                    if MIN_COOLDOWN_PERIOD_S <= period <= MAX_COOLDOWN_PERIOD_S:  # seconds, the governor's bounds
+                        state.fund.cooldown_period = period
+                    else:
+                        _log.warning("fund %s: ignoring governor.cooldownPeriod %r (outside 60 s .. 30 days)",
+                                     state.fund.name, gov.get("cooldownPeriod"))
                 if str(gov.get("vetoThresholdBps") or "").isdigit():
                     state.fund.veto_threshold_bps = int(gov["vetoThresholdBps"])
                 if "cooldownUntil" in gate:
@@ -1033,8 +1053,10 @@ def is_portfolio(record: ProposalRecord) -> bool:
 # `depositsOpen: false` with no warning. So an open fund closes only after this many
 # consecutive reads say so; `true` applies at once (a failed read never opens a fund).
 DEPOSITS_CLOSE_AFTER_READS = 2
-# The governor's cooldownPeriod is at most 30 days (GovernorParameters); a chain cooldown further
-# ahead than this is not a unix time in seconds.
+# The governor's cooldownPeriod is 1 minute .. 30 days (GovernorParameters); a chain cooldown further
+# ahead than this is not a unix time in seconds, and a period outside it is not seconds either.
+MIN_COOLDOWN_PERIOD_S = 60
+MAX_COOLDOWN_PERIOD_S = 30 * 86400
 MAX_COOLDOWN_AHEAD_S = 31 * 86400
 
 

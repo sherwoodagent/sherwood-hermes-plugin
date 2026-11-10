@@ -543,12 +543,14 @@ run on top.
 This is a check on the agent's own terminal command text, not a sandbox. On a
 host with a fund it refuses what it cannot read: a template whose capital flag
 it does not know, a missing or unreadable amount, a command that cannot be split
-into shell commands, an unquoted `#`, a `--vault` that is not a literal address
-(CLI 0.103.0 requires `--vault`), and a propose-looking command that names a
-fund vault but not as a readable `sherwood ... propose --vault` (`bash -c`,
-`eval`, `$(...)`, a variable). It cannot see a propose built entirely at run
-time with no literal fund address in the command, or one run from a tool other
-than the terminal (`execute_code`). The deployment boundary still applies: a
+into shell commands, an unquoted `#`, any shell expansion (`$`, backticks, brace
+expansion, globs, process substitution), a launcher that may add arguments
+(`xargs`, `watch`, `sudo`), a `--vault` that is not a literal address (CLI
+0.103.0 requires `--vault`), a command longer than 32 KB, and a propose-looking
+command that names a fund vault but not as a readable `sherwood ... propose
+--vault` (`bash -c`, `eval`). It cannot see a propose whose text never appears in
+the command (a script file, or a variable, alias or function set by an earlier
+terminal call), or one run from a tool other than the terminal (`execute_code`). The deployment boundary still applies: a
 fund group's toolset must not include terminal, file or code tools
 ([docs/fund-host-join.md](docs/fund-host-join.md)).
 
