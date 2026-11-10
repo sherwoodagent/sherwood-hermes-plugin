@@ -473,3 +473,61 @@ def test_weights_must_make_100_percent_under_the_host_signer_too(tmp_path):
     raw = [Leg(summary="swap", kind="swap", target=target, data="0x1234", cap="40000000"), Leg(summary="back", phase="settle")]
     assert s.draft_proposal("alpha-fund", "alpha", topic="TSLA NVDA pitch", thesis="t", legs=raw,
                             max_capital=40_000_000, max_drawdown_bps=1000, strategy_duration=21600).proposal.id == "p-1"
+
+
+# == 5. symbols the chain cannot price are refused at draft time ===========================
+# Trimmed from a live GET https://api.sherwood.sh/api/v1/sources/prices (2026-11-10): NFLX is absent.
+PRICES = {"success": True, "data": {"feed": "prices", "cadence_s": 900, "records": [
+    {"symbol": "TSLA", "address": "0x322F0929c4625eD5bAd873c95208D54E1c003b2d", "price_usd": 375.95, "portfolio_price_ok": True},
+    {"symbol": "NVDA", "address": "0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC", "price_usd": 172.78, "portfolio_price_ok": True},
+    {"symbol": "AAPL", "address": "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9", "price_usd": 348.32, "portfolio_price_ok": False},
+    {"symbol": "ETH", "address": None, "price_usd": 2086.12, "portfolio_price_ok": True},
+    {"symbol": "USDG", "address": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168", "price_usd": 1.0, "portfolio_price_ok": True},
+]}}
+
+
+def _draft_tool(rt):
+    import json as _json
+
+    from sherwood_monitor.fund.tools import make_fund_tool_handlers
+
+    tools = make_fund_tool_handlers(rt)
+    return lambda args: _json.loads(tools["fund_draft_proposal"](args))
+
+
+def test_a_symbol_the_prices_source_does_not_cover_is_refused(as_caller, monkeypatch):
+    """Smoke 8d/8d2: a draft with NFLX (no token on 4663 in CLI 0.103.0) was accepted and shipped."""
+    from sherwood_monitor.fund import symbols
+
+    seen = []
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: seen.append(url) or PRICES)
+    rt = guard_rt()
+    rt.service.claim_topic("alpha-fund", "alpha", "TSLA NVDA pitch")
+    draft = _draft_tool(rt)
+    args = {"topic": "TSLA NVDA pitch", "thesis": "t", "max_capital": "40", "max_drawdown_bps": 1000,
+            "strategy_duration_seconds": 21600,
+            "legs": [{"summary": "buy NFLX", "symbol": "NFLX", "weight_bps": 5000},
+                     {"summary": "buy TSLA", "symbol": "TSLA", "weight_bps": 5000}]}
+    out = draft(args)
+    assert out["ok"] is False and out["code"] == "unknown_symbol"
+    assert out["error"].startswith("NFLX is not in the Sherwood prices source for chain 4663")
+    assert "TSLA" in out["error"] and "ETH" not in out["error"]  # ETH has no token address: not a leg
+    assert rt.service.load("alpha-fund").proposals == []
+    assert seen == [rt.service.tx_builder_url + "/sources/prices"]
+    # Covered symbols (a stale weekend price included: portfolio_price_ok is freshness, not coverage).
+    args["legs"] = [{"summary": "buy AAPL", "symbol": "aapl", "weight_bps": 5000},
+                    {"summary": "buy TSLA", "symbol": "TSLA", "weight_bps": 5000}]
+    out = draft(args)
+    assert out["ok"] is True and "symbol_check" not in out
+    assert len(seen) == 1  # cached
+
+
+def test_an_unreachable_prices_source_fails_open_with_a_note(as_caller):
+    rt = guard_rt()  # conftest: the source is unreachable in tests
+    rt.service.claim_topic("alpha-fund", "alpha", "TSLA NVDA pitch")
+    out = _draft_tool(rt)({"topic": "TSLA NVDA pitch", "thesis": "t", "max_capital": "40", "max_drawdown_bps": 1000,
+                           "strategy_duration_seconds": 21600,
+                           "legs": [{"summary": "buy NFLX", "symbol": "NFLX", "weight_bps": 10000}]})
+    assert out["ok"] is True
+    assert out["symbol_check"].startswith("not checked: the Sherwood prices source")
+    assert "NFLX were not verified" in out["symbol_check"]

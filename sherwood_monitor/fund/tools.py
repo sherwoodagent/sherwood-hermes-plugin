@@ -23,6 +23,7 @@ from .service import FundServiceError
 from . import signed_cli
 from .generic_call import MIN_CLI_FOR_GENERIC_CALL, generic_call_legs, validate_generic_call_plan
 from . import scope as fund_scope_mod
+from . import symbols as fund_symbols
 from .scope import fund_scope
 from .signed_cli import CLI_NOTE, HANDOUT_HOLD_SECONDS, SHIP_TTL_SECONDS, register_agent_command
 from .store import FundExists, FundNotFound, FundStoreError, scrub_paths
@@ -273,6 +274,35 @@ def parse_legs(raw: Any, decimals: int) -> list[Leg]:
     return legs
 
 
+def check_leg_symbols(state: FundState, legs: list[Leg], tx_builder_url: str) -> str:
+    """Refuse a portfolio leg whose symbol the tx-builder's `/sources/prices` does not cover on this
+    fund's chain (it has no Chainlink feed / token there, so the strategy cannot price it).
+
+    Returns "" when checked (or nothing to check), or a note when the source could not be read
+    (the draft then goes ahead unchecked: fails open, said in the tool result). Raises
+    RuleViolation (`unknown_symbol`) when a symbol is not covered.
+    """
+    symbols = list(dict.fromkeys(leg.symbol.upper() for leg in legs if leg.phase == "execute" and leg.symbol))
+    if not symbols or state.fund.chain_id != fund_symbols.PRICES_CHAIN_ID or not tx_builder_url:
+        return ""
+    covered = fund_symbols.source_for(tx_builder_url)()
+    if covered is None:
+        return (
+            f"not checked: the Sherwood prices source ({tx_builder_url.rstrip('/')}/sources/prices) could not be "
+            f"read, so {', '.join(symbols)} were not verified as tradable on chain {state.fund.chain_id}. Say so "
+            "in the chat."
+        )
+    missing = [s for s in symbols if s not in covered]
+    if missing:
+        raise RuleViolation(rules.deny(
+            "unknown_symbol",
+            f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in the Sherwood prices source for "
+            f"chain {state.fund.chain_id} (no token or Chainlink feed there), so a portfolio cannot hold "
+            f"{'it' if len(missing) == 1 else 'them'}. Priced symbols: {', '.join(sorted(covered))}",
+        ))
+    return ""
+
+
 def parse_draft_args(args: dict[str, Any], state: FundState) -> DraftArgs:
     decimals = state.fund.asset_decimals
     try:
@@ -496,7 +526,9 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
 
     def fund_draft_proposal(args: dict[str, Any]) -> dict[str, Any]:
         fund = rt.fund_for(args.get("fund"))
-        d = parse_draft_args(args, svc.load(fund))
+        state = svc.load(fund)
+        d = parse_draft_args(args, state)
+        symbol_note = "" if d.generic_call else check_leg_symbols(state, d.legs, svc.tx_builder_url)
         result = svc.draft_proposal(
             fund,
             rt.agent_name(),
@@ -517,7 +549,10 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             generic_call=d.generic_call or None,
             discovered=_discovered(rt) if d.generic_call else None,
         )
-        return {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
+        out = {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
+        if symbol_note:
+            out["symbol_check"] = symbol_note
+        return out
 
     def fund_set_proposal_status(args: dict[str, Any]) -> dict[str, Any]:
         onchain = args.get("onchain_id")
