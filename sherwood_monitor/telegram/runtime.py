@@ -237,6 +237,11 @@ class TelegramRuntime:
         self._require()
         return await self.widgets.send(bot, dm_chat_id, fund, user_id)
 
+    def close(self) -> None:
+        """Plugin shutdown: cancel the pending 👤 My position refresh passes (safe from any thread)."""
+        if self.widgets is not None:
+            self.widgets.cancel()
+
     def request_position_refresh(self, chat_id: int, fund: FundView | None = None) -> asyncio.Task[None] | None:
         """Ask for a refresh of this fund chat's widgets without waiting (``PositionWidgets.request``):
         it runs as its own task, so no card lock, vote, ship or ``/fund`` reply waits for it."""

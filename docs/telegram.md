@@ -378,15 +378,27 @@ widget whose values changed. They run when the plugin re-reads the fund anyway:
 a proposal card refresh (vote, tally, status) and `/fund`. There is no timer.
 Each refresh is its own task, so it never holds a card lock and never delays a
 vote, a ship or the `/fund` reply. Only one pass runs per fund chat; requests
-made meanwhile collapse into one follow-up pass. A pass makes at most 20 edits
-and stops at a rate limit; the rest wait for the next pass. A newer read whose
-values are unchanged (only its block time moved) edits nothing.
+made meanwhile collapse into one follow-up pass. A newer read whose values are
+unchanged (only its block time moved) edits nothing.
+
+A pass makes at most 20 edits. Every widget it tries moves to the back of the
+queue, so the next pass starts with the widgets this one did not reach. A pass
+that stops early is continued by a follow-up pass, so every holder gets the
+latest values:
+
+- cut short by the cap: the follow-up runs after 1 s;
+- cut short by a rate limit: it runs after Telegram's `retry_after` (1 to 60 s).
+
+At most 10 delayed follow-ups run in a row, so there is no busy loop. An
+unexpected error in a pass is logged, and the chat is not left queued.
 
 The runtime keeps the latest widget per member or host, at most 50 per fund
-chat, in memory. After a restart a member's next tap sends a fresh one. A
-non-member's widget is not kept. A widget is forgotten only when it is gone:
-deleted, no longer editable, or the bot blocked. On a timeout or network error
-it is kept and retried in the next pass.
+chat, in memory. Past the cap, the widget least recently tapped or tried
+drops. After a restart a member's next tap sends a fresh one. A non-member's
+widget is not kept. A widget is forgotten only when it is gone: deleted, no
+longer editable, or the bot blocked. On a timeout or network error it is kept
+and retried in a later pass. At Hermes shutdown, the monitor's teardown closes
+the fund bridge, which cancels pending passes.
 
 ## Host signing page (contract with the app lane)
 

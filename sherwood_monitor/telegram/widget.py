@@ -35,6 +35,7 @@ HTML_MAX_BYTES = 32768
 HTML_MAX_ZLIB = 4096  # after zlib level 9, as the server counts it
 DATA_MAX_BYTES = 1024
 CAPTION_MAX = 1024
+CAPTION_BUDGET = CAPTION_MAX - 16  # UTF-16 units: a margin under the limit
 MAX_PROPOSALS = 3
 NAME_MAX = 48
 TITLE_MAX = 64
@@ -289,7 +290,8 @@ def data_fingerprint(pos: Position) -> str:
 
 def position_text(pos: Position, *, now: float) -> str:
     """Plain text (no markup, so names and titles show literally): the widget's caption and the DM
-    fallback when ``sendWidget`` fails. At most :data:`CAPTION_MAX` characters.
+    fallback when ``sendWidget`` fails. At most :data:`CAPTION_BUDGET` UTF-16 units, a margin under
+    Telegram's 1024 (an emoji is two units).
 
     Refreshes rewrite only the widget's data, never this text, so it ends with the time it was
     written: clients without widgets know it is a snapshot."""
@@ -317,8 +319,17 @@ def position_text(pos: Position, *, now: float) -> str:
     while True:
         tail = ([""] + lines if lines else []) + ([f"+{more} more on the fund card"] if more else [])
         text = "\n".join(head + tail + foot)
-        if len(text) <= CAPTION_MAX or not lines:
+        if utf16_len(text) <= CAPTION_BUDGET or not lines:
             break
         lines.pop()
         more += 1
-    return text if len(text) <= CAPTION_MAX else text[: CAPTION_MAX - 1] + "…"
+    if utf16_len(text) <= CAPTION_BUDGET:
+        return text
+    while utf16_len(text) > CAPTION_BUDGET - 1:  # cut whole code points, never half a surrogate pair
+        text = text[:-1]
+    return text + "…"
+
+
+def utf16_len(text: str) -> int:
+    """Length in UTF-16 code units, as Telegram counts message and caption length."""
+    return len(text.encode("utf-16-le")) // 2

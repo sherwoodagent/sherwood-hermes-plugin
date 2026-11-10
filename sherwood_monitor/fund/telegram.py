@@ -1019,7 +1019,11 @@ class FundTelegramBridge:
         self.runtime = runtime
 
     def close(self) -> None:
+        """Plugin shutdown (the monitor's teardown): stop following fund events and cancel the
+        Telegram runtime's pending widget refreshes."""
         self._unsubscribe()
+        if self.runtime is not None:
+            self.runtime.close()
 
     def _submit(self, coro: Any) -> None:
         rt = self.runtime

@@ -25,6 +25,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, Awaitable, Callable, Mapping
 
 from telegram import InlineKeyboardMarkup, InputMediaPhoto, LinkPreviewOptions
@@ -48,8 +49,13 @@ CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4096
 # 👤 My position widgets kept per fund chat for refreshes (the latest tappers; older ones stay as sent).
 WIDGETS_PER_CHAT = 50
-# Widget data edits per refresh pass; the rest wait for the next pass.
+# Widget data edits per refresh pass. A pass the cap cuts short is continued by a follow-up pass
+# after WIDGET_FOLLOW_UP_S; one cut short by RetryAfter after Telegram's wait (at most
+# RETRY_AFTER_MAX_S). At most WIDGET_FOLLOW_UPS_MAX delayed follow-ups run in a row.
 WIDGET_EDITS_PER_PASS = 20
+WIDGET_FOLLOW_UP_S = 1.0
+RETRY_AFTER_MAX_S = 60.0
+WIDGET_FOLLOW_UPS_MAX = 10
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 Tick = Callable[[], Awaitable[bool]]  # returns False when the card is final
@@ -379,7 +385,9 @@ class PositionWidgets:
     fund chat and returns at once: the pass runs as its own task, one at a time per chat (requests
     made while one runs collapse into a single follow-up), so it never holds a card lock or delays
     a handler. A pass rewrites only widgets whose values changed, at most ``max_calls`` of them,
-    with ``editMessageWidgetData`` (the caption is a dated snapshot and is not edited). The latest
+    with ``editMessageWidgetData`` (the caption is a dated snapshot and is not edited). Every widget
+    a pass tries goes to the back of the queue, so the next pass starts with the ones not yet
+    served; a pass the cap or ``RetryAfter`` cut short is continued after a short wait. The latest
     widget per member or host is kept in memory (``sent``: fund chat -> member -> (DM message id,
     data fingerprint)), so after a restart a member's next tap sends a fresh one.
     """
@@ -391,11 +399,13 @@ class PositionWidgets:
         base_url: str | None = None,
         clock: Callable[[], float] = time.time,
         max_calls: int = WIDGET_EDITS_PER_PASS,
+        sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
     ) -> None:
         self.gateway = gateway
         self.base_url = base_url
         self.clock = clock
         self.max_calls = max_calls
+        self.sleep = sleep  # the wait before a follow-up pass (tests replace it)
         self.sent: dict[int, dict[int, tuple[int, str]]] = {}
         self._passes: dict[int, asyncio.Task] = {}
         self._again: set[int] = set()
@@ -445,7 +455,8 @@ class PositionWidgets:
         return "text"
 
     def note(self, chat_id: int, user_id: int, message_id: int, fingerprint: str) -> None:
-        """Remember a member's latest widget (one per member; the oldest drops past the cap)."""
+        """Remember a member's latest widget (one per member). Past the cap, the widget least recently
+        tapped or tried by a refresh drops."""
         widgets = self.sent.setdefault(int(chat_id), {})
         widgets.pop(int(user_id), None)
         widgets[int(user_id)] = (int(message_id), fingerprint)
@@ -455,8 +466,9 @@ class PositionWidgets:
     def request(self, bot: Any, chat_id: int, fund: FundView | None = None) -> asyncio.Task | None:
         """Ask for a refresh pass of this fund chat's widgets; never waits for it.
 
-        Returns the task running the passes (None when there is nothing to refresh). A request
-        made while a pass runs collapses into one follow-up pass, which reads the stored fund.
+        Returns the task running the passes (None when there is nothing to refresh). A request made
+        while a pass runs (or waits to continue) collapses into one follow-up pass, which reads the
+        stored fund; a ``fund`` passed with it is not used.
         """
         chat = int(chat_id)
         if not self.sent.get(chat):
@@ -474,22 +486,46 @@ class PositionWidgets:
         return task
 
     async def idle(self) -> None:
-        """Wait until no refresh pass is running (tests, shutdown)."""
+        """Wait until no refresh pass is running or waiting (tests)."""
         while self._passes:
             await asyncio.gather(*list(self._passes.values()), return_exceptions=True)
 
+    def cancel(self) -> None:
+        """Cancel every pending refresh pass (plugin shutdown). Safe from any thread."""
+        self._again.clear()
+        for task in list(self._passes.values()):
+            try:
+                task.get_loop().call_soon_threadsafe(task.cancel)
+            except RuntimeError:  # its loop is already closed: the task died with it
+                pass
+        self._passes.clear()
+
     async def _run_passes(self, bot: Any, chat: int, fund: FundView | None) -> None:
+        """Passes for one chat, one at a time: a follow-up after a pass that was cut short (after
+        its wait) or that a request arrived during; then done."""
         try:
-            await self.refresh(bot, chat, fund)
-            while chat in self._again:
+            _, wait = await self._pass(bot, chat, fund)
+            delayed = 0
+            while True:
+                if wait is not None:
+                    if delayed >= WIDGET_FOLLOW_UPS_MAX:
+                        self._again.discard(chat)  # the next request starts over
+                        break
+                    delayed += 1
+                    await self.sleep(wait)
+                elif chat not in self._again:
+                    break
                 self._again.discard(chat)
-                await self.refresh(bot, chat)
+                _, wait = await self._pass(bot, chat)
+        except Exception:  # noqa: BLE001 - a broken pass is logged, and the chat is not left queued
+            _log.exception("position widget refresh for %s failed", chat)
+            self._again.discard(chat)
         finally:
             if self._passes.get(chat) is asyncio.current_task():
                 self._passes.pop(chat, None)
 
     def _restore(self, widgets: dict[int, tuple[int, str]], user_id: int, entry: tuple[int, str], last: str) -> None:
-        """Put the old fingerprint back so the next pass retries (unless a new tap replaced the widget)."""
+        """Put the old fingerprint back so a later pass retries (unless a new tap replaced the widget)."""
         if widgets.get(user_id) == entry:
             widgets[user_id] = (entry[0], last)
 
@@ -498,29 +534,32 @@ class PositionWidgets:
             widgets.pop(user_id, None)
 
     async def refresh(self, bot: Any, chat_id: int, fund: FundView | None = None) -> int:
-        """One pass: rewrite the data of this fund chat's widgets whose values changed.
+        """One pass, without a follow-up: how many widgets were rewritten (see ``_pass``)."""
+        changed, _ = await self._pass(bot, chat_id, fund)
+        return changed
 
-        At most ``max_calls`` edits; the rest keep their old fingerprint and go first next pass.
-        The new fingerprint is recorded before the edit. A widget is forgotten only when it is gone
-        (deleted, not editable, the chat gone, the bot blocked); on ``TimedOut`` / ``NetworkError``
-        it keeps its old fingerprint for the next pass, and ``RetryAfter`` ends the pass. Returns
-        how many widgets were rewritten; never raises.
+    async def _pass(self, bot: Any, chat_id: int, fund: FundView | None = None) -> tuple[int, float | None]:
+        """Rewrite the data of this fund chat's widgets whose values changed, oldest-served first.
+
+        At most ``max_calls`` edits. Each widget tried goes to the back of the queue, so the next
+        pass starts with the ones this pass did not reach. The new fingerprint is recorded before
+        the edit. A widget is forgotten only when it is gone (deleted, not editable, the chat gone,
+        the bot blocked); on ``TimedOut`` / ``NetworkError`` it keeps its old fingerprint for a
+        later pass. Returns how many widgets were rewritten, and None when the pass got through or
+        else how long to wait before a follow-up (the cap: ``WIDGET_FOLLOW_UP_S``; ``RetryAfter``:
+        Telegram's wait, bounded). Raises only on an unexpected error (``_run_passes`` logs it).
         """
         widgets = self.sent.get(int(chat_id))
         if not widgets:
-            return 0
-        try:
-            fund = fund if fund is not None else await maybe_await(self.gateway.fund_for_chat(chat_id))
-        except Exception as exc:  # noqa: BLE001 - a widget refresh never breaks the card that triggered it
-            _log.warning("position widget refresh for %s: fund not read: %s", chat_id, exc)
-            return 0
+            return 0, None
+        fund = fund if fund is not None else await maybe_await(self.gateway.fund_for_chat(chat_id))
         if fund is None:
-            return 0
+            return 0, None
         now = self.clock()
         calls = changed = 0
         for user_id, (message_id, last) in list(widgets.items()):
-            if calls >= self.max_calls:
-                break
+            if widgets.get(user_id) != (message_id, last):
+                continue  # re-tapped or forgotten while this pass ran
             try:
                 pos = build_position(fund, user_id)
                 fp = data_fingerprint(pos)
@@ -530,8 +569,11 @@ class PositionWidgets:
                 continue
             if fp == last:
                 continue
+            if calls >= self.max_calls:
+                return changed, WIDGET_FOLLOW_UP_S  # changed widgets left: a follow-up continues here
             entry = (message_id, fp)
-            widgets[user_id] = entry  # before the await, so an overlapping pass does not repeat it
+            widgets.pop(user_id, None)
+            widgets[user_id] = entry  # to the back; fingerprint before the await (no repeat edits)
             calls += 1
             try:
                 await bot.do_api_request(
@@ -539,8 +581,9 @@ class PositionWidgets:
                 )
             except RetryAfter as exc:
                 self._restore(widgets, user_id, entry, last)
-                _log.info("position widget refresh for %s rate-limited: %s", chat_id, exc)
-                break
+                wait = _retry_seconds(exc)
+                _log.info("position widget refresh for %s rate-limited; next pass in %.0fs", chat_id, wait)
+                return changed, wait
             except Forbidden as exc:  # the bot was blocked or the user is gone
                 _log.debug("position widget %s/%s forgotten: %s", user_id, message_id, exc)
                 self._forget(widgets, user_id, entry)
@@ -554,9 +597,22 @@ class PositionWidgets:
                 else:  # refused data: keep the widget, try again when the values change
                     _log.info("position widget %s/%s edit refused: %s", user_id, message_id, exc)
                 continue
-            except TelegramError as exc:  # TimedOut, NetworkError, a 5xx: keep it for the next pass
+            except TelegramError as exc:  # TimedOut, NetworkError, a 5xx: keep it for a later pass
                 _log.info("position widget %s/%s edit failed, kept: %s", user_id, message_id, exc)
                 self._restore(widgets, user_id, entry, last)
                 continue
             changed += 1
-        return changed
+        return changed, None
+
+
+def _retry_seconds(exc: RetryAfter) -> float:
+    """Telegram's ``RetryAfter`` wait in seconds, bounded to [1, ``RETRY_AFTER_MAX_S``]. PTB 22.2+ keeps
+    it as a timedelta in ``_retry_after``; the public attribute warns about its type change."""
+    value: Any = getattr(exc, "_retry_after", None)
+    if not isinstance(value, timedelta):
+        value = exc.retry_after
+    try:
+        seconds = value.total_seconds() if isinstance(value, timedelta) else float(value)
+    except (TypeError, ValueError):
+        seconds = RETRY_AFTER_MAX_S
+    return min(max(seconds, 1.0), RETRY_AFTER_MAX_S)

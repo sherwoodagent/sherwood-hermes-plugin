@@ -154,9 +154,25 @@ def test_data_and_caption_stay_within_telegram_limits():
     data = json.loads(raw)
     assert data["u"] == int(NOW) and data["x"] + len(data.get("p", [])) == 12
     assert len(position_text(pos, now=NOW)) <= CAPTION_MAX
+    # Telegram counts UTF-16 units; an emoji is two. Worst case: every name, title and symbol emoji.
+    assert len(position_text(pos, now=NOW).encode("utf-16-le")) // 2 <= CAPTION_MAX - 8
     ctrl = "\x01" * 3000  # JSON-escaped to 6 bytes each
     worst = dataclasses.replace(f, name=ctrl, open_proposals=tuple(make_proposal(id=str(i), thesis=ctrl) for i in range(5)))
     assert len(widget_data(build_position(worst, ALICE), now=NOW).encode("utf-8")) <= DATA_MAX_BYTES
+
+
+def test_caption_fits_in_utf16_units_in_the_worst_emoji_case():
+    """Telegram counts UTF-16 units (an emoji is two): with the dated footer, every name, title and
+    symbol emoji, host and member, four open proposals backed: still a margin under 1024."""
+    big = "😈" * 300
+    f = dataclasses.replace(
+        FakeGateway().fund, name=big, nav_symbol=big, nav_as_of=AS_OF, share_price=1.5, host_tg_id=ALICE,
+        open_proposals=tuple(make_proposal(id=str(10**60 + i), thesis=big, backers=(ALICE,)) for i in range(4)),
+        members=(MemberView(ALICE, 2, None, joined_at=AS_OF),),
+    )
+    text = position_text(build_position(f, ALICE), now=NOW)
+    assert len(text.encode("utf-16-le")) // 2 <= CAPTION_MAX - 8
+    assert text.endswith("Tap 👤 My position again for the latest.")  # the dated footer survives trimming
 
 
 async def test_widget_carries_no_links_or_secrets():
@@ -398,6 +414,119 @@ async def test_an_implausible_vote_end_still_answers_and_refreshes():
     assert "e" not in json.loads(kw["chat_data"])["p"][0] and "ends" not in kw["caption"]
     assert await rt.widgets.refresh(bot, CHAT) == 1
     assert [e.kwargs["api_kwargs"]["chat_id"] for e in api_calls(bot, "editMessageWidgetData")] == [ALICE]
+
+
+async def test_every_holder_is_refreshed_while_values_keep_changing():
+    """D-MEDIUM-1: 50 holders and a value change before every pass: each pass starts with the widgets
+    the previous one did not reach, so three bounded passes serve all 50 (not the same 20 again)."""
+    rt, gw, bot = make_runtime()
+    ids = tuple(range(1000, 1050))
+    set_fund(gw, open_proposals=(gw.proposals["42"],), members=members(*ids))
+    for i in ids:
+        await tap(rt, bot, TAP, i)
+    for against in (600, 700, 800):
+        set_fund(gw, open_proposals=(dataclasses.replace(gw.proposals["42"], against_bps=against),))
+        await rt.widgets.refresh(bot, CHAT)  # one bounded pass per tally event, no follow-up
+    assert {e.kwargs["api_kwargs"]["chat_id"] for e in api_calls(bot, "editMessageWidgetData")} == set(ids)
+
+
+async def test_a_pass_cut_short_by_the_cap_is_followed_up_until_everyone_has_the_latest():
+    rt, gw, bot = make_runtime()
+    waits = []
+
+    async def no_wait(seconds):
+        waits.append(seconds)
+
+    rt.widgets.sleep = no_wait
+    ids = tuple(range(1000, 1050))
+    set_fund(gw, open_proposals=(gw.proposals["42"],), members=members(*ids))
+    for i in ids:
+        await tap(rt, bot, TAP, i)
+    for against in (600, 700):  # two tally events; the second lands while the first is still being served
+        set_fund(gw, open_proposals=(dataclasses.replace(gw.proposals["42"], against_bps=against),))
+        rt.request_position_refresh(CHAT)
+    await rt.widgets.idle()
+    latest = {}
+    for e in api_calls(bot, "editMessageWidgetData"):
+        latest[e.kwargs["api_kwargs"]["chat_id"]] = json.loads(e.kwargs["api_kwargs"]["chat_data"])["p"][0]["a"]
+    assert latest == dict.fromkeys(ids, 700)
+    assert waits and all(w == 1.0 for w in waits)  # a short pause between bounded passes, no busy loop
+
+
+async def test_a_rate_limited_pass_is_followed_up_after_telegrams_wait():
+    rt, gw, bot = make_runtime()
+    waits = []
+
+    async def no_wait(seconds):
+        waits.append(seconds)
+
+    rt.widgets.sleep = no_wait
+    set_fund(gw, open_proposals=(gw.proposals["42"],), members=members(ALICE, BOB))
+    await tap(rt, bot, TAP, ALICE)
+    await tap(rt, bot, TAP, BOB)
+    set_fund(gw, open_proposals=(dataclasses.replace(gw.proposals["42"], against_bps=1200),))
+    sent = bot.do_api_request.side_effect
+    edits = {"n": 0}
+
+    async def flood_once(endpoint, api_kwargs=None, **kw):
+        if endpoint == "editMessageWidgetData":
+            edits["n"] += 1
+            if edits["n"] == 1:
+                raise RetryAfter(7)
+        return await sent(endpoint, api_kwargs, **kw)
+
+    bot.do_api_request.side_effect = flood_once
+    rt.request_position_refresh(CHAT)
+    await rt.widgets.idle()
+    assert waits == [7.0]  # Telegram's wait, honoured
+    # The follow-up starts with the widget the cut-short pass never reached, then retries the other.
+    assert [e.kwargs["api_kwargs"]["chat_id"] for e in api_calls(bot, "editMessageWidgetData")] == [ALICE, BOB, ALICE]
+
+
+def test_retry_after_waits_are_bounded():
+    from sherwood_monitor.telegram.cards_live import RETRY_AFTER_MAX_S, _retry_seconds
+
+    assert _retry_seconds(RetryAfter(5)) == 5.0
+    assert _retry_seconds(RetryAfter(0)) == 1.0
+    assert _retry_seconds(RetryAfter(10**6)) == RETRY_AFTER_MAX_S
+
+
+async def test_an_unexpected_error_in_a_pass_is_logged_and_not_left_queued(caplog):
+    """NIT-A."""
+    rt, gw, bot = make_runtime()
+    set_fund(gw, open_proposals=(gw.proposals["42"],), members=members(ALICE))
+    await tap(rt, bot, TAP, ALICE)
+    set_fund(gw, open_proposals=(dataclasses.replace(gw.proposals["42"], against_bps=1300),))
+    bot.do_api_request.side_effect = RuntimeError("boom")
+    rt.request_position_refresh(CHAT)
+    rt.request_position_refresh(CHAT)  # queued behind the running pass
+    with caplog.at_level("ERROR", logger="sherwood_monitor.telegram.cards_live"):
+        await rt.widgets.idle()
+    assert "position widget refresh for" in caplog.text and "boom" in caplog.text
+    assert CHAT not in rt.widgets._again
+
+
+async def test_shutdown_cancels_pending_refreshes():
+    """NIT-B: the monitor's teardown closes the fund bridge, which closes the runtime: pending passes
+    are cancelled instead of dying with the loop."""
+    from sherwood_monitor.fund.telegram import FundTelegramBridge
+
+    rt, gw, bot = make_runtime()
+    set_fund(gw, open_proposals=(gw.proposals["42"],), members=members(ALICE))
+    await tap(rt, bot, TAP, ALICE)
+    set_fund(gw, open_proposals=(dataclasses.replace(gw.proposals["42"], against_bps=1400),))
+    gate = asyncio.Event()
+
+    async def hang(endpoint, api_kwargs=None, **kw):
+        await gate.wait()
+
+    bot.do_api_request.side_effect = hang
+    task = rt.request_position_refresh(CHAT)
+    await asyncio.sleep(0)
+    FundTelegramBridge.close(SimpleNamespace(_unsubscribe=lambda: None, runtime=rt))
+    done, _ = await asyncio.wait({task}, timeout=2)
+    gate.set()  # never leave the pass hanging if close() did not cancel it
+    assert done == {task} and task.cancelled() and rt.widgets._passes == {}
 
 
 # -- delivery edge cases (review of #42) ------------------------------------------------------------
