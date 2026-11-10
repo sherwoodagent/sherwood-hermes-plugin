@@ -796,7 +796,7 @@ class FundService:
         of maxCapital), and the chain `state` moves the local status forward
         (Pending -> voting, GuardianReview -> review, Approved -> approved, Executed -> executed,
         Rejected -> vetoed) when that is a legal step. `proposeGate.cooldownUntil`
-        replaces the local cooldown; `governor` gives cooldownPeriod and
+        extends the local cooldown (never shortens it); `governor` gives cooldownPeriod and
         vetoThresholdBps; `fund.depositsOpen` (the vault's openDeposits and not
         the factory's depositsRestricted) replaces `open_deposits`: `true` at
         once, `false` only after two reads in a row (the app's rule read fails
@@ -827,8 +827,12 @@ class FundService:
                 if str(gov.get("vetoThresholdBps") or "").isdigit():
                     state.fund.veto_threshold_bps = int(gov["vetoThresholdBps"])
                 if "cooldownUntil" in gate:
+                    # Only ever later: a read cached from before a settle / veto the plugin just
+                    # recorded says 0 and would clear a cooldown the governor still enforces
+                    # (CooldownNotElapsed). A local cooldown that is too long ends by itself.
                     until = _opt_float(gate.get("cooldownUntil"))
-                    state.fund.cooldown_until = until
+                    if until is not None and (state.fund.cooldown_until is None or until > state.fund.cooldown_until):
+                        state.fund.cooldown_until = until
                 if fee is not None:
                     state.fund.agent_fee_bps = fee  # the chain's value; drafts refuse it above the cap
                 if deposits_open is not None:

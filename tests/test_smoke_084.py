@@ -535,3 +535,29 @@ def test_an_unreachable_prices_source_fails_open_with_a_note(as_caller):
     assert out["ok"] is True
     assert out["symbol_check"].startswith("not checked: the Sherwood prices source")
     assert "NFLX were not verified" in out["symbol_check"]
+
+
+# == 6. a chain read never clears a cooldown the plugin just started ======================
+def test_a_stale_chain_read_does_not_clear_the_settle_cooldown(svc, clock):
+    """Smoke 9h-9l: right after fund_record_settle the next /fund read (cooldownUntil "0", cached from
+    before the settle) cleared the local cooldown and fund_claim_topic went through, although the
+    governor still enforces CooldownNotElapsed for cooldownPeriod."""
+    from sherwood_monitor.fund.rules import RuleViolation
+
+    draft(svc)
+    svc.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=9001)
+    for status in ("review", "approved", "executed"):
+        svc.set_proposal_status("alpha-fund", "alpha", "p-1", status)
+    svc.record_settle("alpha-fund", "alpha", "p-1", pnl=1_200_000, pnl_bps=300)
+    until = svc.load("alpha-fund").fund.cooldown_until
+    assert until == clock() + 3600
+    stale = {"data": {"proposeGate": {"openProposals": "0", "cooldownUntil": "0", "ready": True}}}
+    svc.apply_chain_card("alpha-fund", stale)
+    assert svc.load("alpha-fund").fund.cooldown_until == until
+    with pytest.raises(RuleViolation) as exc:
+        svc.claim_topic("alpha-fund", "alpha", "AAPL")
+    assert exc.value.code == "cooldown"
+    # A later chain cooldown still wins.
+    later = {"data": {"proposeGate": {"cooldownUntil": str(int(until) + 600)}}}
+    svc.apply_chain_card("alpha-fund", later)
+    assert svc.load("alpha-fund").fund.cooldown_until == int(until) + 600
