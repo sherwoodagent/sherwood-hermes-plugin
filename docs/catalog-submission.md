@@ -70,6 +70,15 @@ Catalog CI runs `hermes plugins validate --install-deps` on a fresh clone at the
 pin. `--install-deps` installs the plugin's Python dependencies into the Hermes
 environment, so only run it locally on a throwaway Hermes install.
 
+At 0.9.0, validate passes all 15 checks, `security scan — safe` among them,
+and prints one warning: the rule-9 private core import (see "Expect in review"
+below). The propose-guard tests feed the guard two commands that pipe `echo`
+into a shell or `python3`. Those rows live in
+`fixtures/guard_piped_rows.json`, which `tests/test_guard_bypass.py` loads:
+the scanner reads data files under `fixtures/` as test data, but the same line
+in a `.py` file as code (`echo_pipe_exec`), which made the scan `caution`
+on `main` after #41 (e24117b).
+
 ## 4. Fill in the entry
 
 The copy of `catalog/sherwood-monitor.yaml` at the pinned commit has the
