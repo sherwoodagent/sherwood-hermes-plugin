@@ -19,7 +19,7 @@ DRAWDOWN_FLAG = "--max-drawdown-bps"
 # `--max-drawdown-bps` omitted: the CLI proposes with 2000 (its help text, 0.103.0).
 CLI_DEFAULT_DRAWDOWN_BPS = 2000
 
-_PROPOSE_RE = re.compile(r"\bsherwood\b.*?\b(?:strategy\s+propose|proposal\s+create)\b", re.S)
+_PROPOSE_RE = re.compile(r"\bsherwood\b.*?\b(?:strategy\s+propose|proposal\s+create)\b", re.DOTALL)
 _SEPARATORS = frozenset({"&&", "||", ";", "|", "&", "(", ")", ";;"})
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 

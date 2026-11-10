@@ -15,7 +15,7 @@ import pytest
 
 from sherwood_monitor import session
 from sherwood_monitor.fund.guard import make_fund_guard
-from sherwood_monitor.fund.models import Agent, Leg, ProposalRecord
+from sherwood_monitor.fund.models import Leg, ProposalRecord
 from sherwood_monitor.fund.runtime import FundRuntime
 from sherwood_monitor.fund.service import FundEvent, FundService
 from sherwood_monitor.fund.settings import FundSettings
@@ -29,7 +29,7 @@ USDG_40 = "40000000"  # 40 USDG in base units (6 decimals)
 
 def smoke_fund(**kw):
     """The smoke run's fund: 40 USDG / 1000 bps ceilings, 30 min voting."""
-    base = dict(max_capital=USDG_40, max_drawdown_bps=1000, voting_period=1800)
+    base = {"max_capital": USDG_40, "max_drawdown_bps": 1000, "voting_period": 1800}
     base.update(kw)
     return fund(**base)
 
@@ -129,9 +129,9 @@ def guard_rt(**fund_kw):
 def shipped_command(rt, **record_kw):
     """The exact command the plugin ships on the card for the smoke draft (40 USDG, 1000 bps, 6h)."""
     st = rt.service.load("alpha-fund")
-    base = dict(id="p-1", proposer_agent="alpha", thesis="TSLA and NVDA into the next session",
-                topic="TSLA NVDA pitch", legs=portfolio_legs(), max_capital=USDG_40, max_drawdown_bps=1000,
-                strategy_duration=21600)
+    base = {"id": "p-1", "proposer_agent": "alpha", "thesis": "TSLA and NVDA into the next session",
+                "topic": "TSLA NVDA pitch", "legs": portfolio_legs(), "max_capital": USDG_40, "max_drawdown_bps": 1000,
+                "strategy_duration": 21600}
     base.update(record_kw)
     return propose_portfolio_command(st.fund, ProposalRecord(**base))
 
@@ -272,7 +272,7 @@ def boot_group(tmp_path, monkeypatch, *, max_capital="40", max_drawdown_bps=1000
         "host_telegram_id": str(it.HOST_TG), "host_address": it.HOST_ADDR, "max_capital": max_capital,
         "max_drawdown_bps": max_drawdown_bps, "voting_period": 1800, "agent_fee_bps": 500,
     })["ok"]
-    rt, bridge, bot, app = it.connect(ctx)
+    rt, bridge, bot, _app = it.connect(ctx)
     return it, ctx, rt, bridge, bot
 
 
@@ -287,7 +287,7 @@ SMOKE_DRAFT = {
 async def test_object_after_a_recorded_propose_hands_out_the_vote_link(tmp_path, monkeypatch):
     """Smoke 9F2: after `fund_set_proposal_status proposed` the card had no ❌ Object, and a tap
     answered "Voting is closed for this proposal." while the vote was open on chain."""
-    it, ctx, rt, bridge, bot = boot_group(tmp_path, monkeypatch)
+    it, ctx, rt, _bridge, bot = boot_group(tmp_path, monkeypatch)
     assert ctx.call_tool("fund_claim_topic", {"topic": "TSLA NVDA pitch"})["ok"]
     assert ctx.call_tool("fund_draft_proposal", dict(SMOKE_DRAFT))["ok"]
     await it.tap(rt, bot, "shfund:shipit:p-1", it.HOST_TG)
@@ -312,11 +312,12 @@ async def test_object_after_a_recorded_propose_hands_out_the_vote_link(tmp_path,
 
 # == 3. card wording ======================================================================
 def _view(**kw):
-    from sherwood_monitor.telegram.types import Leg as LegView, ProposalView
+    from sherwood_monitor.telegram.types import Leg as LegView
+    from sherwood_monitor.telegram.types import ProposalView
 
-    base = dict(id="p-1", governor="0x" + "22" * 20, proposer="alpha", thesis="TSLA and NVDA",
-                legs=(LegView("TSLA", 5000), LegView("NVDA", 5000)), max_capital=40.0, max_drawdown_bps=1000,
-                capital_symbol="USDG")
+    base = {"id": "p-1", "governor": "0x" + "22" * 20, "proposer": "alpha", "thesis": "TSLA and NVDA",
+                "legs": (LegView("TSLA", 5000), LegView("NVDA", 5000)), "max_capital": 40.0, "max_drawdown_bps": 1000,
+                "capital_symbol": "USDG"}
     base.update(kw)
     return ProposalView(**base)
 
@@ -348,7 +349,10 @@ GENERIC_CMD = (
 def test_shipped_card_drops_the_ship_it_hint():
     """Smoke 5f: the shipped card kept "Host: 🚀 Ship it sends this to a vote." above "🚀 Shipped by"."""
     pytest.importorskip("telegram")
-    from sherwood_monitor.telegram.cards import render_draft_card, render_shipped_command
+    from sherwood_monitor.telegram.cards import (
+        render_draft_card,
+        render_shipped_command,
+    )
 
     draft_html, _ = render_draft_card(_view())
     assert "Ship it sends this to a vote" in draft_html
@@ -400,7 +404,7 @@ def test_handles_not_raw_ids_where_the_record_has_one(svc):
 
 
 async def test_draft_request_context_names_the_member_by_handle(tmp_path, monkeypatch):
-    it, ctx, rt, bridge, bot = boot_group(tmp_path, monkeypatch)
+    it, _ctx, _rt, bridge, _bot = boot_group(tmp_path, monkeypatch)
     svc = bridge.service
     svc.request_membership("alpha-fund", str(it.ALICE), username="alice")
     svc.request_draft("alpha-fund", "alpha", idea_by=str(it.ALICE), pitch="long $NVDA", chat_id=str(it.CHAT))
@@ -411,8 +415,8 @@ async def test_draft_request_context_names_the_member_by_handle(tmp_path, monkey
 def test_member_card_has_no_share_line_when_the_share_is_unknown():
     """Smoke 3a: "0.0% of shares" on the member card when the share was simply unknown."""
     pytest.importorskip("telegram")
-    from sherwood_monitor.fund.telegram import _member_view
     from sherwood_monitor.fund.models import Member
+    from sherwood_monitor.fund.telegram import _member_view
     from sherwood_monitor.telegram.cards import render_member_card
     from sherwood_monitor.telegram.types import FundView
 

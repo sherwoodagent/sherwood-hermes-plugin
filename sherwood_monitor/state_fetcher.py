@@ -28,7 +28,7 @@ from .childenv import child_env
 
 _log = logging.getLogger(__name__)
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
-_JSON_FLAG_RE = re.compile(r"(^|\s)--json\b", re.M)
+_JSON_FLAG_RE = re.compile(r"(^|\s)--json\b", re.MULTILINE)
 _SUPPORTS_JSON: dict[str, bool] = {}  # sherwood binary -> `vault info --help` lists --json
 NO_JSON_REASON = (
     "`sherwood vault info` has no machine-readable output on the installed CLI (its help lists no --json); "
@@ -48,7 +48,7 @@ async def vault_info_supports_json(sherwood_bin: str) -> bool:
         )
         stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
         supported = proc.returncode == 0 and bool(_JSON_FLAG_RE.search(stdout.decode("utf-8", "replace")))
-    except Exception as exc:
+    except (OSError, ValueError) as exc:  # no binary, a timeout, unreadable output
         _log.warning("could not read `sherwood vault info --help`: %s", exc)
         return False  # not cached: a missing binary may be installed later
     _SUPPORTS_JSON[sherwood_bin] = supported

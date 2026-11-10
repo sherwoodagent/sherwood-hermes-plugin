@@ -549,7 +549,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             generic_call=d.generic_call or None,
             discovered=_discovered(rt) if d.generic_call else None,
         )
-        out = {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
+        out: dict[str, Any] = {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
         if symbol_note:
             out["symbol_check"] = symbol_note
         return out

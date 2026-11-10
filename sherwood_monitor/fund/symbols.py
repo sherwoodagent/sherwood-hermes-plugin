@@ -17,7 +17,8 @@ import json
 import logging
 import time
 import urllib.request
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ FAILURE_TTL_S = 60.0  # an unreachable feed is retried after this, not on every 
 
 def _get_json(url: str, timeout: float) -> Any:
     req = urllib.request.Request(url, headers={"accept": "application/json", "user-agent": "sherwood-monitor"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - https base URL from config
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode() or "{}")
 
 
@@ -64,7 +65,7 @@ class PricedSymbols:
             return self._value
         try:
             self._value = priced_symbols((self._fetch or _get_json)(self.url, self.timeout))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a feed outage must never fail a draft
             _log.warning("symbol check: %s could not be read (%s); drafts go ahead unchecked", self.url, exc)
             self._value = None
         self._until = now + (TTL_S if self._value is not None else FAILURE_TTL_S)

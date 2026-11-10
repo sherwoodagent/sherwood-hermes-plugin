@@ -31,7 +31,13 @@ import re
 import shlex
 
 from .models import Agent, Fund, ProposalRecord
-from .rules import MAX_PORTFOLIO_LEGS, RuleViolation, check_portfolio_legs, deny, is_address
+from .rules import (
+    MAX_PORTFOLIO_LEGS,
+    RuleViolation,
+    check_portfolio_legs,
+    deny,
+    is_address,
+)
 from .units import format_units
 
 _log = logging.getLogger(__name__)
