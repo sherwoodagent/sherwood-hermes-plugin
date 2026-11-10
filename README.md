@@ -298,8 +298,9 @@ vectors: [docs/telegram.md](docs/telegram.md).
 number, and the open proposals with a live veto meter. It holds no links and
 moves no money, and it is not a Mini App. Clients without widget support get
 the same text. Refusals ("Only the fund host can do that.") reach only the
-tapper as an ephemeral reply, and closed cards grey out their buttons. See
-[docs/telegram.md](docs/telegram.md).
+tapper as an ephemeral reply (`SHERWOOD_TG_PERSONAL_LINKS=dm` turns ephemeral
+messages off; refusals are then pop-up alerts), and closed cards grey out
+their buttons. See [docs/telegram.md](docs/telegram.md).
 
 ### Install
 

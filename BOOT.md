@@ -90,8 +90,10 @@ What the plugin registers (v0.9.0): 17 tools, 5 hooks, 5 slash commands,
   adapter connects (it needs `TELEGRAM_BOT_TOKEN`). It posts fund,
   proposal, draft and receipt cards, counts 🔥 on pitches, and answers
   buttons with personal links to `app.sherwood.sh/tg/...`, where wallets
-  sign. Without a token or python-telegram-bot the cards stay off and
-  everything else works.
+  sign. 👤 My position sends the member a read-only widget in their DM with
+  the bot. Personal links and refusals go to the tapper alone, as ephemeral
+  messages (`SHERWOOD_TG_PERSONAL_LINKS=dm` turns that off). Without a token
+  or python-telegram-bot the cards stay off and everything else works.
 
 The plugin never signs or sends a transaction. It builds unsigned ones
 through the prepare API (`tx_builder_url`, default
