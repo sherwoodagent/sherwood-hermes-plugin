@@ -12,6 +12,7 @@ draft or propose is not safe to run.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from pathlib import Path
@@ -24,7 +25,6 @@ from ..propose_cmd import (
     FUND_RULES_APPLIED,
     INDIRECTION_WORDS,
     MAX_COMMAND_CHARS,
-    READ_ONLY_TOOLS,
     TERMINAL_TOOLS,
     ProposeInvocation,
     has_unquoted_hash,
@@ -37,6 +37,10 @@ from ..propose_cmd import (
     shell_expansion,
     tokens,
 )
+
+# The install / upgrade line preflight.py and the bundled skill tell the agent to run, and nothing else
+# on the line: `npm i -g @sherwoodagent/cli`, optionally `@X.Y.Z` or `@latest`.
+CLI_INSTALL_RE = re.compile(r"npm (?:i|install) -g @sherwoodagent/cli(?:@(?:\d+\.\d+\.\d+|latest))?")
 
 REFUSE_HINT = (
     "Run the sherwood command on its own line with literal arguments (single-quote any value with spaces or "
@@ -259,10 +263,11 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         address, is not seen.
         """
         command = str((args or {}).get("command") or "")
-        low = command.lower()
         norm = normalize(command)
-        if not ("0x" in low or "sherwood" in norm or CLI_PACKAGE in norm):
+        if not ("0x" in norm or "sherwood" in norm or CLI_PACKAGE in norm):
             return None  # names neither the CLI nor any vault address
+        if CLI_INSTALL_RE.fullmatch(command.strip()):
+            return None  # the install line preflight and the skill hand out, exactly
         if len(command) > MAX_COMMAND_CHARS:
             try:
                 fund_host = bool(_fund_states(rt))
@@ -300,7 +305,8 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
             return _refuse("shell_indirection", "it runs text through a shell, eval, source, an alias, a function, "
                            "a here-doc or here-string, or shopt, which the guard reads only as data")
         if any(w in ENV_WORDS for w in words) or any(
-                seg.words and all(ASSIGNMENT_RE.match(w) for w in seg.words) for seg in segments):
+                (seg.words and all(ASSIGNMENT_RE.match(w) for w in seg.words))
+                or (seg.command_word == "printf" and "-v" in seg.words) for seg in segments):
             return _refuse("environment", "it sets environment (export or an assignment) that can change what the "
                            "CLI runs, e.g. NODE_OPTIONS or PATH")
         if has_unquoted_hash(command):
@@ -322,10 +328,26 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
                     if on_fund - {seg.invocation.vault.lower()}:
                         return _refuse("unreadable_propose", "it names a fund vault in a propose whose --vault is "
                                        "another address")
-            elif seg.command_word not in READ_ONLY_TOOLS and any(
-                    names_cli(w) or any(v in w.lower() for v in by_vault) for w in seg.words):
+            elif not seg.read_only and any(names_cli(w) or any(v in normalize(w) for v in by_vault) for w in seg.words):
                 return _refuse("unreadable_propose", f"`{seg.command_word}` takes the CLI or a fund vault as data and "
                                "may run it in a way the guard cannot read")
+        # A read-only command that carries the CLI's name or a fund vault (or reads one from a pipe)
+        # may only hand its output to another read-only command or to a CLI command that is not a
+        # propose: never a file, `tee`, `xargs`, an interpreter.
+        carried = False
+        for i, seg in enumerate(segments):
+            piped_in = i > 0 and segments[i - 1].after in ("|", "|&")
+            carried = seg.read_only and (
+                (piped_in and carried)
+                or any(names_cli(w) or any(v in normalize(w) for v in by_vault) for w in seg.words)
+            )
+            if not carried:
+                continue
+            nxt = segments[i + 1] if seg.after in ("|", "|&") and i + 1 < len(segments) else None
+            if seg.writes_output or (nxt is not None and not (
+                    nxt.read_only or (nxt.cli_index >= 0 and nxt.invocation is None))):
+                return _refuse("unreadable_propose", f"`{seg.command_word}` prints the CLI or a fund vault into a "
+                               "file or another program, which may run it")
         names = ", ".join(sorted(st.fund.name for st in states))
         checked = False
         for inv in invocations:

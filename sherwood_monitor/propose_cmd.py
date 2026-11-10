@@ -47,15 +47,26 @@ ENV_ALLOWLIST: frozenset[str] = frozenset()
 INDIRECTION_WORDS = frozenset({
     "sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", "alias", "function", "shopt",
 })
-ENV_WORDS = frozenset({"export", "declare", "typeset", "readonly"})
-# Commands that take a fund vault address or the CLI's name only as data: they print, read, or (for
-# `cast` and `curl`) query the chain and the API. `hermes sherwood ...` is the plugin's own operator
-# CLI, not the Sherwood CLI.
+# Builtins that set shell variables, PATH among them (`printf -v` too: see guard.py).
+ENV_WORDS = frozenset({"export", "declare", "typeset", "readonly", "read", "mapfile", "readarray"})
+# Commands that take a fund vault address or the CLI's name only as data: they print or read, and none
+# has an option that runs a command (man/less/more pagers, rg --pre, sort --compress-program, diff -l
+# and file's decompressors do, so they are not here). Only the bare name counts (`/x/echo` is not echo).
 READ_ONLY_TOOLS = frozenset({
-    "echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "less", "more", "wc", "ls",
-    "jq", "man", "which", "type", "file", "stat", "diff", "sort", "uniq", "cut", "tr", "true", "false",
-    "test", "[", "cd", "pwd", "cast", "curl", "hermes",
+    "echo", "printf", "grep", "egrep", "fgrep", "cat", "head", "tail", "wc", "ls", "jq", "which", "type",
+    "stat", "uniq", "cut", "tr", "true", "false", "test", "[", "cd", "pwd",
 })
+# Read-only with conditions (Segment.read_only): `cast` only for the reads the bundled skill's CLAUDE.md
+# pre-approves; `curl` only with no option that writes a file; `hermes` only as the plugin's own
+# `hermes sherwood <subcommand>` (anything else can start a child agent with a prompt).
+CAST_READS = frozenset({"call", "calldata", "chain-id"})  # plus `4byte*`
+HERMES_PLUGIN_SUBCOMMANDS = frozenset({"start", "stop", "status", "tail", "install-cron", "fund-bind"})
+CURL_WRITE_OPTIONS = frozenset({
+    "-o", "--output", "-O", "--remote-name", "--remote-name-all", "--output-dir", "-D", "--dump-header",
+    "-c", "--cookie-jar", "-K", "--config", "--trace", "--trace-ascii", "--libcurl", "--stderr",
+    "--etag-save", "--hsts", "--alt-svc", "--create-dirs",
+})
+_CURL_SHORT_WRITE_RE = re.compile(r"^-[A-Za-z]*[oODcK]")  # -o, -sSo, -O ... in a cluster
 # The CLI's name as bash would run it: `sherwood` on its own or as a path's last part, not part of
 # `sherwood-monitor`, `api.sherwood.sh` or `sherwoodagent`.
 CLI_NAME_RE = re.compile(r"(?<![\w.-])sherwood(?![\w.-])")
@@ -170,8 +181,9 @@ def shell_expansion(command: str) -> str | None:
 
 
 def normalize(command: str) -> str:
-    """The command with quotes and backslashes dropped and case folded: what it names, however quoted."""
-    return re.sub(r"[\\'\"]", "", command or "").lower()
+    """The command with line continuations, quotes and backslashes dropped and case folded: what it
+    names, however quoted or split (`0''x…`, `0\\x…`, an address broken by a backslash-newline)."""
+    return re.sub(r"[\\'\"]", "", (command or "").replace("\\\n", "")).lower()
 
 
 def names_cli(command: str) -> bool:
@@ -274,16 +286,51 @@ class Segment:
 
     words: list[str]
     operators: list[str] = field(default_factory=list)  # operator tokens inside it (redirections)
+    redirects: list[list[str]] = field(default_factory=list)  # [operator, the word after it]
+    after: str = ""  # the separator that ends it: `|`, `|&`, `;`, `&&`, a newline ...
     cli_index: int = -1  # index of the CLI word, -1 when the command does not run the CLI
     invocation: ProposeInvocation | None = None  # when it is a propose
 
     @property
     def command_word(self) -> str:
         """The command it runs: the first word that is not an env assignment (basename)."""
+        word = self.bare_command
+        return word.rsplit("/", 1)[-1]
+
+    @property
+    def bare_command(self) -> str:
+        """The first word that is not an env assignment, as typed (a path stays a path)."""
         for word in self.words:
             if not ASSIGNMENT_RE.match(word):
-                return word.rsplit("/", 1)[-1]
+                return word
         return ""
+
+    @property
+    def read_only(self) -> bool:
+        """A command that takes the CLI's name or a vault only as data (READ_ONLY_TOOLS by bare name;
+        `cast` reads, `curl` without a file-writing option, `hermes sherwood <plugin subcommand>`)."""
+        word = self.bare_command
+        rest = self.words[self.words.index(word) + 1 :] if word else []
+        if word == "printf" and "-v" in rest:
+            return False  # printf -v sets a shell variable
+        if word in READ_ONLY_TOOLS:
+            return True
+        if word == "cast":
+            return bool(rest) and (rest[0] in CAST_READS or rest[0].startswith("4byte"))
+        if word == "curl":
+            return not any(a in CURL_WRITE_OPTIONS or a.split("=", 1)[0] in CURL_WRITE_OPTIONS
+                           or _CURL_SHORT_WRITE_RE.match(a) for a in rest)
+        if word == "hermes":
+            return len(rest) >= 2 and rest[0] == "sherwood" and rest[1] in HERMES_PLUGIN_SUBCOMMANDS
+        return False
+
+    @property
+    def writes_output(self) -> bool:
+        """Its output goes to a file (`>`, `>>`, `>|`, `&>`), not counting an fd copy like `2>&1`."""
+        for op, target in self.redirects:
+            if ">" in op and not (op.endswith("&") and (target.isdigit() or target == "-")):
+                return True
+        return False
 
 
 def parse_segments(command: str) -> list[Segment] | None:
@@ -293,17 +340,24 @@ def parse_segments(command: str) -> list[Segment] | None:
         return None
     out: list[Segment] = []
     current = Segment(words=[])
+    pending: list[str] | None = None  # a redirection still waiting for its target word
     for tok in [*toks, ";"]:
         if _is_separator(tok):
             if current.words or current.operators:
+                current.after = tok
                 out.append(current)
             current = Segment(words=[])
+            pending = None
         elif tok and all(c in _PUNCTUATION for c in tok):
             current.operators.append(tok)  # a redirection: `>`, `2>&1`, `<<`, `<<<`
+            pending = [tok, ""]
+            current.redirects.append(pending)
         else:
             current.words.append(tok)
+            if pending is not None:
+                pending[1], pending = tok, None
     for seg in out:
-        if seg.command_word in READ_ONLY_TOOLS:
+        if seg.read_only:
             continue  # `echo sherwood ...`, `which sherwood`: the CLI is data here, it does not run
         for i, word in enumerate(seg.words):
             if _is_sherwood(word):
