@@ -396,3 +396,113 @@ def test_wood_price_reader_is_cached_and_never_raises():
     t[0] = 1300.0
     price._fetch = lambda url, timeout: [{"symbol": "WOOD", "price_usd": "0.00086"}]
     assert price() == pytest.approx(0.00086)
+
+
+# -- live group test, 2026-11-10: bare "ship it", direct drafts, card logs ---------------------------
+
+
+def _setup(ctx):
+    out = ctx.call_tool("fund_setup", {
+        "fund": "alpha-fund", "vault": VAULT, "governor": GOVERNOR, "telegram_chat_id": str(CHAT),
+        "host_telegram_id": str(HOST_TG), "host_address": HOST_ADDR, "max_capital": "1000",
+        "max_drawdown_bps": 2500, "voting_period": 1800, "agent_fee_bps": 500,
+    })
+    assert out["ok"]
+
+
+NVDA_DRAFT = {
+    "thesis": "AI capex keeps beating", "legs": [{"summary": "buy NVDA", "symbol": "NVDA", "weight_bps": 10000}],
+    "max_capital": "40", "max_drawdown_bps": 2000, "strategy_duration_seconds": 21600,
+}
+
+
+async def test_bare_host_ship_it_claims_the_one_open_pitch_and_the_draft_card_replies_to_it(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=41, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot 100% $NVDA for 6 hours", mentions_bot=True))
+    ev = await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                                  text="@sherwoodagentbot ship it", mentions_bot=True))
+    assert ev is not None and ev.source_message_id == 41
+    await settle_tasks()
+    claims = ctx.call_tool("fund_status")["pitch_claims"]
+    assert [(c["agent"], c["topic"]) for c in claims] == [("alpha", "NVDA pitch")]
+    (hook,) = ctx.hooks["pre_llm_call"]
+    turn = await hook(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST_TG), user_message="ship it")
+    assert "<sherwood-fund-draft-requested>" in turn["context"]
+    d = ctx.call_tool("fund_draft_proposal", {"topic": "NVDA pitch", **NVDA_DRAFT})
+    assert d["ok"]
+    await settle_tasks()
+    draft_call = next(c for c in bot.send_message.await_args_list if "DRAFT" in c.kwargs.get("text", ""))
+    assert draft_call.kwargs["reply_to_message_id"] == 41
+
+
+async def test_ambiguous_host_ship_it_is_answered_in_the_group_by_the_plugin(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                                    text="@sherwoodagentbot ship it", mentions_bot=True)) is None
+    (call,) = bot.send_message.await_args_list
+    assert call.kwargs["chat_id"] == CHAT and call.kwargs["reply_to_message_id"] == 42
+    assert "No open pitch" in call.kwargs["text"]
+    assert ctx.call_tool("fund_status")["pitch_claims"] == []
+
+
+async def test_direct_draft_without_a_pitch_posts_the_draft_card_and_logs_it(tmp_path, monkeypatch, caplog):
+    """Item 5 of the live test: the agent called fund_draft_proposal itself, with no pitch claim."""
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert ctx.call_tool("fund_claim_topic", {"topic": "100% NVDA 6h"})["ok"]
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    d = ctx.call_tool("fund_draft_proposal", {"topic": "100% NVDA 6h", **NVDA_DRAFT})
+    assert d["ok"] and d["proposal"]["pitch_message_id"] is None
+    await settle_tasks()
+    draft_call = next(c for c in bot.send_message.await_args_list if "DRAFT" in c.kwargs.get("text", ""))
+    assert draft_call.kwargs.get("reply_to_message_id") is None
+    posted = [r for r in caplog.records if r.getMessage().startswith("draft card posted")]
+    assert len(posted) == 1 and posted[0].levelname == "INFO"
+    assert f"chat={CHAT}" in posted[0].getMessage() and "draft=p-1" in posted[0].getMessage()
+
+
+async def test_a_skipped_card_post_is_a_warning(tmp_path, monkeypatch, caplog):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)  # no adapter connected
+    ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    assert ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})["ok"]
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "not connected" in r.getMessage()]
+    assert warned and "draft card (chat=" in warned[0].getMessage()
+
+
+async def test_a_failed_card_post_is_a_warning_without_the_error_text(tmp_path, monkeypatch, caplog):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    leak = "https://api.telegram.org/bot123:SECRET/sendMessage failed"
+    bot.send_message.side_effect = RuntimeError(leak)
+    bot.send_photo.side_effect = RuntimeError(leak)
+    ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    assert ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})["ok"]
+    await settle_tasks()
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and "draft card" in r.getMessage()]
+    assert warned and all("SECRET" not in w and "api.telegram.org" not in w for w in warned)
+
+
+async def test_cards_from_tool_threads_post_when_the_factory_ran_outside_a_loop(tmp_path, monkeypatch):
+    """If Hermes called the factory with no running loop, the first handler call binds it."""
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    rt.loop = None
+    await FundHandlers(rt).on_group_message(SimpleNamespace(message=None), SimpleNamespace(bot=bot))
+    assert rt.loop is asyncio.get_running_loop()
+    ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})
+    # A tool runs off the event loop (Hermes' worker thread): the card is submitted thread-safe.
+    d = await asyncio.to_thread(ctx.call_tool, "fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})
+    assert d["ok"]
+    await settle_tasks()
+    assert any("DRAFT" in c.kwargs.get("text", "") for c in bot.send_message.await_args_list)

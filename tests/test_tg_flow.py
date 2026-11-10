@@ -220,3 +220,98 @@ async def test_pitch_text_cannot_break_out_of_the_data_frame():
 )
 def test_trade_idea_heuristic(text, expected):
     assert PitchFlow.is_trade_idea(text) is expected
+
+
+# -- a bare "ship it" from the host (live group test, 2026-11-10) ------------------------------
+
+
+def make_noticed_flow(**kw):
+    notices = []
+    flow, events, clock = make_flow(on_notice=lambda chat, text, reply_to: notices.append((chat, text, reply_to)), **kw)
+    return flow, events, notices
+
+
+async def test_bare_host_ship_it_with_one_open_pitch_drafts_it():
+    """No reply, no $TICKER: the one open undrafted pitch in the chat is the one."""
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    ev = await flow.on_message(msg(105, HOST, "@sherwoodagentbot ship it", mentions_bot=True))
+    assert ev is not None and ev.source_message_id == 100 and ev.trigger == "ship_it" and ev.triggered_by == HOST
+    assert events == [ev] and notices == []
+    hook = flow.make_pre_llm_call_hook()
+    out = hook(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST), user_message="ship it")
+    assert out is not None and "<sherwood-fund-draft-requested>" in out["context"]
+
+
+async def test_bare_host_ship_it_with_two_open_pitches_asks_which():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    await flow.on_message(msg(110, BOB, "@sherwoodagentbot short $TSLA, margins", mentions_bot=True))
+    assert await flow.on_message(msg(111, HOST, "@sherwoodagentbot ship it", mentions_bot=True)) is None
+    assert events == []
+    ((chat, text, reply_to),) = notices
+    assert chat == CHAT and reply_to == 111
+    assert "reply" in text.lower() and "$TICKER" in text
+    # The agent's turn on that message is told the plugin answered and not to pick a pitch itself.
+    hook = flow.make_pre_llm_call_hook()
+    out = hook(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST), user_message="ship it")
+    assert out is not None and "<sherwood-fund-ship-it-unresolved>" in out["context"]
+    assert "do not" in out["context"].lower()
+
+
+async def test_bare_host_ship_it_with_no_open_pitch_says_so():
+    flow, events, notices = make_noticed_flow()
+    assert await flow.on_message(msg(105, HOST, "ship it", mentions_bot=False)) is None
+    ((chat, text, reply_to),) = notices
+    assert chat == CHAT and reply_to == 105 and "no open pitch" in text.lower()
+    assert events == []
+
+
+async def test_bare_ship_it_ignores_drafted_pitches_when_counting():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(101, HOST, "ship it", reply_to_message_id=100)) is not None
+    await flow.on_message(msg(110, BOB, "@sherwoodagentbot short $TSLA, margins", mentions_bot=True))
+    ev = await flow.on_message(msg(111, HOST, "@sherwoodagentbot ship it", mentions_bot=True))
+    assert ev is not None and ev.source_message_id == 110 and notices == []
+
+
+async def test_named_ship_it_that_matches_nothing_never_falls_back_to_the_one_pitch():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(105, HOST, "@sherwoodagentbot ship it $TSLA", mentions_bot=True)) is None
+    assert await flow.on_message(msg(106, HOST, "ship it @someoneelse")) is None
+    assert events == [] and len(notices) == 2
+
+
+async def test_ship_it_on_an_already_drafted_pitch_points_at_the_card():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(101, HOST, "ship it", reply_to_message_id=100)) is not None
+    assert await flow.on_message(msg(102, HOST, "ship it", reply_to_message_id=100)) is None
+    ((_, text, reply_to),) = notices
+    assert reply_to == 102 and "🚀 Ship it" in text and "draft card" in text
+
+
+async def test_bare_ship_it_from_a_non_host_stays_silent():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(105, BOB, "@sherwoodagentbot ship it", mentions_bot=True)) is None
+    assert events == [] and notices == []
+    assert flow.open_pitches(CHAT)[0].drafted is False
+
+
+async def test_notice_failure_never_breaks_the_flow():
+    def boom(chat, text, reply_to):
+        raise RuntimeError("telegram down")
+
+    flow, events, _ = make_flow(on_notice=boom)
+    assert await flow.on_message(msg(105, HOST, "ship it")) is None  # logged, not raised
+
+
+async def test_pitch_context_says_unpriced_symbols_are_not_tradable_here():
+    flow, _, _ = make_flow()
+    hook = flow.make_pre_llm_call_hook()
+    await flow.on_message(msg(100, ALICE, "@sherwoodagentbot 100% $NFLX for 6 hours", mentions_bot=True))
+    out = hook(platform="telegram", chat_id=str(CHAT), sender_id=str(ALICE), user_message="100% $NFLX for 6 hours")["context"]
+    assert "prices source" in out and "web search" in out

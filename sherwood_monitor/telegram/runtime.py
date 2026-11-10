@@ -80,6 +80,7 @@ class TelegramRuntime:
             pitch_ttl_s=self.settings.pitch_ttl_s,
             clock=clock,
             authorized=self.user_authorized,
+            on_notice=self.say,
         )
         self.app: Any = None
         self.bot: Any = None
@@ -122,6 +123,18 @@ class TelegramRuntime:
         except RuntimeError:
             self.loop = None
 
+    def remember_loop(self) -> None:
+        """Bind to the loop PTB runs our handlers on, if :meth:`attach` ran outside one.
+
+        Tools post cards from worker threads through :meth:`submit`, which needs that loop;
+        without it every such post would be dropped.
+        """
+        if self.loop is None:
+            try:
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+
     def link_secret(self) -> str | None:
         return self._secret()
 
@@ -155,6 +168,20 @@ class TelegramRuntime:
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     # -- fund-state helpers --------------------------------------------------
+
+    async def say(self, chat_id: int, text: str, reply_to_message_id: int | None = None) -> int | None:
+        """One plain line in the chat (the pitch flow's ship-it notices). No-op until connected."""
+        if not self.connected:
+            _log.warning("notice for chat %s not sent: telegram runtime is not connected", chat_id)
+            return None
+        kwargs: dict[str, Any] = {"chat_id": int(chat_id), "text": text}
+        if reply_to_message_id is not None:
+            kwargs["reply_to_message_id"] = int(reply_to_message_id)
+        sent = await self.bot.send_message(**kwargs)
+        message_id = getattr(sent, "message_id", None)
+        if message_id is not None:
+            self.flow.note_bot_card(chat_id, int(message_id))
+        return message_id
 
     async def user_authorized(self, chat_id: int, user_id: int) -> bool:
         """May this group user pitch or 🔥? Hermes' own allowlist decides (fail closed).
@@ -262,8 +289,10 @@ class TelegramRuntime:
         self._require()
         ref = await self.proposals.post(chat_id, proposal_id, reply_to_message_id=reply_to_message_id)
         if ref is None:
+            _log.warning("proposal card not posted: chat=%s proposal=%s (no such proposal)", chat_id, proposal_id)
             return None
         self.flow.note_bot_card(chat_id, ref.message_id)
+        _log.info("proposal card posted: chat=%s proposal=%s message=%s", chat_id, proposal_id, ref.message_id)
         return ref.message_id
 
     async def refresh_proposal_card(self, chat_id: int, proposal_id: str) -> bool:
@@ -300,6 +329,7 @@ class TelegramRuntime:
 
         view = await maybe_await(self.gateway.proposal(chat_id, draft_id))
         if view is None:
+            _log.warning("draft card not posted: chat=%s draft=%s (no such draft)", chat_id, draft_id)
             return None
         fund = await maybe_await(self.gateway.fund_for_chat(chat_id))
         text, markup = render_draft_card(
@@ -314,6 +344,7 @@ class TelegramRuntime:
             chat_id, text, markup, image_url=view.image_url, reply_to_message_id=reply_to_message_id
         )
         self.flow.note_bot_card(chat_id, ref.message_id)
+        _log.info("draft card posted: chat=%s draft=%s message=%s", chat_id, draft_id, ref.message_id)
         return ref.message_id
 
     async def post_fund_card(self, chat_id: int) -> int | None:

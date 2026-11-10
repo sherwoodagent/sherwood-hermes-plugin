@@ -1025,16 +1025,19 @@ class FundTelegramBridge:
         if self.runtime is not None:
             self.runtime.close()
 
-    def _submit(self, coro: Any) -> None:
+    def _submit(self, coro: Any, what: str = "card") -> None:
+        """Run a card post / refresh on the bot's loop. A skipped or failed one is a WARNING (never
+        message text, tokens or URLs: only the kind, ids and the exception class)."""
         rt = self.runtime
         if rt is None or not rt.connected:
             coro.close()  # no PTB / no bot / adapter not up: cards are a no-op
+            _log.warning("%s not posted: telegram runtime is not connected in this process", what)
             return
         try:
-            rt.submit(coro)
-        except RuntimeError as exc:
+            rt.submit(_logged(coro, what))
+        except RuntimeError:
             coro.close()
-            _log.debug("telegram runtime not ready: %s", exc)
+            _log.warning("%s not posted: telegram runtime has no event loop yet", what)
 
     async def _say(self, chat_id: int, text: str, *, reply_to: int | None = None) -> None:
         rt = self.runtime
@@ -1092,12 +1095,13 @@ class FundTelegramBridge:
         rec = ev.proposal
         if ev.kind == fund_service.EV_DRAFTED and rec is not None:
             shortfall = ev.data.get("bond", {}).get("swap_gap_wood")
-            self._submit(self._post_draft(chat, rec.id, shortfall, rec.pitch_message_id))
+            self._submit(self._post_draft(chat, rec.id, shortfall, rec.pitch_message_id),
+                         f"draft card (chat={chat} draft={rec.id})")
         elif ev.kind in (fund_service.EV_STATUS, fund_service.EV_VOTE, fund_service.EV_TALLY) and rec is not None:
-            self._submit(self._sync_card(chat, ev.fund, rec.id))
+            self._submit(self._sync_card(chat, ev.fund, rec.id), f"proposal card (chat={chat} proposal={rec.id})")
         elif ev.kind == fund_service.EV_SETTLED and ev.receipt is not None:
             if rec is not None:
-                self._submit(self._sync_card(chat, ev.fund, rec.id))
+                self._submit(self._sync_card(chat, ev.fund, rec.id), f"proposal card (chat={chat} proposal={rec.id})")
             r = ev.receipt
             image = self._receipt_image(st, rec, r)
             receipt = Receipt(
@@ -1107,11 +1111,11 @@ class FundTelegramBridge:
                 idea_by=_int_or_none(r.idea_by),
                 backers=len(rec.backers) if rec is not None else 0,
             )
-            self._submit(self._post_receipt(chat, receipt, image))
+            self._submit(self._post_receipt(chat, receipt, image), f"settle receipt (chat={chat})")
         elif ev.kind == fund_service.EV_MEMBER_APPROVED and ev.member is not None:
             view = _member_view(ev.member)
             if view is not None:
-                self._submit(self._post_member(chat, view))
+                self._submit(self._post_member(chat, view), f"member card (chat={chat})")
 
     async def _post_draft(self, chat: int, draft_id: str, shortfall_units: Any, reply_to: int | None) -> None:
         shortfall = _decimal(shortfall_units, WOOD_DECIMALS) if shortfall_units else None
@@ -1214,6 +1218,15 @@ class FundTelegramBridge:
                 parts.append(str(pitch["context"]))
         parts.extend(self.take_chat_context(caller.chat_id, caller.user_id))
         return {"context": "\n\n".join(parts)} if parts else None
+
+
+async def _logged(coro: Any, what: str) -> Any:
+    """Await a submitted card task; a failure is a WARNING here instead of an unretrieved task error."""
+    try:
+        return await coro
+    except Exception as exc:
+        _log.warning("%s not posted: %s", what, type(exc).__name__)
+        return None
 
 
 def _member_view(m: Member) -> MemberView | None:
