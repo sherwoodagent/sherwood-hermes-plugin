@@ -13,10 +13,14 @@
 name: sherwood-monitor
 title: Sherwood
 repo: https://github.com/sherwoodagent/sherwood-hermes-plugin
-# REPLACE before submitting: the full 40-character commit the v0.8.4 tag points
-# at, from `git rev-parse 'v0.8.4^{commit}'` (lowercase hex). The loader and
-# catalog CI reject anything else: a tag name, a branch or a short sha.
-sha: "<sha of the v0.8.4 tag commit>"
+# The full 40-character commit the v0.8.4 tag points at, from
+# `git rev-parse 'v0.8.4^{commit}'` (lowercase hex), filled in after the tag
+# existed: a commit cannot carry its own sha, so the tree at this pin still
+# has the placeholder. The loader and catalog CI reject anything else: a tag
+# name, a branch or a short sha. A release PR that bumps `version` puts back
+# the placeholder "<sha of the vX.Y.Z tag commit>" (and the REPLACE comment
+# docs/catalog-submission.md step 4 strips) until its tag exists.
+sha: "8ede29a7a0165f8047c7e181b60b901311507028"
 version: "0.8.4"
 description: >-
   Sherwood funds for Hermes on Robinhood Chain (chain 4663, USDG). Monitors your
@@ -57,9 +61,10 @@ description: >-
   outside its own data. Writes fund state and stream/watchdog state under
   ~/.hermes/plugins/sherwood-monitor/ and the XMTP database under
   ~/.hermes/xmtp/. The optional XMTP sidecar is built with `npm ci && npm
-  run build` in xmtp_sidecar/: setup.py tries it in Hermes' dependency
-  workspace copy when npm is on PATH, and the README tells the operator to run
-  it in $HERMES_HOME/plugins/sherwood-monitor/xmtp_sidecar. `npm ci` downloads
+  run build` (Node 22+); the supported path is by hand in
+  $HERMES_HOME/plugins/sherwood-monitor/xmtp_sidecar. setup.py also attempts
+  the build in Hermes' dependency workspace copy when npm is on PATH (not
+  verified under Hermes); with no build the plugin runs without XMTP. `npm ci` downloads
   @xmtp/node-bindings (a native binary) from the npm registry, pinned by
   package-lock.json integrity hashes. No telemetry.
 maintainer: Sherwood
@@ -75,10 +80,10 @@ known_issues:
   - "A fund group's toolset must not include terminal, write_file, patch or execute_code; the default hermes-telegram toolset does (README: Deployment boundary)."
   - "Approve host actions in a private chat with the bot or from the CLI, and never answer Always to a fund prompt: any allowlisted group member can tap approval buttons."
   - "Telegram fund cards need python-telegram-bot (Hermes' Telegram extra) and a Hermes with register_platform_handler; without them the plugin loads with cards off."
-  - "XMTP works only for funds whose XMTP group id is in their ENS record on Base; current Sherwood CLI releases write none and Robinhood Chain funds have none, so they get on-chain events only. XMTP also needs Node 22+ and npm at install and SHERWOOD_PRIVATE_KEY."
+  - "XMTP works only for funds whose XMTP group id is in their ENS record on Base; current Sherwood CLI releases write none and Robinhood Chain funds have none, so they get on-chain events only. XMTP also needs SHERWOOD_PRIVATE_KEY and a sidecar built by hand with Node 22+ and npm (README: Build the XMTP sidecar); without a build the plugin runs without XMTP."
   - "Upgrading from 0.6.0: the plugin no longer reads the Sherwood CLI's config and updates do not prompt for new env vars. Set SHERWOOD_AGENT_ADDRESS (gas watchdog) and, only for XMTP, SHERWOOD_PRIVATE_KEY; then re-run `hermes sherwood install-cron`."
   - "Fund streams run for the life of the Hermes process (from the first turn with auto_start, or sherwood_monitor_start) and stop at Hermes shutdown; they do not survive a restart, and the next session catches up."
-  - "Plugin config and state live under ~/.hermes/plugins/sherwood-monitor (the user's home), not $HERMES_HOME: profiles share them, and where cron children get another HOME (containers) the watchdogs see an empty config and stay silent."
+  - "Plugin config and state live under ~/.hermes/plugins/sherwood-monitor in the user's home, whatever $HERMES_HOME is: config.yaml, funds/ (the fund state, unless fund_state_dir or $SHERWOOD_FUND_STATE_DIR moves it) and the stream, cursor and watchdog status files. With the default HERMES_HOME (~/.hermes) that is the directory Hermes installs the plugin into, so `hermes plugins remove sherwood-monitor` deletes the plugin's config and fund state with it: back up config.yaml and funds/ first. An in-place upgrade (`hermes plugins install ... --force --ref <sha>`) keeps them. Profiles share this state, and where cron children get another HOME (containers) the watchdogs see an empty config and stay silent."
 capabilities:
   provides_tools:
     - sherwood_monitor_start

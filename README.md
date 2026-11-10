@@ -70,6 +70,31 @@ A fresh install prompts for five environment variables (Hermes' `requires_env`):
 for a group-chat fund), `SHERWOOD_PRIVATE_KEY` and `SHERWOOD_AGENT_ADDRESS`
 (only for XMTP and the gas watchdog). Leave any you don't use blank.
 
+### Upgrade and uninstall
+
+Upgrade in place with the new release's sha:
+
+```bash
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --force --ref <40-hex sha of the new release commit>
+```
+
+`--force` replaces the plugin's files and keeps files the repo does not
+track, so `config.yaml` and the fund state stay. (`hermes plugins update`
+refuses an install pinned with `--ref`.)
+
+The plugin keeps its config and state in `~/.hermes/plugins/sherwood-monitor/`
+under your home directory, whatever `HERMES_HOME` is: `config.yaml`, `funds/`
+(the fund state, unless `fund_state_dir` or `$SHERWOOD_FUND_STATE_DIR` moves
+it) and the stream, cursor and watchdog status files. With the default
+`HERMES_HOME` (`~/.hermes`) that is the directory Hermes installs the plugin
+into, so **`hermes plugins remove sherwood-monitor` deletes the config and the
+fund state with it**. Back them up first:
+
+```bash
+mkdir -p ~/sherwood-monitor-backup
+cp -a ~/.hermes/plugins/sherwood-monitor/config.yaml ~/.hermes/plugins/sherwood-monitor/funds ~/sherwood-monitor-backup/
+```
+
 ### Upgrading from 0.6.0
 
 0.7.0 no longer reads the Sherwood CLI's `~/.sherwood/config.json`, and
@@ -103,11 +128,13 @@ SHERWOOD_PRIVATE_KEY=0x...      # optional, secret: only for XMTP; the address i
    dependencies. Hermes installs the `sherwood_monitor` package, editable,
    from a copy of the plugin in its dependency workspace
    (`$HERMES_HOME/installs/…/workspace/plugin-sources/sherwood-monitor-…`).
-2. That package build runs `setup.py`, which tries `npm ci && npm run build`
-   in the copy's `xmtp_sidecar/` when `npm` is on PATH (about 30 seconds). The
-   plugin uses a built sidecar from its own `xmtp_sidecar/` first, then from
-   that copy. Hermes does not show the build's output, so if you use XMTP,
-   build the sidecar yourself once ([Build the XMTP sidecar](#build-the-xmtp-sidecar)).
+2. That package build runs `setup.py`, which attempts `npm ci && npm run
+   build` in the copy's `xmtp_sidecar/` when `npm` is on PATH (the build needs
+   Node ≥ 22). That attempt is not verified under Hermes, and Hermes does not
+   show its output. The plugin looks for a built sidecar in its own
+   `xmtp_sidecar/` first, then in that copy; with no build it runs without
+   XMTP. If you use XMTP, build the sidecar by hand once: that is the
+   supported path ([Build the XMTP sidecar](#build-the-xmtp-sidecar)).
    Hermes itself offers a Node install only for a `package.json` at the
    plugin root, and this plugin has none.
 3. On first Hermes boot, if `SHERWOOD_PRIVATE_KEY` is set: the plugin derives a **sidecar wallet** from it (`keccak256(primaryKey + "sherwood-monitor-sidecar-v1")`), spawns the sidecar process, and verifies group membership for each configured fund. Without the key the sidecar is not started (one log line) and everything else works. With the key but no built sidecar, the plugin says once where to build it.
@@ -115,7 +142,9 @@ SHERWOOD_PRIVATE_KEY=0x...      # optional, secret: only for XMTP; the address i
 ### Build the XMTP sidecar
 
 Only for XMTP (`SHERWOOD_PRIVATE_KEY` set). It needs Node ≥ 22 and npm. Build
-it in the plugin's own directory, then restart Hermes:
+it in the plugin's own directory, then restart Hermes. This is the supported
+way to get XMTP: with Node 22, `npm ci` and `npm run build` there produce
+`dist/index.js`, which the plugin starts.
 
 ```bash
 cd "${HERMES_HOME:-$HOME/.hermes}/plugins/sherwood-monitor/xmtp_sidecar"

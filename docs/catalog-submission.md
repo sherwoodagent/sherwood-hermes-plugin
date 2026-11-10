@@ -31,6 +31,8 @@ SHA=$(gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.4 --jq .sha
 echo "$SHA"    # 40 lowercase hex chars
 ```
 
+For v0.8.4 this is `8ede29a7a0165f8047c7e181b60b901311507028` (the merge of #38).
+
 From a local clone, `git fetch --tags origin && git rev-parse 'v0.8.4^{commit}'`
 gives the same value (`^{commit}` matters if the tag is ever annotated: a bare
 `rev-parse` would return the tag object).
@@ -54,7 +56,8 @@ EOF
 ```
 
 and in the consumer-repo PRs (`docs/consumer-updates.md`), which pin `$SHA`
-in place of the placeholder. Editing the release notes is part of the
+in place of the placeholder. For v0.8.4 the install line is
+`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 8ede29a7a0165f8047c7e181b60b901311507028`. Editing the release notes is part of the
 release, held for the maintainer's go-ahead like the catalog PR.
 
 ## 3. Check the plugin at that commit
@@ -74,14 +77,15 @@ environment, so only run it locally on a throwaway Hermes install.
 
 The copy of `catalog/sherwood-monitor.yaml` at the pinned commit has the
 placeholder, because a commit cannot carry its own sha. (After the tag, a
-follow-up PR fills the sha in on `main`, as #37 did for v0.8.3.) Submit the
+follow-up PR fills the sha in on `main`, as #37 did for v0.8.3; for v0.8.4
+`main` carries `sha: "8ede29a7a0165f8047c7e181b60b901311507028"`.) Submit the
 pinned copy, filled in:
 
 ```bash
 sed -e "s/^sha: \"<sha of the v0.8.4 tag commit>\"/sha: \"$SHA\"/" \
     -e '/^# REPLACE before submitting/,/^# catalog CI reject anything else/d' \
     /tmp/shm-pin/catalog/sherwood-monitor.yaml > /tmp/sherwood-monitor.yaml
-grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit
+grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit (8ede29a... for v0.8.4)
 ```
 
 Check, against `plugin.yaml` at the pin:
@@ -211,15 +215,26 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   root `package.json`, and this plugin has none. It installs the Python
   package editable from a copy of the plugin in its dependency workspace
   (`$HERMES_HOME/installs/<key>/environments/<id>/workspace/plugin-sources/sherwood-monitor-*`).
-  `setup.py` tries `npm ci && npm run build` there when npm is on PATH, and
-  uv does not show that output. The plugin is loaded from
+  `setup.py` attempts `npm ci && npm run build` there when npm is on PATH
+  (the build needs Node ≥ 22); uv does not show that output, and the 0.8.3
+  and 0.8.4 cold installs never observed that build. The plugin is loaded from
   `$HERMES_HOME/plugins/sherwood-monitor/`, so `_sidecar_dir()` uses a build
   in that directory first. Otherwise it uses the copy named by the package's
   install record (PEP 610 `direct_url.json`, read with `importlib.metadata`;
-  `tests/test_sidecar_dir.py`). With no build in either place, preflight
-  says to build in the plugin directory, and the README's "Build the XMTP
-  sidecar" does that. The cold install of 0.8.3 ran with npm off PATH, so a
-  build under Hermes is not verified end to end.
+  `tests/test_sidecar_dir.py`). With no build in either place the plugin
+  runs without XMTP and preflight says to build in the plugin directory. The
+  README's "Build the XMTP sidecar" is the supported path: with Node
+  22.23.4, `npm ci` and `npm run build` in `xmtp_sidecar/` succeed and
+  `dist/index.js` starts.
+- **Uninstall deletes state on a default install.** The plugin keeps its
+  config and state under `~/.hermes/plugins/sherwood-monitor/` in the user's
+  home (`_plugin_root()` in `sherwood_monitor/__init__.py`; `funds/` from
+  `fund/store.py`). With the default `HERMES_HOME` that is the directory
+  Hermes clones the plugin into, so `hermes plugins remove sherwood-monitor`
+  deletes `config.yaml` and `funds/` with it; the README ("Upgrade and
+  uninstall") and the entry's `known_issues` say to back them up first. An
+  in-place `hermes plugins install ... --force --ref <sha>` keeps them
+  (Hermes keeps untracked files).
 - **Rule 12 (approvals).** The fund guard returns Hermes' approval shape for
   host actions with a per-action `rule_key`; it never auto-approves.
 
