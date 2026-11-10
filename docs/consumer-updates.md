@@ -27,6 +27,10 @@ What 0.9.0 changes for consumers:
   README's "Upgrading from 0.8.x" says they can be deleted. Only an
   unpinned `hermes plugins update` (a `git pull`) also keeps
   `xmtp_sidecar/node_modules/`.
+- **Also in 0.9.0: #41**, the fixes from the 0.8.4 smoke run (voting opens
+  when a propose is recorded, the terminal propose guard holds fund-vault
+  proposes to the fund's ceilings, card wording, draft checks). The
+  README's "Risk checks" describes the guard.
 - **Unchanged:** the tools (17), hooks (5), slash commands (5), skills (4),
   the Telegram platform handler, `requires_env` names, the five crons,
   `MIN_CLI_VERSION` (`0.71.0`) and the CLI floors (0.103.0 portfolio,
