@@ -1,11 +1,25 @@
 # Consumer-repo updates for v0.8.4
 
-## Next: v0.8.4 (tag pending)
+## v0.8.4
 
-The release workflow tags `v0.8.4` on the merge of the PR that carries the
-0.8.4 release commit (#38). Once it does, the consumer docs move their install
-pin to that sha, with the same edits as the 0.8.1 PRs below. Two more consumer
-doc edits come from the cold install of 0.8.3:
+The `v0.8.4` tag points at `8ede29a7a0165f8047c7e181b60b901311507028` (the merge of
+#38): `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.4 --jq .sha`.
+Install: `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 8ede29a7a0165f8047c7e181b60b901311507028`
+(add `--force` when upgrading from an earlier `--ref` install).
+
+The consumer PRs opened for 0.8.1 now pin 0.8.4, with the same edits as the
+0.8.1 section below. mintlify-docs#139 also adds one sentence on Generic Call
+drafts to the group-chat fund's "Who signs" bullet. Every merge is held for
+the maintainer.
+
+| Repo | PR | 0.8.4 commit | Waits on |
+|---|---|---|---|
+| `sherwoodagent/mintlify-docs` | [#139](https://github.com/sherwoodagent/mintlify-docs/pull/139) | `705d36e` | maintainer merge |
+| `sherwoodagent/skill` | [#123](https://github.com/sherwoodagent/skill/pull/123) | `ba866a9` | maintainer merge (skill release 0.35.2) |
+| `sherwoodagent/sherwood` | [#744](https://github.com/sherwoodagent/sherwood/pull/744) (draft) | `36b533f` | #139 and #123 merging, then two pointer commits |
+
+Two more consumer doc edits come from the cold install of 0.8.3. The consumer
+PRs above do not make them yet:
 - A headless install needs `--yes-deps --enable`.
 - The sidecar rebuild recipe should build in
   `${HERMES_HOME:-$HOME/.hermes}/plugins/sherwood-monitor/xmtp_sidecar`. The
@@ -64,8 +78,9 @@ The `v0.8.3` tag points at `5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3` (the merge
 Install: `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3`
 (add `--force` when upgrading from an earlier `--ref` install).
 
-The consumer PRs opened for 0.8.1 now pin 0.8.3, with the same edits as the
-0.8.1 section below (0.8.2 was never pinned in a consumer repo). Every merge
+The consumer PRs opened for 0.8.1 pinned 0.8.3 at these commits, with the
+same edits as the 0.8.1 section below (0.8.2 was never pinned in a consumer
+repo); they have since moved to 0.8.4. Every merge
 is held for the maintainer.
 
 | Repo | PR | 0.8.3 commit | Waits on |
