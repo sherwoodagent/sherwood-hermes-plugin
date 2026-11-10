@@ -6,7 +6,7 @@ license: MIT
 compatibility: Requires Node.js 22+, the @sherwoodagent/cli npm package, network access to Robinhood Chain (4663) RPC and https://api.sherwood.sh
 metadata:
   author: sherwood
-  version: '0.35.3'
+  version: '0.35.4'
 ---
 
 # Sherwood
@@ -24,7 +24,7 @@ If it does exist, run `sherwood --version`. It must be **0.96.0 or later**; upda
 
 Requires Node.js v22+ (including Node 24). XMTP chat runs on `@xmtp/node-sdk`, whose native bindings can fail on older glibc hosts (see [XMTP / Chat Errors](ERRORS.md#xmtp--chat-errors)).
 
-**Running on Hermes Agent?** After installing the CLI, also install the companion plugin — `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 8ede29a7a0165f8047c7e181b60b901311507028` (the v0.8.4 release commit; once the plugin is in the Hermes catalog, `hermes plugins install sherwood-monitor`) — which adds always-on event streaming, cron digests and risk guardrails on top of the CLI, and can run a fund inside a Telegram group. Full details in [Running on Hermes Agent](#running-on-hermes-agent) below. Skip if you're on Claude Code, Codex, or another runtime.
+**Running on Hermes Agent?** After installing the CLI, also install the companion plugin — `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 6d0a3cd3c822b24adb39e94cceaa3a540bc54b7c` (the v0.9.0 release commit; once the plugin is in the Hermes catalog, `hermes plugins install sherwood-monitor`) — which adds always-on event streaming, cron digests and risk guardrails on top of the CLI, and can run a fund inside a Telegram group. Full details in [Running on Hermes Agent](#running-on-hermes-agent) below. Skip if you're on Claude Code, Codex, or another runtime.
 
 **HTTP API (no CLI install).** Live base: `https://api.sherwood.sh` with root paths (`/chains`, `/prepare/identity-mint`, `/vaults/:address`). That host is already v1 — do **not** add a `/v1` prefix (`https://api.sherwood.sh/v1/...` 404s). `https://www.sherwood.sh/api/v1` also 404s. Catalog: `GET https://api.sherwood.sh/`. See [references/external-signer-integration.md](references/external-signer-integration.md).
 
@@ -1741,13 +1741,13 @@ One line each; the linked section has the detail.
 
 ## Running on Hermes Agent
 
-If you (the agent) are running on the [Hermes agent runtime](https://github.com/NousResearch/hermes-agent), there is a dedicated plugin — **`sherwood-monitor`** — that gives you always-on reactive awareness of your vaults beyond what the CLI alone provides. This is a **separate install** from the skill pack and CLI above. Skip this section if you're on Claude Code, Codex, or another runtime. The current plugin release (v0.8.4) runs on Robinhood Chain (4663). Its risk guardrails are advisory (they fail open when vault state is unavailable), so rely on the CLI's own preflights.
+If you (the agent) are running on the [Hermes agent runtime](https://github.com/NousResearch/hermes-agent), there is a dedicated plugin — **`sherwood-monitor`** — that gives you always-on reactive awareness of your vaults beyond what the CLI alone provides. This is a **separate install** from the skill pack and CLI above. Skip this section if you're on Claude Code, Codex, or another runtime. The current plugin release (v0.9.0) runs on Robinhood Chain (4663). Its risk guardrails are advisory (they fail open when vault state is unavailable), so rely on the CLI's own preflights.
 
 ### What the plugin adds
 
 - **Reactive event injection.** On-chain events (`ProposalCreated`, `VoteCast`, `ProposalSettled`, …) stream into your next turn via `pre_llm_call`. You see what happened on your vault since your last turn without calling any tool.
 - **Autonomous cron digests.** Every 15 minutes, a `no_agent` cron script (no LLM tokens) runs `cron_tick` for each configured vault and delivers a digest through Hermes cron delivery (`local` by default; `hermes cron edit <id> --deliver telegram` routes it) — but only when there's something new. Quiet is good news.
-- **Risk guardrails on proposal creation (advisory).** `pre_tool_call` intercepts `sherwood proposal create` / `strategy propose` and checks position size, exposure and mandate before they hit the chain. The checks fail open when vault state is unavailable, so rely on the CLI's own preflights.
+- **Risk guardrails on proposal creation.** `pre_tool_call` intercepts `sherwood proposal create` / `strategy propose` and checks position size, exposure and mandate before they hit the chain. These general checks are advisory: they fail open when vault state is unavailable, so rely on the CLI's own preflights. On a fund vault (a group-chat fund configured on this host) the fund's own ceilings apply instead and are enforced: a propose above the fund's max capital or max drawdown is blocked.
 - **Cross-vault exposure.** `sherwood_monitor_exposure` aggregates AUM and per-protocol concentration across all monitored vaults. Answers "what's my total exposure to one venue?" in one call.
 - **Institutional memory.** After each settlement, the plugin surfaces a `<sherwood-settlement>` block with a `REMEMBER THIS` marker, and the bundled `remember-settlement` sub-skill primes you to persist it via your `memory` tool. Over weeks, you learn which strategies work for your fund.
 
@@ -1760,16 +1760,16 @@ command -v hermes && hermes plugins list | grep -q sherwood-monitor && echo "ins
 ### Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 8ede29a7a0165f8047c7e181b60b901311507028
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 6d0a3cd3c822b24adb39e94cceaa3a540bc54b7c
 ```
 
-Hermes has no `@tag` install syntax: `--ref` takes the full commit sha, here the commit the v0.8.4 tag points at (also on the [v0.8.4 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.4)). Once the plugin is in the Hermes catalog, `hermes plugins install sherwood-monitor` installs the reviewed pin.
+Hermes has no `@tag` install syntax: `--ref` takes the full commit sha, here the commit the v0.9.0 tag points at (also on the [v0.9.0 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.9.0)). Once the plugin is in the Hermes catalog, `hermes plugins install sherwood-monitor` installs the reviewed pin.
 
 Requirements: Python ≥ 3.11 and a configured Sherwood CLI (the monitor runs it; the CLI reads its own config). The plugin never reads `~/.sherwood/config.json`: for the gas watchdog, set `SHERWOOD_AGENT_ADDRESS` (the monitor wallet's address) in the Hermes profile `.env`. `SHERWOOD_PRIVATE_KEY` is optional (the gas watchdog derives the address from it when `SHERWOOD_AGENT_ADDRESS` is unset); leave it unset.
 
 The plugin runs a preflight on load. If `sherwood --version` is missing or older than 0.71.0, it injects a one-time warning with remediation steps. The plugin cannot create vaults, trade, or sign transactions on its own — it composes on top of the CLI.
 
-To upgrade from an earlier release, add `--force` (`hermes plugins install sherwoodagent/sherwood-hermes-plugin --force --ref 8ede29a7a0165f8047c7e181b60b901311507028`): it replaces the old install and prompts for any environment variables you have not set. `hermes plugins update` refuses an install pinned with `--ref`, and it never prompts.
+To upgrade from an earlier release, add `--force` (`hermes plugins install sherwoodagent/sherwood-hermes-plugin --force --ref 6d0a3cd3c822b24adb39e94cceaa3a540bc54b7c`): it replaces the old install and prompts for any environment variables you have not set. `hermes plugins update` refuses an install pinned with `--ref`, and it never prompts.
 
 ### Configure
 
