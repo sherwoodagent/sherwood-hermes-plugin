@@ -312,6 +312,28 @@ def check_leg_symbols(state: FundState, legs: list[Leg], tx_builder_url: str) ->
     return ""
 
 
+def draft_next_step(draft_id: str, *, agent_signs: bool) -> str:
+    """What the agent does after fund_draft_proposal, in plain words (the live group test of
+    2026-11-10: an agent fetched prepare.url, typed its own propose command and offered a one-shot)."""
+    common = (
+        f"Draft {draft_id} is recorded. If this fund has a Telegram group, the plugin posts the draft card "
+        "there with a 🚀 Ship it button by itself: do not post your own card. In the chat, say one short line "
+        "(the draft is up; the host taps 🚀 Ship it on the card) and stop. Do not call prepare.url or any "
+        "API with it, and do not write, paste or suggest a CLI command. "
+    )
+    if agent_signs:
+        return common + (
+            "Do not offer to run a one-shot: this chat has no terminal. Next: the host taps 🚀 Ship it; then "
+            "the operator runs the shipped propose command from a terminal (fund_pending_commands, in a "
+            "`hermes -z` one-shot or an approve-mode cron). The Sherwood CLI quotes and approves the WOOD bond "
+            "there."
+        )
+    return common + (
+        "Next: the host taps 🚀 Ship it, then ✍️ Co-sign, and signs the proposal from their own wallet on "
+        "the signing page. If prepare.ready is false, prepare.missing lists what the draft still needs."
+    )
+
+
 def parse_draft_args(args: dict[str, Any], state: FundState) -> DraftArgs:
     decimals = state.fund.asset_decimals
     try:
@@ -558,7 +580,10 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             generic_call=d.generic_call or None,
             discovered=_discovered(rt) if d.generic_call else None,
         )
-        out: dict[str, Any] = {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
+        out: dict[str, Any] = {
+            "proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond,
+            "next": draft_next_step(result.proposal.id, agent_signs=not rt.settings.host_cosigns),
+        }
         if symbol_note:
             out["symbol_check"] = symbol_note
         return out
