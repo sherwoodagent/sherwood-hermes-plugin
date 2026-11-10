@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import html
 import math
+import re
+import shlex
 import time
 from datetime import datetime, timezone
 from typing import Iterable, Mapping, Sequence
@@ -207,7 +209,11 @@ def legs_line(p: ProposalView) -> str:
     )
 
 
-def bond_line(bond_wood: float, wood_usd: float | None) -> str:
+def bond_line(bond_wood: float | None, wood_usd: float | None) -> str:
+    """The proposer's WOOD bond, or "" when no quote is on record (unknown or zero: under
+    `proposal_signer: agent` the plugin never gets one, and "bond 0 WOOD" reads wrong)."""
+    if not bond_wood or bond_wood <= 0:
+        return ""
     usd = f" (≈{fmt_usd(bond_wood * wood_usd)})" if wood_usd else ""
     return f"bond {fmt_amount(round(bond_wood, 2))} WOOD{usd} · agent's skin in the game"
 
@@ -300,7 +306,9 @@ def render_proposal_card(
         credit.append(f"agent {esc(p.proposer)}")
     if credit:
         lines.append(" · ".join(credit))
-    lines.append(bond_line(p.bond_wood, wood_usd))
+    bond = bond_line(p.bond_wood, wood_usd)
+    if bond:
+        lines.append(bond)
 
     if status == "voting":
         lines.append("")
@@ -419,11 +427,14 @@ def render_member_card(
     m: MemberView, *, fund: FundView, base_url: str | None = None
 ) -> tuple[str, InlineKeyboardMarkup]:
     joined = _date(m.joined_at)
-    second = f"{fmt_pct(m.share_bps)} of shares" + (f" · joined {joined}" if joined else "")
+    # share_bps None: the share is not known here (no chain read behind it), so no share line.
+    parts = [f"{fmt_pct(m.share_bps)} of shares"] if m.share_bps is not None else []
+    if joined:
+        parts.append(f"joined {joined}")
     # N is deposit order on chain (the share image uses the same number); until the
     # first deposit lands there is no number yet.
     title = f"🎟 <b>Member #{int(m.number)}</b>" if int(m.number or 0) > 0 else "🎟 <b>Member</b>"
-    lines = [f"{title} · {esc(m.person.handle)}", second, f"<b>{esc(fund.name)}</b>"]
+    lines = [f"{title} · {esc(m.person.handle)}"] + ([" · ".join(parts)] if parts else []) + [f"<b>{esc(fund.name)}</b>"]
     if int(m.number or 0) <= 0:
         lines.append("<i>Your member number is your deposit order: it shows after your first deposit.</i>")
     if m.address:
@@ -488,7 +499,9 @@ def render_draft_card(
             lines.append(f"Size {goal}")
     if p.proposer:
         lines.append(f"agent {esc(p.proposer)}")
-    lines.append(bond_line(p.bond_wood, wood_usd))
+    bond = bond_line(p.bond_wood, wood_usd)
+    if bond:
+        lines.append(bond)
     if bond_shortfall_wood and bond_shortfall_wood > 0:
         usd = f" (≈{fmt_usd(bond_shortfall_wood * wood_usd)})" if wood_usd else ""
         lines.append(f"needs ~{fmt_amount(round(bond_shortfall_wood, 1))} WOOD{usd}, swapping…")
@@ -497,11 +510,16 @@ def render_draft_card(
         lines.append(buffer_line)
     if p.template == "generic-call":
         lines.append(GENERIC_CALL_CARD_LINE)
-    lines += ["", "<i>Host: 🚀 Ship it sends this to a vote.</i>"]
+    lines += ["", SHIP_IT_HINT]
     row = [InlineKeyboardButton("🚀 Ship it", callback_data=cb("shipit", p.id))]
     if requires_host_cosign:
         row.append(InlineKeyboardButton("✍️ Co-sign (host)", callback_data=cb("propose", p.id)))
     return "\n".join(lines), _kb([row])
+
+
+SHIP_IT_HINT = "<i>Host: 🚀 Ship it sends this to a vote.</i>"
+# The hint as Telegram hands the card back (message.text_html), with or without the italics.
+_SHIP_IT_HINT_RE = re.compile(r"\n*(?:<(?:i|em)>)?Host: 🚀 Ship it sends this to a vote\.(?:</(?:i|em)>)?")
 
 
 # The host decides from the card, so the card says what Generic Call means before the vote.
@@ -639,14 +657,43 @@ def render_personal_link(
     return text, _kb(rows)
 
 
+def group_command(command: str) -> tuple[str, bool]:
+    """The propose command as the group sees it: a `--calls` plan path cut to its file name (the full
+    path names the operator's home directory). Returns (text, shortened). The record keeps the full
+    command; fund_pending_commands hands that one to the host's one-shot."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        argv = []
+    if argv:
+        out, shortened = [], False
+        for i, tok in enumerate(argv):
+            if i > 0 and argv[i - 1] == "--calls" and "/" in tok:
+                out.append(tok.rsplit("/", 1)[1])
+                shortened = True
+            elif tok.startswith("--calls=") and "/" in tok:
+                out.append("--calls=" + tok.rsplit("/", 1)[1])
+                shortened = True
+            else:
+                out.append(tok)
+        return (shlex.join(out), True) if shortened else (command, False)
+    cut = re.sub(r"(--calls[ =])'?/[^\s']*/([^\s'/]+)'?", r"\1\2", command)
+    return cut, cut != command
+
+
 def render_shipped_command(base_html: str, command: str, *, shipped_by: str, proposer: str, limit: int = 4000) -> str:
     """A shipped draft card under proposal_signer: agent: the card plus the Sherwood CLI command to run
-    (the proposing agent's CLI wallet signs it; the plugin does not)."""
+    (the proposing agent's CLI wallet signs it; the plugin does not). The draft's "Ship it sends this to
+    a vote" hint goes (it is shipped), and a Generic Call plan path shows as its file name only."""
+    base_html = _SHIP_IT_HINT_RE.sub("", base_html).rstrip()
+    shown, shortened = group_command(command)
     head = (
         f"{base_html}\n\n<i>🚀 Shipped by {esc(shipped_by)}. {esc(proposer)} proposes it from its own wallet "
         "with the Sherwood CLI, outside this chat (a hermes -z one-shot or an approve-mode cron):</i>"
     )
-    text = f"{head}\n<pre>{esc(command)}</pre>"
+    text = f"{head}\n<pre>{esc(shown)}</pre>"
+    if shortened:
+        text += "\n<i>Plan path shortened here: fund_pending_commands has the full command.</i>"
     if len(text) <= limit:
         return text
     return f"{head}\n<i>The command is too long for this card: fund_pending_commands has it.</i>"

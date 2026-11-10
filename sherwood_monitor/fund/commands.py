@@ -14,7 +14,7 @@ import re
 from typing import Any, Callable
 
 from .applink import ensure_member_address
-from .cards import render_agents, render_fund_card, short_addr
+from .cards import member_label, render_agents, render_fund_card, short_addr
 from .models import Agent
 from .rules import RuleViolation, check_caller_is_host, check_host_action, is_address, require
 from .runtime import FundRuntime, session_ids
@@ -159,9 +159,10 @@ def make_fund_commands(rt: FundRuntime) -> dict[str, CommandHandler]:
         rows = svc.leaderboard(name)
         if not rows:
             return f"Leaderboard ({name}): no settled ideas yet."
+        state = svc.load(name)
         lines = [f"Leaderboard ({name}), members by the P&L of their settled ideas:"]
         for i, r in enumerate(rows[:10], start=1):
-            lines.append(f"{i}. member {r['tg_id']}: {r['pnl_bps'] / 100:+.1f}% over {r['ideas']} idea(s), {r['wins']} win(s)")
+            lines.append(f"{i}. {member_label(state, r['tg_id'])}: {r['pnl_bps'] / 100:+.1f}% over {r['ideas']} idea(s), {r['wins']} win(s)")
         return "\n".join(lines)
 
     return {

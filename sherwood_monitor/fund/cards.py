@@ -179,13 +179,20 @@ def receipt_line(state: FundState, r: SettleReceipt) -> str:
     return f"{tag} {sign}{pnl} ({r.pnl_bps:+d} bps) by {r.agent}"
 
 
+def member_label(state: FundState, telegram_id: str | int) -> str:
+    """A member as the group knows them: "@handle" when the fund record has one, else "member <id>"."""
+    m = state.member(str(telegram_id))
+    handle = (m.username or "").strip().lstrip("@") if m is not None else ""
+    return f"@{handle}" if handle else f"member {telegram_id}"
+
+
 def render_receipt(state: FundState, r: SettleReceipt) -> str:
     """The settle message the agent posts in the group."""
     lines = [f"Settled {receipt_line(state, r)}"]
     if r.thesis:
         lines.append(f"Thesis: {r.thesis}")
     if r.idea_by:
-        lines.append(f"Idea by member {r.idea_by}")
+        lines.append(f"Idea by {member_label(state, r.idea_by)}")
     if r.tx_hash:
         lines.append(f"Tx: {r.tx_hash}")
     lines.append(bond_note("settled"))

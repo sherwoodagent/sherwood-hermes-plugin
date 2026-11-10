@@ -306,3 +306,118 @@ async def test_object_after_a_recorded_propose_hands_out_the_vote_link(tmp_path,
     assert answered != "Voting is closed for this proposal."
     vote_url = it.buttons(bot.send_message.await_args_list[n_before])[0]["url"]
     assert f"/tg/vote?proposal={it.GOVERNOR.lower()}:9&tg={it.ALICE}" in vote_url
+    # 3a: no bond quote under agent signing -> no "bond 0 WOOD" line on the proposal card.
+    assert "bond 0 WOOD" not in text and "skin in the game" not in text
+
+
+# == 3. card wording ======================================================================
+def _view(**kw):
+    from sherwood_monitor.telegram.types import Leg as LegView, ProposalView
+
+    base = dict(id="p-1", governor="0x" + "22" * 20, proposer="alpha", thesis="TSLA and NVDA",
+                legs=(LegView("TSLA", 5000), LegView("NVDA", 5000)), max_capital=40.0, max_drawdown_bps=1000,
+                capital_symbol="USDG")
+    base.update(kw)
+    return ProposalView(**base)
+
+
+def test_no_bond_line_without_a_bond_quote():
+    """Smoke 5e / 9a: "bond 0 WOOD · agent's skin in the game" on the draft and proposal cards."""
+    pytest.importorskip("telegram")
+    from sherwood_monitor.telegram.cards import render_draft_card, render_proposal_card
+
+    for render in (render_draft_card, render_proposal_card):
+        text, _ = render(_view(bond_wood=0.0))
+        assert "WOOD" not in text and "skin in the game" not in text, render.__name__
+        text, _ = render(_view(bond_wood=12.4))
+        assert "bond 12.4 WOOD · agent's skin in the game" in text, render.__name__
+
+
+PORTFOLIO_CMD = (
+    "sherwood strategy propose portfolio --vault 0x2fD6056d9326e07Eec9Ba4499078C328E4F38b4A --tokens TSLA,NVDA "
+    "--weights 5000,5000 --amount 40 --duration 6h --max-drawdown-bps 1000 '--name=hermes-fund: TSLA NVDA pitch' "
+    "'--description=TSLA and NVDA into the next session'"
+)
+GENERIC_CMD = (
+    "sherwood strategy propose generic-call --vault 0x2fD6056d9326e07Eec9Ba4499078C328E4F38b4A --calls "
+    "/Users/operator/.hermes/plugins/sherwood-monitor/funds/hermes-fund/generic-call/p-1.json --amount 40 "
+    "--duration 6h --max-drawdown-bps 1000 '--name=hermes-fund: custom route' '--description=route the pull'"
+)
+
+
+def test_shipped_card_drops_the_ship_it_hint():
+    """Smoke 5f: the shipped card kept "Host: 🚀 Ship it sends this to a vote." above "🚀 Shipped by"."""
+    pytest.importorskip("telegram")
+    from sherwood_monitor.telegram.cards import render_draft_card, render_shipped_command
+
+    draft_html, _ = render_draft_card(_view())
+    assert "Ship it sends this to a vote" in draft_html
+    for base in (draft_html, draft_html.replace("<i>Host:", "<em>Host:").replace("vote.</i>", "vote.</em>")):
+        text = render_shipped_command(base, PORTFOLIO_CMD, shipped_by="@host", proposer="alpha")
+        assert "Ship it sends this to a vote" not in text
+        assert "🚀 Shipped by @host" in text and "--amount 40" in text
+
+
+def test_shipped_generic_call_card_shows_only_the_plan_file_name():
+    """Smoke 7c: the group saw the operator's absolute plan path (and home directory)."""
+    pytest.importorskip("telegram")
+    from sherwood_monitor.telegram.cards import group_command, render_shipped_command
+
+    text = render_shipped_command("📝 DRAFT", GENERIC_CMD, shipped_by="@host", proposer="alpha")
+    assert "/Users/operator" not in text and ".hermes" not in text
+    assert "--calls p-1.json --amount 40" in text
+    assert "fund_pending_commands has the full command" in text
+    assert group_command(GENERIC_CMD.replace("--calls /", "--calls=/"))[0].count("--calls=p-1.json") == 1
+    assert group_command(PORTFOLIO_CMD) == (PORTFOLIO_CMD, False)  # nothing to shorten: verbatim
+
+
+def test_handles_not_raw_ids_where_the_record_has_one(svc):
+    """Smoke 9h/9j/5b: "Idea by member 451850101", "1. member 451850101: ..." and "the group backed
+    member 451850101's pitch" for a member whose handle is on record."""
+    from sherwood_monitor.fund.cards import render_receipt
+    from sherwood_monitor.fund.commands import make_fund_commands
+    from sherwood_monitor.fund.models import Member
+
+    def add_member(state):
+        state.members.append(Member(telegram_id="451850101", approved=True, username="imthatcarlos"))
+
+    svc.backend.update("alpha-fund", add_member)
+    svc.claim_topic("alpha-fund", "alpha", "TSLA NVDA pitch")
+    svc.draft_proposal("alpha-fund", "alpha", topic="TSLA NVDA pitch", thesis="t", legs=portfolio_legs(),
+                       max_capital=40_000_000, max_drawdown_bps=1000, strategy_duration=21600, idea_by="451850101")
+    svc.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=9001)
+    for status in ("review", "approved", "executed"):
+        svc.set_proposal_status("alpha-fund", "alpha", "p-1", status)
+    receipt = svc.record_settle("alpha-fund", "alpha", "p-1", pnl=1_200_000, pnl_bps=300, tx_hash="0x" + "cd" * 32)
+    post = render_receipt(svc.load("alpha-fund"), receipt)
+    assert "Idea by @imthatcarlos" in post and "451850101" not in post
+    rt = FundRuntime(svc, FundSettings(agent_name="alpha", owner_telegram_id="900"), None)
+    board = make_fund_commands(rt)["leaderboard"]("alpha-fund")
+    assert "1. @imthatcarlos: +3.0%" in board and "451850101" not in board
+    # No handle on record: the id is all there is.
+    receipt.idea_by = "777"
+    assert "Idea by member 777" in render_receipt(svc.load("alpha-fund"), receipt)
+
+
+async def test_draft_request_context_names_the_member_by_handle(tmp_path, monkeypatch):
+    it, ctx, rt, bridge, bot = boot_group(tmp_path, monkeypatch)
+    svc = bridge.service
+    svc.request_membership("alpha-fund", str(it.ALICE), username="alice")
+    svc.request_draft("alpha-fund", "alpha", idea_by=str(it.ALICE), pitch="long $NVDA", chat_id=str(it.CHAT))
+    (block,) = bridge.take_chat_context(str(it.CHAT), str(it.ALICE))
+    assert "the group backed @alice's pitch" in block and f"member {it.ALICE}" not in block
+
+
+def test_member_card_has_no_share_line_when_the_share_is_unknown():
+    """Smoke 3a: "0.0% of shares" on the member card when the share was simply unknown."""
+    pytest.importorskip("telegram")
+    from sherwood_monitor.fund.telegram import _member_view
+    from sherwood_monitor.fund.models import Member
+    from sherwood_monitor.telegram.cards import render_member_card
+    from sherwood_monitor.telegram.types import FundView
+
+    fv = FundView(name="hermes-fund", vault="0x" + "11" * 20, governor="0x" + "22" * 20)
+    view = _member_view(Member(telegram_id="451850101", approved=True, username="imthatcarlos", joined_at=1794100000))
+    text, _ = render_member_card(view, fund=fv)
+    assert "of shares" not in text and "0.0%" not in text
+    assert text.splitlines()[1].startswith("joined ")
