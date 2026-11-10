@@ -31,6 +31,10 @@ What 0.9.0 changes for consumers:
   when a propose is recorded, the terminal propose guard holds fund-vault
   proposes to the fund's ceilings, card wording, draft checks). The
   README's "Risk checks" describes the guard.
+- **Also in 0.9.0: #42**, the Telegram 👤 My position widget in the
+  member's DM, refusals sent to the tapper alone as ephemeral messages
+  (`SHERWOOD_TG_PERSONAL_LINKS=dm` turns them off), and greyed-out buttons
+  on closed cards ([telegram.md](telegram.md)).
 - **Unchanged:** the tools (17), hooks (5), slash commands (5), skills (4),
   the Telegram platform handler, `requires_env` names, the five crons,
   `MIN_CLI_VERSION` (`0.71.0`) and the CLI floors (0.103.0 portfolio,
