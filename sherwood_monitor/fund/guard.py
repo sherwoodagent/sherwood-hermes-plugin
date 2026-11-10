@@ -20,6 +20,7 @@ from ..propose_cmd import (
     CLI_DEFAULT_DRAWDOWN_BPS,
     CLI_PACKAGE,
     FUND_RULES_APPLIED,
+    MAX_COMMAND_CHARS,
     TERMINAL_TOOLS,
     ProposeInvocation,
     has_unquoted_hash,
@@ -27,6 +28,7 @@ from ..propose_cmd import (
     looks_like_propose,
     mentions_propose,
     parse_propose_invocations,
+    shell_expansion,
 )
 from ..session import current_caller
 from . import authz, rules
@@ -235,9 +237,26 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         an unquoted `#`, a `--vault` that is not a literal address, no `--vault` (CLI 0.103.0
         requires it), or a fund vault address in a propose-looking command that no readable
         `sherwood ... propose` names as its --vault (`bash -c`, `eval`, `$(...)`, a variable).
-        A propose built entirely at run time, with no literal fund address, is not seen.
+        Any shell expansion (`$`, backticks, braces, globs, process substitution) or a launcher
+        that may add arguments (`xargs`) in a propose is refused too: bash would hand the CLI
+        words the guard never read. A propose built entirely at run time, with no literal fund
+        address, is not seen.
         """
         command = str((args or {}).get("command") or "")
+        low = command.lower()
+        if len(command) > MAX_COMMAND_CHARS:
+            if not ("propose" in low or "proposal" in low or "sherwood" in low):
+                return None
+            try:
+                fund_host = bool(_fund_states(rt))
+            except GUARD_ERRORS:
+                fund_host = True  # cannot tell: refuse
+            if not fund_host:
+                return None
+            return (
+                f"fund propose blocked (command_too_long): {len(command)} characters is more than the "
+                f"{MAX_COMMAND_CHARS} the guard reads; run the propose as its own short command"
+            )
         if not (looks_like_propose(command) or mentions_propose(command) or CLI_PACKAGE in command):
             return None  # no propose spelled anywhere in it (a parsed propose always is)
         try:
@@ -247,13 +266,21 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         if not states:
             return None  # no fund on this host: the general advisory check applies
         by_vault = {st.fund.vault.lower(): st for st in states}
-        low = command.lower()
         present = {v for v in by_vault if v in low}
         invocations = parse_propose_invocations(command)
         if invocations is None:
             if present or looks_like_propose(command):
                 return "fund propose blocked (unreadable_command): this command cannot be split into shell commands with confidence (unbalanced quotes)"
             return None
+        # Any command that spells a propose (this far, it does) on a fund host: an expansion may
+        # build the CLI's words, or the CLI itself, out of text the guard never read.
+        expansion = shell_expansion(command)
+        if expansion:
+            return (
+                f"fund propose blocked (shell_expansion): this propose contains {expansion}, so bash may hand "
+                "the CLI words the guard never read. Write every value out literally, in single quotes where "
+                "needed (the commands fund_pending_commands hands out already are)"
+            )
         if (present or invocations) and has_unquoted_hash(command):
             return (
                 "fund propose blocked (unquoted_hash): a # outside quotes makes bash and this guard read "
@@ -263,9 +290,14 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         claimed: set[str] = set()
         checked = False
         for inv in invocations:
+            if not inv.launcher_ok:
+                return (
+                    "fund propose blocked (unsafe_launcher): the CLI is started through a command that may add "
+                    "arguments the guard cannot see (only env assignments, env, npx, pnpm dlx, node, exec, "
+                    "command, time, nohup, nice, timeout may precede it)"
+                )
             if inv.help:
-                claimed.update(v.lower() for v in inv.vaults)  # prints usage, proposes nothing
-                continue
+                continue  # usage only (no --vault, no amount): it claims no vault
             if not inv.vault:
                 return (
                     f"fund propose blocked (no_vault): this host runs fund {names}; CLI 0.103.0 requires "
