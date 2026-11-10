@@ -95,7 +95,7 @@ class Position:
 class MemberView:
     tg_id: int
     number: int  # member #N, in join order
-    share_bps: int
+    share_bps: int | None  # None: not known (the card then shows no share line)
     joined_at: int | None = None  # unix seconds
     username: str | None = None
     first_name: str | None = None

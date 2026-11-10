@@ -15,6 +15,7 @@ and never fails the write.
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -491,7 +492,8 @@ class FundService:
                 plan = validate_generic_call_plan(generic_call, state.fund, pull_amount=max_capital)
                 use_legs = generic_call_legs(max_capital)
             require(rules.check_draft(
-                state, agent, topic, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps, legs=use_legs, now=now
+                state, agent, topic, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps, legs=use_legs, now=now,
+                require_portfolio=self.proposal_signer == "agent" and not generic_call,
             ))
             proposer = state.agent(agent)
             assert proposer is not None
@@ -704,8 +706,21 @@ class FundService:
         onchain_id: int | None = None,
         tx_hash: str = "",
         card_message_id: str = "",
+        correct_onchain_id: bool = False,
     ) -> ProposalRecord:
-        """Move a proposal along its lifecycle (draft -> proposed -> ... ). Proposer or host only."""
+        """Move a proposal along its lifecycle (draft -> proposed -> ... ). Proposer or host only.
+
+        `correct_onchain_id`: replace a wrong on-chain id recorded earlier, only while the vote is open
+        (`proposed` / `voting`), never with an id another record holds. The tool that passes it is
+        host-gated (the host's chat turn, or the operator's approval).
+
+        Recording `proposed` opens the vote at once: the governor is optimistic veto and a
+        solo propose lands in `Pending` (LP voting) in the propose block, so the record goes
+        straight to `voting` (the card gets the veto meter, countdown and ❌ Object). Asking
+        for the status a proposal already has (or `proposed` once it is `voting`) keeps the
+        status and stores what the call carries that is new: an `onchain_id` (new or
+        corrected), a `tx_hash`, a `card_message_id`. With nothing new it changes nothing.
+        """
         now = self.clock()
         old: dict[str, str] = {}
 
@@ -714,6 +729,44 @@ class FundService:
             if record is None:
                 raise RuleViolation(rules.deny("unknown_proposal", f"no proposal {proposal_id}"))
             _require_proposer_or_host(state, actor, record)
+            if onchain_id is not None:
+                holder = next((p for p in state.proposals if p.id != record.id and p.onchain_id == int(onchain_id)), None)
+                if holder is not None:
+                    raise RuleViolation(rules.deny(
+                        "duplicate_onchain_id",
+                        f"on-chain #{int(onchain_id)} is already recorded for proposal {holder.id}; one on-chain "
+                        "proposal maps to one record",
+                    ))
+            if status == record.status or (status == "proposed" and record.status == "voting"):
+                # Already there (a retried record, or `voting` after the auto-open): keep the status,
+                # store the fields this call adds or corrects. The agent records the on-chain id this
+                # way when the first record had none.
+                changed = False
+                if onchain_id is not None and record.onchain_id != int(onchain_id):
+                    if record.onchain_id is not None and not correct_onchain_id:
+                        raise RuleViolation(rules.deny(
+                            "onchain_id_conflict",
+                            f"proposal {record.id} is already recorded as on-chain #{record.onchain_id}; a repeated "
+                            f"{status} does not change it to #{int(onchain_id)}. If #{record.onchain_id} is wrong, "
+                            "the host corrects it with correct_onchain_id=true while the vote is open",
+                        ))
+                    if record.onchain_id is not None and record.status not in ("proposed", "voting"):
+                        raise RuleViolation(rules.deny(
+                            "onchain_id_conflict",
+                            f"proposal {record.id} is {record.status}: its on-chain id is corrected only while the "
+                            "vote is open",
+                        ))
+                    if record.onchain_id is not None:
+                        record.against_bps, record.chain_synced_at = 0, None  # read for the wrong id
+                    record.onchain_id, changed = int(onchain_id), True
+                if tx_hash and record.status in ("proposed", "voting") and record.propose_tx != tx_hash:
+                    record.propose_tx, changed = tx_hash, True
+                if card_message_id and record.card_message_id != str(card_message_id):
+                    record.card_message_id, changed = str(card_message_id), True
+                if changed:
+                    record.updated_at = now
+                    old["status"] = record.status
+                return record
             require(rules.check_transition(record.status, status))
             if record.status == "draft" and status == "proposed":
                 require(rules.check_cooldown(state, now))
@@ -725,6 +778,8 @@ class FundService:
             if status == "proposed":
                 record.propose_tx = tx_hash or record.propose_tx
                 record.voting_ends_at = now + state.fund.voting_period
+                if state.fund.voting_period > 0:
+                    record.status = "voting"  # Pending on chain from the propose block (see docstring)
             if status == "review" and record.review_ends_at is None:
                 record.review_ends_at = now + state.fund.voting_period  # reviewPeriod = 1800 s on 4663
             if status == "vetoed":
@@ -734,7 +789,8 @@ class FundService:
             return record
 
         record = self.backend.update(fund, mutate)
-        self._emit(FundEvent(EV_STATUS, fund, proposal=record, old_status=old.get("status", "")))
+        if old:
+            self._emit(FundEvent(EV_STATUS, fund, proposal=record, old_status=old.get("status", "")))
         return record
 
     def set_chain_state(
@@ -781,9 +837,9 @@ class FundService:
         `voteEnd`, `reviewEnd` and `review.coverage.kind` (none / partial /
         full / unpriced: the guardian Approve coverage execute needs, about 35%
         of maxCapital), and the chain `state` moves the local status forward
-        (GuardianReview -> review, Approved -> approved, Executed -> executed,
+        (Pending -> voting, GuardianReview -> review, Approved -> approved, Executed -> executed,
         Rejected -> vetoed) when that is a legal step. `proposeGate.cooldownUntil`
-        replaces the local cooldown; `governor` gives cooldownPeriod and
+        extends the local cooldown (never shortens it); `governor` gives cooldownPeriod and
         vetoThresholdBps; `fund.depositsOpen` (the vault's openDeposits and not
         the factory's depositsRestricted) replaces `open_deposits`: `true` at
         once, `false` only after two reads in a row (the app's rule read fails
@@ -806,16 +862,32 @@ class FundService:
         deposits_open = fund_info.get("depositsOpen")
         deposits_open = deposits_open if isinstance(deposits_open, bool) else None
         deposit_order = _deposit_order(data.get("members"))
-        nav = _nav_snapshot(data, self.clock())
+        read_at = self.clock()
+        nav = _nav_snapshot(data, read_at)
         if gov or gate or fee is not None or deposit_order or deposits_open is not None or nav is not None:
             def fund_mutate(state: FundState) -> None:
                 if str(gov.get("cooldownPeriod") or "").isdigit():
-                    state.fund.cooldown_period = int(gov["cooldownPeriod"])
+                    period = int(gov["cooldownPeriod"])
+                    if MIN_COOLDOWN_PERIOD_S <= period <= MAX_COOLDOWN_PERIOD_S:  # seconds, the governor's bounds
+                        state.fund.cooldown_period = period
+                    else:
+                        _log.warning("fund %s: ignoring governor.cooldownPeriod %r (outside 60 s .. 30 days)",
+                                     state.fund.name, gov.get("cooldownPeriod"))
                 if str(gov.get("vetoThresholdBps") or "").isdigit():
                     state.fund.veto_threshold_bps = int(gov["vetoThresholdBps"])
                 if "cooldownUntil" in gate:
+                    # Only ever later: a read cached from before a settle / veto the plugin just
+                    # recorded says 0 and would clear a cooldown the governor still enforces
+                    # (CooldownNotElapsed). A local cooldown that is too long ends by itself.
+                    # Sane values only: unix seconds, finite, at most the longest governor cooldown
+                    # ahead (a read in ms, 1e400 or Infinity is ignored, so one bad read cannot stick).
                     until = _opt_float(gate.get("cooldownUntil"))
-                    state.fund.cooldown_until = until
+                    if until is not None and not (math.isfinite(until) and 0 <= until <= read_at + MAX_COOLDOWN_AHEAD_S):
+                        _log.warning("fund %s: ignoring proposeGate.cooldownUntil %r (not a sane unix time)",
+                                     state.fund.name, gate.get("cooldownUntil"))
+                        until = None
+                    if until is not None and (state.fund.cooldown_until is None or until > state.fund.cooldown_until):
+                        state.fund.cooldown_until = until
                 if fee is not None:
                     state.fund.agent_fee_bps = fee  # the chain's value; drafts refuse it above the cap
                 if deposits_open is not None:
@@ -993,6 +1065,11 @@ def is_portfolio(record: ProposalRecord) -> bool:
 # `depositsOpen: false` with no warning. So an open fund closes only after this many
 # consecutive reads say so; `true` applies at once (a failed read never opens a fund).
 DEPOSITS_CLOSE_AFTER_READS = 2
+# The governor's cooldownPeriod is 1 minute .. 30 days (GovernorParameters); a chain cooldown further
+# ahead than this is not a unix time in seconds, and a period outside it is not seconds either.
+MIN_COOLDOWN_PERIOD_S = 60
+MAX_COOLDOWN_PERIOD_S = 30 * 86400
+MAX_COOLDOWN_AHEAD_S = 31 * 86400
 
 
 def _apply_deposits_open(state: FundState, deposits_open: bool) -> None:
@@ -1029,7 +1106,10 @@ def _start_cooldown(state: FundState, now: float) -> None:
 
 
 # tg-card `proposals[].state` -> local status the chain read may move a proposal to.
+# The names are the governor's ProposalState enum (sherwood app funds/_lib/tg-card.ts reads
+# `stateOf`); `Pending` is LP voting, open from the propose block until voteEnd.
 CHAIN_STATES = {
+    "Pending": "voting",
     "GuardianReview": "review",
     "Approved": "approved",
     "Executed": "executed",

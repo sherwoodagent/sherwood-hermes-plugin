@@ -57,6 +57,21 @@ def _no_app_link_network(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_prices_network(monkeypatch):
+    """The draft symbol check's GET /sources/prices never leaves the test process: unreachable
+    (drafts go ahead unchecked, with a note) unless a test stubs it. Cache cleared around every test."""
+    from sherwood_monitor.fund import symbols
+
+    def offline(url, timeout):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(symbols, "_get_json", offline)
+    symbols._SOURCES.clear()
+    yield
+    symbols._SOURCES.clear()
+
+
+@pytest.fixture(autouse=True)
 def _no_share_image_network(monkeypatch):
     """Share-image readiness checks never leave the test process: 404 (send text only) unless stubbed."""
     monkeypatch.setattr(applink, "_image_status", lambda url, timeout: 404)

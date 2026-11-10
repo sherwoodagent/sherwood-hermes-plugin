@@ -523,21 +523,94 @@ safe if the agent holds general-purpose tools. For a fund group:
 
 ## Risk checks
 
-When the agent attempts `sherwood strategy propose` or `sherwood proposal create`,
-the plugin blocks if any of these fail:
+When the agent attempts `sherwood strategy propose` or `sherwood proposal create`
+on a **fund vault** (a fund configured on this host), the fund's own ceilings
+apply, read from the local fund record with no chain read: the capital the
+template deploys (`--amount`; `--collateral-amount` for concentrated-liquidity,
+`--deposit` for lighter-perp, `--asset-in` for launchpad, `--max-capital` on
+`proposal create`) above max capital, or `--max-drawdown-bps` above max drawdown
+(omitted = the CLI default 2000), is blocked. The general checks below do not
+run on top.
+
+### What the propose guard does and does not do
+
+It checks the plain Sherwood CLI commands the agent runs in the terminal
+against the fund's ceilings: max capital and max drawdown, read from the local
+fund record.
+
+On a host with a fund, a terminal command "names" the CLI or a fund vault when
+it contains `sherwood` (on its own or as the end of a path),
+`sherwoodagent/cli`, or a fund vault address. The check is made after quotes,
+backslashes and line continuations are dropped.
+
+On such a line, every command must be one of these:
+
+- the sherwood CLI;
+- the exact install line `npm i -g @sherwoodagent/cli` (optionally with
+  `@X.Y.Z` or `@latest`);
+- a read-only tool, by bare name: `echo`, `printf` (without `-v`), `grep`,
+  `egrep`, `fgrep`, `cat`, `head`, `tail`, `wc`, `ls`, `jq`, `which`, `type`,
+  `stat`, `cut`, `tr`, `true`, `false`, `cd` or `pwd` (`test` and `[` are not
+  on the list: bash 4.3+ runs a command substitution quoted inside
+  `test -v 'x[…]'`);
+- `cast call`, `cast calldata`, `cast chain-id` or `cast 4byte`;
+- `curl` to an http(s) URL with no option that writes or uploads a file;
+- `hermes sherwood start`, `stop`, `status`, `tail` or `install-cron`.
+
+Shell keywords such as `if`, `then`, `do`, `!`, `{` and `time`, and the
+closers `fi`, `done` and `}`, may wrap these.
+
+Any other command on the line refuses the whole line. That includes `chmod`
+and running a file you just wrote, `xargs`, `tee`, an interpreter, `cast send`,
+and `hermes sherwood fund-bind`, which the host types in their own shell.
+
+The line is also refused if it contains any of these:
+
+- a shell expansion (`$`, backticks, braces, globs, extglob, process
+  substitution);
+- a shell, `eval`, `source`, an alias, a function or a here-doc;
+- environment set by an assignment, `export`, `read` or `printf -v`;
+- a launcher that may add arguments;
+- an unquoted `#`;
+- more than 32 KB of text;
+- a read-only tool that carries the CLI name or a vault and sends its output
+  to a file, or to anything except another read-only tool or a sherwood
+  command that is not a propose.
+
+There is one exception: a plain variable is allowed as an option value of
+`sherwood vault info` or `sherwood governor info`.
+
+When a sherwood command is refused, run it on its own line with literal
+arguments, which is how `fund_pending_commands` lists it. `cast send` and
+`hermes sherwood fund-bind` have no such form: the host runs them in their own
+terminal.
+
+It is not a sandbox. Outside it are:
+
+- a line that names neither the CLI nor a fund vault. A script the agent
+  downloads or writes and then runs is outside it, even within one command, as
+  long as that line names neither.
+- anything set in an earlier terminal call: a script or file, a binary planted
+  on PATH, an alias or variable kept by the shell, or the fund record itself;
+- `execute_code`.
+
+The limits that hold regardless are the fund's guardian review and the members'
+veto on chain. A fund group's toolset must also not include terminal, file or
+code tools ([docs/fund-host-join.md](docs/fund-host-join.md)).
+
+For any other vault the plugin blocks if any of these fail (size from
+`--size-usd`, else `--amount` / `--max-capital`):
 
 - Position size > 25% of vault AUM
 - Total portfolio exposure > 50% of vault AUM
 - Protocol not in the vault's configured mandate list
 
-Day-1 limitation: the default state fetcher calls `sherwood vault info
-<sub> --json`, a subcommand that does not yet exist in the Sherwood CLI
-as of this plugin version. Until that subcommand lands upstream, the
-state fetcher returns `None` and the `pre_tool_call` hook fails-open
-(allows the proposal) and logs a warning. This is deliberate: we ship
-the enforcement scaffolding without synthesizing fake vault state. Once
-the CLI subcommand exists, checks engage automatically — no plugin
-change required.
+These general checks are advisory and fail open: they need vault state from
+`sherwood vault info --json`, and the Sherwood CLI (0.103.0) has no `--json`
+there. The state fetcher reads `sherwood vault info --help` once and runs the
+read only when it lists `--json`; until then it returns `None`, and the
+`pre_tool_call` hook allows the proposal and logs why. Once the CLI ships the
+flag, the checks engage with no plugin change.
 
 ## Development
 
