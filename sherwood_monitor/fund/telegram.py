@@ -728,6 +728,8 @@ class FundTelegramBridge:
         self._sync_task: asyncio.Task[None] | None = None
         self._seen_revision: dict[str, int] = {}
         self._seen_status: dict[tuple[str, str], str] = {}
+        self._sync_fails: dict[tuple[str, str], tuple[int, float]] = {}  # record -> (failures, next try)
+        self.sync_clock: Callable[[], float] = time.monotonic
         self._join_cards: dict[tuple[str, str], float] = {}
         # Agent context bound to a chat (and the senders whose turn may receive it).
         self._chat_context: collections.deque[tuple[float, str, frozenset[str], str]] = collections.deque(maxlen=50)
@@ -1075,6 +1077,7 @@ class FundTelegramBridge:
         task = self._sync_task
         if task is not None and not task.done() and task.get_loop() is loop:
             return
+        self.stop_store_sync()  # a task on an older loop: never two sync tasks in one process
         self._sync_task = loop.create_task(self._store_sync_loop(), name="shfund:store-sync")
 
     def stop_store_sync(self) -> None:
@@ -1134,12 +1137,21 @@ class FundTelegramBridge:
                     continue  # an old record never got a card: not something to post now
                 if not missing and not (rec.card_message_id and before is not None and before != rec.status):
                     continue
+                fails, next_try = self._sync_fails.get(key, (0, 0.0))
+                if self.sync_clock() < next_try:
+                    clean = False  # backing off: look again on a later tick
+                    continue
                 try:
                     await self._sync_card(chat, name, rec.id)
                     posted += int(missing)
+                    self._sync_fails.pop(key, None)
                 except Exception as exc:
                     clean = False
-                    _log.warning("proposal card (chat=%s proposal=%s) not synced: %s", chat, rec.id, type(exc).__name__)
+                    fails += 1
+                    wait = STORE_SYNC_BACKOFF_S if fails >= STORE_SYNC_BACKOFF_AFTER else 0.0
+                    self._sync_fails[key] = (fails, self.sync_clock() + wait)
+                    if fails == 1:  # one line per failing streak
+                        _log.warning("proposal card (chat=%s proposal=%s) not synced: %s", chat, rec.id, type(exc).__name__)
             if clean:
                 self._seen_revision[name] = st.revision
         return posted
@@ -1259,11 +1271,22 @@ class FundTelegramBridge:
             if rec is None:
                 return
             pid = _display_id(rec)
-            if rec.card_message_id:
+            sent = None if rec.card_message_id else self._sent_card_id(chat, pid)
+            if sent is not None:
+                # This process already sent the card; only its id write-back failed. Retry that, never
+                # the send (a second card in the group).
+                await asyncio.to_thread(self.service.set_card_message, fund, rec.id, str(sent))
+            elif rec.card_message_id:
                 await self.runtime.refresh_proposal_card(chat, pid)  # type: ignore[union-attr]
             elif rec.status in ("proposed", "voting"):
                 await self.runtime.post_proposal_card(chat, pid)  # type: ignore[union-attr]
             # drafts / cancelled drafts never had a proposal card
+
+    def _sent_card_id(self, chat: int, pid: str) -> int | None:
+        """The message id of the proposal card this process already sent for ``pid``, if any."""
+        cards = getattr(self.runtime, "proposals", None)
+        ref = cards.live.refs.get(cards.key(chat, pid)) if cards is not None else None
+        return int(ref.message_id) if ref is not None else None
 
     # Waits before re-checking a share image that answered 503 ("not readable yet").
     image_retry_delays: tuple[float, ...] = (5.0, 15.0)
@@ -1341,6 +1364,8 @@ class FundTelegramBridge:
 
 STORE_SYNC_INTERVAL_S = 12.0
 STORE_SYNC_MAX_AGE_S = 24 * 3600.0  # a proposed/voting record untouched for a day gets no new card
+STORE_SYNC_BACKOFF_AFTER = 3  # failures in a row before a record backs off
+STORE_SYNC_BACKOFF_S = 300.0
 
 
 async def _logged(coro: Any, what: str) -> Any:

@@ -698,3 +698,81 @@ async def test_the_store_sync_never_posts_drafts_or_stale_records(tmp_path, monk
     assert await bridge.reconcile() == 0
     await settle_tasks()
     assert bot.send_message.await_count == n
+
+
+async def test_a_failed_card_id_write_back_never_sends_a_second_card(tmp_path, monkeypatch):
+    """Delta review D1 (#45): Telegram took the card, then the store write failed (lock timeout). Later
+    ticks retry only the write-back, never the send."""
+    from sherwood_monitor.fund.store import FundStoreError
+
+    ctx, rt, bridge, bot = await _drafted_then_proposed_elsewhere(tmp_path, monkeypatch)
+    real = bridge.service.set_card_message
+    fails = {"n": 0}
+
+    def flaky(*a, **kw):
+        if fails["n"] < 3:
+            fails["n"] += 1
+            raise FundStoreError("lock timeout")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(bridge.service, "set_card_message", flaky)
+    for _ in range(5):
+        await bridge.reconcile()
+        await settle_tasks()
+    assert len(_proposal_cards(bot)) == 1 and fails["n"] == 3
+    sent = rt.proposals.live.refs[rt.proposals.key(CHAT, "9")].message_id
+    assert bridge.service.load("alpha-fund").proposal("9").card_message_id == str(sent)
+
+
+async def test_a_card_that_keeps_failing_to_send_backs_off(tmp_path, monkeypatch, caplog):
+    """Delta review D2: e.g. the bot was removed from the group. After 3 failures, one try per 5 min,
+    one WARNING per streak."""
+    ctx, rt, bridge, bot = await _drafted_then_proposed_elsewhere(tmp_path, monkeypatch)
+    t = [1_000.0]
+    bridge.sync_clock = lambda: t[0]
+    sends = []
+
+    async def refused(chat, pid, **kw):
+        sends.append(pid)
+        raise RuntimeError("Forbidden: bot was kicked")
+
+    monkeypatch.setattr(rt, "post_proposal_card", refused)
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    for _ in range(6):
+        await bridge.reconcile()
+        t[0] += 12
+    assert len(sends) == 3  # then it waits
+    t[0] += 300
+    await bridge.reconcile()
+    assert len(sends) == 4
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "not synced" in r.getMessage()]
+    assert len(warned) == 1
+
+
+async def test_a_new_loop_cancels_the_old_sync_task(tmp_path, monkeypatch):
+    """Delta review D4: a reconnect onto a new loop never leaves two sync tasks running."""
+    import threading
+
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    bridge.stop_store_sync()
+    other = asyncio.new_event_loop()
+    thread = threading.Thread(target=other.run_forever, daemon=True)
+    thread.start()
+    try:
+        async def start_there():
+            bridge.start_store_sync()
+            return bridge._sync_task
+
+        old = asyncio.run_coroutine_threadsafe(start_there(), other).result(2)
+        assert old is not None and not old.done()
+        bridge.start_store_sync()  # the runtime rebound onto this loop
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), other).result(2)
+        assert old.cancelled()
+        assert bridge._sync_task is not old and bridge._sync_task.get_loop() is asyncio.get_running_loop()
+    finally:
+        bridge.stop_store_sync()
+        other.call_soon_threadsafe(other.stop)
+        thread.join(2)
+        other.close()
