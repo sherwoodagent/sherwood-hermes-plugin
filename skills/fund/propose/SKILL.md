@@ -64,8 +64,12 @@ Raw calldata legs do not.
 ## The bond
 
 - **Bond = 1% of coverage.** Coverage is the max capital. The draft response
-  shows `bond_value_asset_units`; quote it in WOOD (the CLI quotes it from the
-  WOOD TWAP feed) and pass `bond_quote_wood`.
+  shows `bond_value_asset_units`. With `proposal_signer: agent` there is
+  nothing to quote at draft time: the Sherwood CLI quotes the WOOD bond and
+  approves it when the operator runs the shipped propose command, so a draft
+  without `bond_quote_wood` is complete (`bond.missing` says so) and the rest
+  of this section is the CLI's job. With `proposal_signer: host`, quote it in
+  WOOD (the CLI quotes it from the WOOD TWAP feed) and pass `bond_quote_wood`.
 - **Approve quote + 5%, never unlimited.** The only WOOD allowance you ever
   grant for a bond is `approve_wood` from the draft response, to the
   governor's bond escrow. A `max`/unlimited approval is blocked outright.
@@ -91,7 +95,9 @@ Raw calldata legs do not.
 1. `fund_status` (use `scope` for the chain, the vault, and which templates
    `sherwood strategy list` actually printed), then `fund_draft_proposal`
    with symbol + `weight_bps` legs or a generic-call `calls` plan. The draft
-   card posts in the group.
+   card posts in the group by itself. Do what the result's `next` says: one
+   short line in the chat, then stop. Do not fetch `prepare.url`, do not type
+   a `sherwood ...` command for anyone, do not offer a one-shot.
 2. Wait for the host's 🚀 Ship it. Never propose a draft the host has not
    shipped: shipping is the go-ahead (the plugin's rule; nothing on chain
    enforces it, so it is on you).
@@ -119,12 +125,13 @@ Raw calldata legs do not.
      clone, pinned metadata URI, leg calldata) before you sign. The draft
      keeps your slot meanwhile. If the thesis or legs change, cancel it and
      draft again.
-3. Post the card in the group: thesis, legs, max capital, max drawdown, bond,
-   voting window, and "object with an Against vote if you disagree".
-4. Sign from your own wallet, in order: the swap (only if
-   `bond.swap_first`), the exact approve, then propose (`prepare.body` to
-   `POST {tx_builder_url}/prepare/propose`, or the CLI).
-5. `fund_set_proposal_status(proposal_id, status="proposed", onchain_id,
+3. The plugin posts the draft card in the group with 🚀 Ship it and
+   ✍️ Co-sign. Do not post your own card; say one short line, as the
+   result's `next` says. Do not call `prepare.url` from the chat.
+4. The host taps 🚀 Ship it, then ✍️ Co-sign, and signs on the signing page
+   from their own wallet (the swap only if needed, the exact approve, then
+   propose).
+5. Once it is on chain: `fund_set_proposal_status(proposal_id, status="proposed", onchain_id,
    tx_hash)`. This opens voting on the card (the record moves to `voting`).
 6. If anything fails before step 5, `fund_set_proposal_status(...,
    status="cancelled")` so the slot frees up, and say so in chat.

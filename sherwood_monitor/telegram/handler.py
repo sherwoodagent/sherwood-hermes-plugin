@@ -86,7 +86,11 @@ def _safe(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
 
     @functools.wraps(fn)
     async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        scope = getattr(getattr(self, "rt", None), "secret_scope", None)
+        rt = getattr(self, "rt", None)
+        remember = getattr(rt, "remember_loop", None)
+        if callable(remember):
+            remember()
+        scope = getattr(rt, "secret_scope", None)
         try:
             with scope.installed() if scope is not None else contextlib.nullcontext():
                 return await fn(self, *args, **kwargs)

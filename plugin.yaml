@@ -1,6 +1,6 @@
 manifest_version: 2
 name: sherwood-monitor
-version: "0.9.0"
+version: "0.9.1"
 description: >-
   Bridges Sherwood fund events (on-chain) into Hermes, and runs a group-chat
   fund: your Hermes pitches trades in a Telegram group, members deposit and

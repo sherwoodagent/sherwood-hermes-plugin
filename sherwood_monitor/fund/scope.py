@@ -372,6 +372,36 @@ def scope_state(rt: Any, **hook_kwargs: Any) -> tuple[FundState | None, str]:
         return None, ""
 
 
+# Standing rules for a turn in a fund's own group chat (live group test 2026-11-10: the agent loaded
+# the generic `sherwood` skill, fetched prepare.url, typed a propose command and offered a one-shot).
+_CHAT_HEAD = (
+    "\n\n<sherwood-fund-chat>\n"
+    "You are in the fund's group chat. There is no terminal here: never write, paste or suggest a "
+    "propose command, never call a prepare URL or any API from a draft result, and never offer to run a "
+    "one-shot. The path is: a member pitches -> the host says \"ship it\" (or 3 🔥) -> you draft with "
+    "fund_draft_proposal -> the plugin posts the draft card -> "
+)
+_CHAT_TAIL = (
+    " Follow the fund-propose skill, not the generic sherwood skill. "
+    "Only symbols in the Sherwood prices source can be held: never call a stock live or tradable here from "
+    "a web search.\n"
+    "</sherwood-fund-chat>"
+)
+# proposal_signer: agent (the shipped command runs in the operator's one-shot or approve-mode cron).
+FUND_CHAT_RULES = _CHAT_HEAD + "the host taps 🚀 Ship it -> the operator runs the propose from a terminal." + _CHAT_TAIL
+# proposal_signer: host (the default): the draft card's ✍️ Co-sign hands the host a signing page.
+FUND_CHAT_RULES_HOST = (
+    _CHAT_HEAD + "the host taps 🚀 Ship it, then ✍️ Co-sign, and signs the proposal from their own wallet on "
+    "the signing page." + _CHAT_TAIL
+)
+
+
+def fund_chat_rules(rt: Any) -> str:
+    """The <sherwood-fund-chat> block for this Hermes's proposal signer."""
+    settings = getattr(rt, "settings", None)
+    return FUND_CHAT_RULES_HOST if getattr(settings, "host_cosigns", True) else FUND_CHAT_RULES
+
+
 def make_fund_scope_source(rt: Any) -> Callable[..., Awaitable[dict[str, str] | None]]:
     """pre_llm context: this turn's fund (see :func:`scope_state`), or nothing.
 
@@ -387,10 +417,13 @@ def make_fund_scope_source(rt: Any) -> Callable[..., Awaitable[dict[str, str] | 
         state, note = scope_state(rt, **kwargs)
         if state is None:
             return {"context": note} if note else None
+        # A chat turn in this fund's own chat (scope_state only returns a state there) gets the
+        # group path; the operator's terminal turn does not.
+        chat = fund_chat_rules(rt) if current_caller(**kwargs).messaging else ""
         sherwood_bin = getattr(rt, "sherwood_bin", "sherwood")
         cached = cached_strategy_templates(sherwood_bin)
         if cached is not None:
-            return {"context": scope_text(fund_scope(state, cached))}
+            return {"context": scope_text(fund_scope(state, cached)) + chat}
         try:
             discovered = await asyncio.wait_for(
                 asyncio.to_thread(discover_strategy_templates, sherwood_bin),
@@ -401,6 +434,6 @@ def make_fund_scope_source(rt: Any) -> Callable[..., Awaitable[dict[str, str] | 
         except Exception as exc:
             _log.warning("strategy list skipped: %s", exc)
             discovered = _failed(f"`sherwood strategy list` failed ({exc.__class__.__name__})")
-        return {"context": scope_text(fund_scope(state, discovered))}
+        return {"context": scope_text(fund_scope(state, discovered)) + chat}
 
     return source

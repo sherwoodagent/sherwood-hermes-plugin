@@ -522,6 +522,35 @@ def test_pending_commands_then_recording_the_propose(agent_host, tmp_path, card,
     assert agent_host.call_tool("fund_pending_commands")["proposals"] == []
 
 
+def test_agent_mode_draft_result_says_what_happens_next(agent_host, tmp_path, card, cli):
+    """Live group test 2026-11-10: the agent fetched prepare.url, wrote its own propose command and
+    offered a one-shot. The result now says the next step in plain words, and the WOOD bond is the
+    CLI's job at propose, not a quote the group agent must fetch."""
+    assert agent_host.call_tool("fund_claim_topic", {"topic": "NVDA AAPL pitch"})["ok"]
+    d = agent_host.call_tool("fund_draft_proposal", draft_tool_args())  # no bond_quote_wood
+    assert d["ok"]
+    nxt = d["next"]
+    assert "🚀 Ship it" in nxt and "draft card" in nxt and "one short line" in nxt
+    assert "prepare" in nxt and "do not" in nxt.lower() and "fund_pending_commands" in nxt
+    assert "sherwood strategy propose" not in nxt  # it never hands the group a command
+    bond = d["bond"]
+    assert "draft again" not in bond["missing"] and "1% of coverage" in bond["missing"]
+    assert "CLI" in bond["missing"] and "propose" in bond["missing"]
+    assert d["proposal"]["bond_wood"] == "0"
+    # Shipping a draft with no bond quote works: the command never carries a bond, the CLI quotes it.
+    svc = FundService(LocalJsonBackend(tmp_path / STATE_DIR))
+    svc.ship_draft("alpha-fund", "p-1", caller_telegram_id="900", agent_signs=True)
+    (entry,) = agent_host.call_tool("fund_pending_commands")["proposals"]
+    assert entry["command"] == EXPECTED_PROPOSE
+
+
+def test_host_mode_draft_result_keeps_the_bond_quote_step(host):
+    assert host.call_tool("fund_claim_topic", {"topic": "NVDA AAPL pitch"})["ok"]
+    d = host.call_tool("fund_draft_proposal", draft_tool_args())
+    assert d["ok"] and "bond_quote_wood" in d["bond"]["missing"]
+    assert "Co-sign" in d["next"] and "🚀 Ship it" in d["next"]
+
+
 def test_a_handed_out_command_is_held_back_for_30_minutes(agent_host, tmp_path, card, cli):
     svc = shipped_draft(agent_host, tmp_path)
     first = agent_host.call_tool("fund_pending_commands")

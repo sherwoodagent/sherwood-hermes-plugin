@@ -44,6 +44,7 @@ from ..telegram.runtime import TelegramRuntime
 from ..telegram.settings import TelegramSettings, link_secret
 from ..telegram.types import (
     DEFAULT_THRESHOLD_BPS,
+    DraftDeclined,
     DraftRequested,
     FundActionError,
     FundView,
@@ -720,6 +721,15 @@ class FundTelegramBridge:
         self._secret = secret
         self.runtime: TelegramRuntime | None = None
         self._card_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._declined_said: dict[tuple[int, int], float] = {}  # (chat, pitch message) -> when said
+        # Store sync (gateway process only): writes made by another process (the operator's
+        # `hermes -z` one-shot) never reach this process's observers, so poll the fund revision.
+        self.store_sync_interval_s = STORE_SYNC_INTERVAL_S
+        self._sync_task: asyncio.Task[None] | None = None
+        self._seen_revision: dict[str, int] = {}
+        self._seen_status: dict[tuple[str, str], str] = {}
+        self._sync_fails: dict[tuple[str, str], tuple[int, float]] = {}  # record -> (failures, next try)
+        self.sync_clock: Callable[[], float] = time.monotonic
         self._join_cards: dict[tuple[str, str], float] = {}
         # Agent context bound to a chat (and the senders whose turn may receive it).
         self._chat_context: collections.deque[tuple[float, str, frozenset[str], str]] = collections.deque(maxlen=50)
@@ -991,11 +1001,35 @@ class FundTelegramBridge:
         draft card when that draft is recorded. A rule refusal (fund full,
         cooldown, the agent busy) is said in the chat once; it is not raised,
         so the flow does not retry on every further 🔥.
+
+        A pitch whose $TICKERs are all unpriced (from the prices cache only; no
+        network here) raises DraftDeclined after saying so: the pitch stays
+        shippable, and the same pitch drafts once the source prices it. A 🔥 retry
+        is not answered again within 10 minutes.
         """
         st = await asyncio.to_thread(self.state_for_chat, event.chat_id)
         if st is None:
             return
         who = event.idea_by_name or f"user{event.idea_by}"
+        from .tools import priced_examples, unpriced_pitch_symbols
+
+        unpriced = unpriced_pitch_symbols(st, event.text, self.service.tx_builder_url)
+        if unpriced:
+            key = (int(event.chat_id), int(event.source_message_id))
+            now = time.time()
+            if event.trigger != "fire" or now - self._declined_said.get(key, -1e18) > 600:
+                self._declined_said[key] = now
+                names = ", ".join(unpriced)
+                examples = priced_examples(self.service.tx_builder_url)
+                await self._say(
+                    event.chat_id,
+                    f"Can't draft {who}'s idea: {names} {'is' if len(unpriced) == 1 else 'are'} not in the Sherwood "
+                    f"prices source on chain {st.fund.chain_id}, so the fund cannot hold "
+                    f"{'it' if len(unpriced) == 1 else 'them'}. Pitch it again with priced $TICKERs only"
+                    + (f" (e.g. {examples})." if examples else "."),
+                    reply_to=event.source_message_id,
+                )
+            raise DraftDeclined(", ".join(unpriced))
         try:
             await asyncio.to_thread(
                 lambda: self.service.request_draft(
@@ -1017,24 +1051,124 @@ class FundTelegramBridge:
     # -- observer: FundService -> cards ----------------------------------------------------
     def attach(self, runtime: TelegramRuntime | None) -> None:
         self.runtime = runtime
+        if runtime is not None:
+            runtime.on_ready.append(self.start_store_sync)
 
     def close(self) -> None:
-        """Plugin shutdown (the monitor's teardown): stop following fund events and cancel the
-        Telegram runtime's pending widget refreshes."""
+        """Plugin shutdown (the monitor's teardown): stop following fund events, stop the store
+        sync and cancel the Telegram runtime's pending widget refreshes."""
         self._unsubscribe()
+        if getattr(self, "_sync_task", None) is not None:
+            self.stop_store_sync()
         if self.runtime is not None:
             self.runtime.close()
 
-    def _submit(self, coro: Any) -> None:
+    # -- store sync: cards for writes made in another process ------------------------------
+    def start_store_sync(self) -> None:
+        """Start the periodic store check on the running (bot) loop. Idempotent; a no-op unless the
+        Telegram runtime is connected, so only the gateway process runs it."""
+        rt = self.runtime
+        if rt is None or not rt.connected:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = self._sync_task
+        if task is not None and not task.done() and task.get_loop() is loop:
+            return
+        self.stop_store_sync()  # a task on an older loop: never two sync tasks in one process
+        self._sync_task = loop.create_task(self._store_sync_loop(), name="shfund:store-sync")
+
+    def stop_store_sync(self) -> None:
+        task, self._sync_task = self._sync_task, None
+        if task is None or task.done():
+            return
+        loop = task.get_loop()
+        if loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(task.cancel)
+        except RuntimeError:  # the loop closed in between
+            pass
+
+    async def _store_sync_loop(self) -> None:
+        failing = False
+        while True:
+            await asyncio.sleep(self.store_sync_interval_s)
+            try:
+                await self.reconcile()
+                failing = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not failing:
+                    _log.warning("fund store sync failed (%s); retrying quietly", type(exc).__name__)
+                failing = True
+
+    async def reconcile(self) -> int:
+        """One store check. For each fund bound to an allowed chat whose stored revision moved since
+        this process last looked: post the proposal card for a recent proposed/voting record that has
+        none, and refresh a card whose status changed. Goes through ``_sync_card`` (per-proposal lock,
+        decided on the current record), so a card is never posted twice; its card id write-back bumps
+        the revision, and the next check finds nothing to do. Returns the number of posts attempted."""
+        rt = self.runtime
+        if rt is None or not rt.connected:
+            return 0
+        names = await asyncio.to_thread(self.service.backend.list_funds)
+        posted = 0
+        for name in names:
+            st = await asyncio.to_thread(self._load, name)
+            if st is None or not st.fund.telegram_chat_id:
+                continue
+            chat = _int_or_none(st.fund.telegram_chat_id)
+            if chat is None or not rt.settings.chat_allowed(chat):
+                continue
+            if self._seen_revision.get(name) == st.revision:
+                continue
+            now = time.time()
+            clean = True
+            for rec in st.proposals:
+                key = (name, rec.id)
+                before = self._seen_status.get(key)
+                self._seen_status[key] = rec.status
+                missing = rec.status in ("proposed", "voting") and not rec.card_message_id
+                if missing and now - float(rec.updated_at or 0) > STORE_SYNC_MAX_AGE_S:
+                    continue  # an old record never got a card: not something to post now
+                if not missing and not (rec.card_message_id and before is not None and before != rec.status):
+                    continue
+                fails, next_try = self._sync_fails.get(key, (0, 0.0))
+                if self.sync_clock() < next_try:
+                    clean = False  # backing off: look again on a later tick
+                    continue
+                try:
+                    await self._sync_card(chat, name, rec.id)
+                    posted += int(missing)
+                    self._sync_fails.pop(key, None)
+                except Exception as exc:
+                    clean = False
+                    fails += 1
+                    wait = STORE_SYNC_BACKOFF_S if fails >= STORE_SYNC_BACKOFF_AFTER else 0.0
+                    self._sync_fails[key] = (fails, self.sync_clock() + wait)
+                    if fails == 1:  # one line per failing streak
+                        _log.warning("proposal card (chat=%s proposal=%s) not synced: %s", chat, rec.id, type(exc).__name__)
+            if clean:
+                self._seen_revision[name] = st.revision
+        return posted
+
+    def _submit(self, coro: Any, what: str = "card") -> None:
+        """Run a card post / refresh on the bot's loop. A skipped or failed one is a WARNING (never
+        message text, tokens or URLs: only the kind, ids and the exception class)."""
         rt = self.runtime
         if rt is None or not rt.connected:
             coro.close()  # no PTB / no bot / adapter not up: cards are a no-op
+            _log.warning("%s not posted: telegram runtime is not connected in this process", what)
             return
         try:
-            rt.submit(coro)
-        except RuntimeError as exc:
+            rt.submit(_logged(coro, what))
+        except RuntimeError:
             coro.close()
-            _log.debug("telegram runtime not ready: %s", exc)
+            _log.warning("%s not posted: telegram runtime has no event loop yet", what)
 
     async def _say(self, chat_id: int, text: str, *, reply_to: int | None = None) -> None:
         rt = self.runtime
@@ -1092,12 +1226,13 @@ class FundTelegramBridge:
         rec = ev.proposal
         if ev.kind == fund_service.EV_DRAFTED and rec is not None:
             shortfall = ev.data.get("bond", {}).get("swap_gap_wood")
-            self._submit(self._post_draft(chat, rec.id, shortfall, rec.pitch_message_id))
+            self._submit(self._post_draft(chat, rec.id, shortfall, rec.pitch_message_id),
+                         f"draft card (chat={chat} draft={rec.id})")
         elif ev.kind in (fund_service.EV_STATUS, fund_service.EV_VOTE, fund_service.EV_TALLY) and rec is not None:
-            self._submit(self._sync_card(chat, ev.fund, rec.id))
+            self._submit(self._sync_card(chat, ev.fund, rec.id), f"proposal card (chat={chat} proposal={rec.id})")
         elif ev.kind == fund_service.EV_SETTLED and ev.receipt is not None:
             if rec is not None:
-                self._submit(self._sync_card(chat, ev.fund, rec.id))
+                self._submit(self._sync_card(chat, ev.fund, rec.id), f"proposal card (chat={chat} proposal={rec.id})")
             r = ev.receipt
             image = self._receipt_image(st, rec, r)
             receipt = Receipt(
@@ -1107,11 +1242,11 @@ class FundTelegramBridge:
                 idea_by=_int_or_none(r.idea_by),
                 backers=len(rec.backers) if rec is not None else 0,
             )
-            self._submit(self._post_receipt(chat, receipt, image))
+            self._submit(self._post_receipt(chat, receipt, image), f"settle receipt (chat={chat})")
         elif ev.kind == fund_service.EV_MEMBER_APPROVED and ev.member is not None:
             view = _member_view(ev.member)
             if view is not None:
-                self._submit(self._post_member(chat, view))
+                self._submit(self._post_member(chat, view), f"member card (chat={chat})")
 
     async def _post_draft(self, chat: int, draft_id: str, shortfall_units: Any, reply_to: int | None) -> None:
         shortfall = _decimal(shortfall_units, WOOD_DECIMALS) if shortfall_units else None
@@ -1136,11 +1271,22 @@ class FundTelegramBridge:
             if rec is None:
                 return
             pid = _display_id(rec)
-            if rec.card_message_id:
+            sent = None if rec.card_message_id else self._sent_card_id(chat, pid)
+            if sent is not None:
+                # This process already sent the card; only its id write-back failed. Retry that, never
+                # the send (a second card in the group).
+                await asyncio.to_thread(self.service.set_card_message, fund, rec.id, str(sent))
+            elif rec.card_message_id:
                 await self.runtime.refresh_proposal_card(chat, pid)  # type: ignore[union-attr]
             elif rec.status in ("proposed", "voting"):
                 await self.runtime.post_proposal_card(chat, pid)  # type: ignore[union-attr]
             # drafts / cancelled drafts never had a proposal card
+
+    def _sent_card_id(self, chat: int, pid: str) -> int | None:
+        """The message id of the proposal card this process already sent for ``pid``, if any."""
+        cards = getattr(self.runtime, "proposals", None)
+        ref = cards.live.refs.get(cards.key(chat, pid)) if cards is not None else None
+        return int(ref.message_id) if ref is not None else None
 
     # Waits before re-checking a share image that answered 503 ("not readable yet").
     image_retry_delays: tuple[float, ...] = (5.0, 15.0)
@@ -1214,6 +1360,21 @@ class FundTelegramBridge:
                 parts.append(str(pitch["context"]))
         parts.extend(self.take_chat_context(caller.chat_id, caller.user_id))
         return {"context": "\n\n".join(parts)} if parts else None
+
+
+STORE_SYNC_INTERVAL_S = 12.0
+STORE_SYNC_MAX_AGE_S = 24 * 3600.0  # a proposed/voting record untouched for a day gets no new card
+STORE_SYNC_BACKOFF_AFTER = 3  # failures in a row before a record backs off
+STORE_SYNC_BACKOFF_S = 300.0
+
+
+async def _logged(coro: Any, what: str) -> Any:
+    """Await a submitted card task; a failure is a WARNING here instead of an unretrieved task error."""
+    try:
+        return await coro
+    except Exception as exc:
+        _log.warning("%s not posted: %s", what, type(exc).__name__)
+        return None
 
 
 def _member_view(m: Member) -> MemberView | None:

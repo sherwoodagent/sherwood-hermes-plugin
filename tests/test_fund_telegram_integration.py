@@ -396,3 +396,383 @@ def test_wood_price_reader_is_cached_and_never_raises():
     t[0] = 1300.0
     price._fetch = lambda url, timeout: [{"symbol": "WOOD", "price_usd": "0.00086"}]
     assert price() == pytest.approx(0.00086)
+
+
+# -- live group test, 2026-11-10: bare "ship it", direct drafts, card logs ---------------------------
+
+
+def _setup(ctx):
+    out = ctx.call_tool("fund_setup", {
+        "fund": "alpha-fund", "vault": VAULT, "governor": GOVERNOR, "telegram_chat_id": str(CHAT),
+        "host_telegram_id": str(HOST_TG), "host_address": HOST_ADDR, "max_capital": "1000",
+        "max_drawdown_bps": 2500, "voting_period": 1800, "agent_fee_bps": 500,
+    })
+    assert out["ok"]
+
+
+NVDA_DRAFT = {
+    "thesis": "AI capex keeps beating", "legs": [{"summary": "buy NVDA", "symbol": "NVDA", "weight_bps": 10000}],
+    "max_capital": "40", "max_drawdown_bps": 2000, "strategy_duration_seconds": 21600,
+}
+
+
+async def test_bare_host_ship_it_claims_the_one_open_pitch_and_the_draft_card_replies_to_it(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=41, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot 100% $NVDA for 6 hours", mentions_bot=True))
+    ev = await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                                  text="@sherwoodagentbot ship it", mentions_bot=True))
+    assert ev is not None and ev.source_message_id == 41
+    await settle_tasks()
+    claims = ctx.call_tool("fund_status")["pitch_claims"]
+    assert [(c["agent"], c["topic"]) for c in claims] == [("alpha", "NVDA pitch")]
+    (hook,) = ctx.hooks["pre_llm_call"]
+    turn = await hook(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST_TG), user_message="ship it")
+    assert "<sherwood-fund-draft-requested>" in turn["context"]
+    d = ctx.call_tool("fund_draft_proposal", {"topic": "NVDA pitch", **NVDA_DRAFT})
+    assert d["ok"]
+    await settle_tasks()
+    draft_call = next(c for c in bot.send_message.await_args_list if "DRAFT" in c.kwargs.get("text", ""))
+    assert draft_call.kwargs["reply_to_message_id"] == 41
+
+
+PRICES = {"data": {"records": [
+    {"symbol": "TSLA", "address": "0x" + "31" * 20}, {"symbol": "NVDA", "address": "0x" + "32" * 20},
+]}}
+
+
+async def test_ship_it_on_an_unpriced_pitch_is_refused_in_the_group_from_the_cached_prices(tmp_path, monkeypatch):
+    from sherwood_monitor.fund import symbols
+
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: PRICES)
+    symbols.source_for(bridge.service.tx_builder_url)()  # a claim or draft warmed the cache earlier
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: pytest.fail("no network on the message path"))
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=41, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot 100% $NFLX for 6 hours", mentions_bot=True))
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot ship it", mentions_bot=True))
+    await settle_tasks()
+    (call,) = bot.send_message.await_args_list
+    assert call.kwargs["reply_to_message_id"] == 41
+    text = call.kwargs["text"]
+    assert "NFLX is not in the Sherwood prices source" in text and "NVDA" in text
+    assert "Pitch it again with priced $TICKERs only" in text
+    assert ctx.call_tool("fund_status")["pitch_claims"] == []
+    # Review M3: the host is not stuck. The pitch stays shippable; once the source prices NFLX it drafts.
+    assert rt.flow.open_pitches(CHAT)[0].drafted is False
+    priced = {"data": {"records": PRICES["data"]["records"] + [{"symbol": "NFLX", "address": "0x" + "33" * 20}]}}
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: priced)
+    symbols._SOURCES.clear()
+    symbols.source_for(bridge.service.tx_builder_url)()
+    ev = await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=43, user_id=HOST_TG, username="host",
+                                                  text="ship it", reply_to_message_id=41))
+    assert ev is not None
+    await settle_tasks()
+    assert [c["topic"] for c in ctx.call_tool("fund_status")["pitch_claims"]] == ["NFLX pitch"]
+
+
+async def test_ship_it_symbol_check_refuses_only_when_no_ticker_is_priced(tmp_path, monkeypatch):
+    """Review M3: "long $NVDA vs $SPY" names a priced leg; the plugin does not refuse it on $SPY
+    (the draft check still refuses an unpriced leg)."""
+    from sherwood_monitor.fund import symbols
+
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: PRICES)
+    symbols.source_for(bridge.service.tx_builder_url)()
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=41, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot long $NVDA vs $SPY", mentions_bot=True))
+    assert await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                                    text="ship it", reply_to_message_id=41)) is not None
+    await settle_tasks()
+    assert bot.send_message.await_args_list == []
+    assert [c["topic"] for c in ctx.call_tool("fund_status")["pitch_claims"]] == ["NVDA SPY pitch"]
+
+
+def test_dotted_tickers_are_read_whole():
+    from sherwood_monitor.fund.tools import topic_tickers
+
+    assert topic_tickers("long $BRK.B and $nvda. Then $TSLA") == ["BRK.B", "NVDA", "TSLA"]
+
+
+async def test_ship_it_with_a_cold_prices_cache_claims_without_a_network_call(tmp_path, monkeypatch):
+    from sherwood_monitor.fund import symbols
+
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    monkeypatch.setattr(symbols, "_get_json", lambda url, timeout: pytest.fail("no network on the message path"))
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=41, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot 100% $NFLX for 6 hours", mentions_bot=True))
+    await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                             text="@sherwoodagentbot ship it", mentions_bot=True))
+    await settle_tasks()
+    assert [c["topic"] for c in ctx.call_tool("fund_status")["pitch_claims"]] == ["NFLX pitch"]
+
+
+async def test_ambiguous_host_ship_it_is_answered_in_the_group_by_the_plugin(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert await rt.flow.on_message(IncomingMessage(chat_id=CHAT, message_id=42, user_id=HOST_TG, username="host",
+                                                    text="@sherwoodagentbot ship it", mentions_bot=True)) is None
+    (call,) = bot.send_message.await_args_list
+    assert call.kwargs["chat_id"] == CHAT and call.kwargs["reply_to_message_id"] == 42
+    assert "No open pitch" in call.kwargs["text"]
+    assert ctx.call_tool("fund_status")["pitch_claims"] == []
+
+
+async def test_direct_draft_without_a_pitch_posts_the_draft_card_and_logs_it(tmp_path, monkeypatch, caplog):
+    """Item 5 of the live test: the agent called fund_draft_proposal itself, with no pitch claim."""
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert ctx.call_tool("fund_claim_topic", {"topic": "100% NVDA 6h"})["ok"]
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    d = ctx.call_tool("fund_draft_proposal", {"topic": "100% NVDA 6h", **NVDA_DRAFT})
+    assert d["ok"] and d["proposal"]["pitch_message_id"] is None
+    await settle_tasks()
+    draft_call = next(c for c in bot.send_message.await_args_list if "DRAFT" in c.kwargs.get("text", ""))
+    assert draft_call.kwargs.get("reply_to_message_id") is None
+    posted = [r for r in caplog.records if r.getMessage().startswith("draft card posted")]
+    assert len(posted) == 1 and posted[0].levelname == "INFO"
+    assert f"chat={CHAT}" in posted[0].getMessage() and "draft=p-1" in posted[0].getMessage()
+
+
+async def test_a_skipped_card_post_is_a_warning(tmp_path, monkeypatch, caplog):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)  # no adapter connected
+    ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    assert ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})["ok"]
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "not connected" in r.getMessage()]
+    assert warned and "draft card (chat=" in warned[0].getMessage()
+
+
+async def test_a_failed_card_post_is_a_warning_without_the_error_text(tmp_path, monkeypatch, caplog):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    leak = "https://api.telegram.org/bot123:SECRET/sendMessage failed"
+    bot.send_message.side_effect = RuntimeError(leak)
+    bot.send_photo.side_effect = RuntimeError(leak)
+    ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    assert ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})["ok"]
+    await settle_tasks()
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING" and "draft card" in r.getMessage()]
+    assert warned and all("SECRET" not in w and "api.telegram.org" not in w for w in warned)
+
+
+async def test_cards_from_tool_threads_post_when_the_factory_ran_outside_a_loop(tmp_path, monkeypatch):
+    """If Hermes called the factory with no running loop, the first handler call binds it."""
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    rt.loop = None
+    await FundHandlers(rt).on_group_message(SimpleNamespace(message=None), SimpleNamespace(bot=bot))
+    assert rt.loop is asyncio.get_running_loop()
+    ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})
+    # A tool runs off the event loop (Hermes' worker thread): the card is submitted thread-safe.
+    d = await asyncio.to_thread(ctx.call_tool, "fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})
+    assert d["ok"]
+    await settle_tasks()
+    assert any("DRAFT" in c.kwargs.get("text", "") for c in bot.send_message.await_args_list)
+
+
+async def test_a_closed_loop_is_rebound(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    dead = asyncio.new_event_loop()
+    dead.close()
+    rt.loop = dead
+    rt.remember_loop()
+    assert rt.loop is asyncio.get_running_loop()
+
+
+# -- item 7 (review of #45): a proposal recorded in another process (the operator's hermes -z) ----------
+
+
+def _oneshot(bridge):
+    """Another process's FundService on the same store (the operator's `hermes -z` one-shot)."""
+    from sherwood_monitor.fund.service import FundService
+    from sherwood_monitor.fund.store import LocalJsonBackend
+
+    return FundService(LocalJsonBackend(bridge.service.backend._root))
+
+
+def _proposal_cards(bot):
+    return [c for c in bot.send_message.await_args_list if "<b>Proposal #9</b>" in c.kwargs.get("text", "")]
+
+
+async def _drafted_then_proposed_elsewhere(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})["ok"]
+    assert ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})["ok"]
+    await settle_tasks()
+    other = _oneshot(bridge)
+    seen = []
+    bridge.service.subscribe(seen.append)
+    other.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=9, tx_hash="0x" + "ab" * 32)
+    assert seen == []  # the gateway process heard nothing: the gap
+    return ctx, rt, bridge, bot
+
+
+async def test_the_gateway_store_sync_posts_the_card_for_a_proposal_recorded_elsewhere_once(tmp_path, monkeypatch):
+    ctx, rt, bridge, bot, = await _drafted_then_proposed_elsewhere(tmp_path, monkeypatch)
+    assert _proposal_cards(bot) == []
+    assert await bridge.reconcile() == 1
+    await settle_tasks(40)
+    assert len(_proposal_cards(bot)) == 1
+    assert bridge.service.load("alpha-fund").proposal("9").card_message_id
+    # The card id written back bumped the revision: the next tick reloads and posts nothing.
+    assert await bridge.reconcile() == 0
+    assert await bridge.reconcile() == 0
+    await settle_tasks(40)
+    assert len(_proposal_cards(bot)) == 1
+
+
+async def test_the_store_sync_runs_on_the_loop_survives_errors_and_stops_on_close(tmp_path, monkeypatch, caplog):
+    ctx, rt, bridge, bot = await _drafted_then_proposed_elsewhere(tmp_path, monkeypatch)
+    bridge.store_sync_interval_s = 0.01
+    real = bridge.service.backend.list_funds
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise OSError("disk busy")
+        return real()
+
+    monkeypatch.setattr(bridge.service.backend, "list_funds", flaky)
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    bridge.stop_store_sync()  # the one connect() started sleeps 12 s; restart it at the test interval
+    await asyncio.sleep(0)
+    bridge.start_store_sync()
+    first = bridge._sync_task
+    bridge.start_store_sync()  # idempotent
+    assert bridge._sync_task is first
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if _proposal_cards(bot):
+            break
+    await settle_tasks(40)
+    assert len(_proposal_cards(bot)) == 1
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "store sync" in r.getMessage()]
+    assert len(warned) == 1  # three failures in a row: one line
+    task = bridge._sync_task
+    bridge.close()
+    await asyncio.sleep(0.05)
+    assert task.done()
+
+
+async def test_the_store_sync_starts_when_the_adapter_connects(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert bridge._sync_task is not None and not bridge._sync_task.done()
+    bridge.close()
+
+
+async def test_the_store_sync_never_posts_drafts_or_stale_records(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})["ok"]
+    assert ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})["ok"]
+    await settle_tasks()
+    n = bot.send_message.await_count
+    assert await bridge.reconcile() == 0  # a draft is never a proposal card
+    other = _oneshot(bridge)
+    other.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=9, tx_hash="0x" + "ab" * 32)
+    other.backend.update("alpha-fund", lambda st: setattr(st.proposal("9"), "updated_at", 1.0))  # days old
+    assert await bridge.reconcile() == 0
+    await settle_tasks()
+    assert bot.send_message.await_count == n
+
+
+async def test_a_failed_card_id_write_back_never_sends_a_second_card(tmp_path, monkeypatch):
+    """Delta review D1 (#45): Telegram took the card, then the store write failed (lock timeout). Later
+    ticks retry only the write-back, never the send."""
+    from sherwood_monitor.fund.store import FundStoreError
+
+    ctx, rt, bridge, bot = await _drafted_then_proposed_elsewhere(tmp_path, monkeypatch)
+    real = bridge.service.set_card_message
+    fails = {"n": 0}
+
+    def flaky(*a, **kw):
+        if fails["n"] < 3:
+            fails["n"] += 1
+            raise FundStoreError("lock timeout")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(bridge.service, "set_card_message", flaky)
+    for _ in range(5):
+        await bridge.reconcile()
+        await settle_tasks()
+    assert len(_proposal_cards(bot)) == 1 and fails["n"] == 3
+    sent = rt.proposals.live.refs[rt.proposals.key(CHAT, "9")].message_id
+    assert bridge.service.load("alpha-fund").proposal("9").card_message_id == str(sent)
+
+
+async def test_a_card_that_keeps_failing_to_send_backs_off(tmp_path, monkeypatch, caplog):
+    """Delta review D2: e.g. the bot was removed from the group. After 3 failures, one try per 5 min,
+    one WARNING per streak."""
+    ctx, rt, bridge, bot = await _drafted_then_proposed_elsewhere(tmp_path, monkeypatch)
+    t = [1_000.0]
+    bridge.sync_clock = lambda: t[0]
+    sends = []
+
+    async def refused(chat, pid, **kw):
+        sends.append(pid)
+        raise RuntimeError("Forbidden: bot was kicked")
+
+    monkeypatch.setattr(rt, "post_proposal_card", refused)
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    for _ in range(6):
+        await bridge.reconcile()
+        t[0] += 12
+    assert len(sends) == 3  # then it waits
+    t[0] += 300
+    await bridge.reconcile()
+    assert len(sends) == 4
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "not synced" in r.getMessage()]
+    assert len(warned) == 1
+
+
+async def test_a_new_loop_cancels_the_old_sync_task(tmp_path, monkeypatch):
+    """Delta review D4: a reconnect onto a new loop never leaves two sync tasks running."""
+    import threading
+
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    bridge.stop_store_sync()
+    other = asyncio.new_event_loop()
+    thread = threading.Thread(target=other.run_forever, daemon=True)
+    thread.start()
+    try:
+        async def start_there():
+            bridge.start_store_sync()
+            return bridge._sync_task
+
+        old = asyncio.run_coroutine_threadsafe(start_there(), other).result(2)
+        assert old is not None and not old.done()
+        bridge.start_store_sync()  # the runtime rebound onto this loop
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0.05), other).result(2)
+        assert old.cancelled()
+        assert bridge._sync_task is not old and bridge._sync_task.get_loop() is asyncio.get_running_loop()
+    finally:
+        bridge.stop_store_sync()
+        other.call_soon_threadsafe(other.stop)
+        thread.join(2)
+        other.close()

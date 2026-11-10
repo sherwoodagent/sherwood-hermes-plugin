@@ -9,6 +9,7 @@ Rule failures come back as `{"ok": false, "blocked": true, "code", "error"}`.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
@@ -289,11 +290,23 @@ def check_leg_symbols(state: FundState, legs: list[Leg], tx_builder_url: str) ->
     (the draft then goes ahead unchecked: fails open, said in the tool result). Raises
     RuleViolation (`unknown_symbol`) when a symbol is not covered.
     """
-    symbols = list(dict.fromkeys(leg.symbol.upper() for leg in legs if leg.phase == "execute" and leg.symbol))
+    return check_symbols(state, [leg.symbol for leg in legs if leg.phase == "execute" and leg.symbol], tx_builder_url)
+
+
+def check_symbols(state: FundState, names: list[str], tx_builder_url: str, *, cached_only: bool = False) -> str:
+    """The draft-time symbol check for any list of symbols: legs, a claim topic's $TICKERs, a pitch's.
+
+    One source, one refusal. ``cached_only`` never reads the network: a cold cache returns ""
+    (not checked here; the draft checks it).
+    """
+    symbols = list(dict.fromkeys(s.strip().upper() for s in names if s and s.strip()))
     if not symbols or state.fund.chain_id != fund_symbols.PRICES_CHAIN_ID or not tx_builder_url:
         return ""
-    covered = fund_symbols.source_for(tx_builder_url)()
+    source = fund_symbols.source_for(tx_builder_url)
+    covered = source.peek() if cached_only else source()
     if covered is None:
+        if cached_only:
+            return ""
         return (
             f"not checked: the Sherwood prices source ({tx_builder_url.rstrip('/')}/sources/prices) could not be "
             f"read, so {', '.join(symbols)} were not verified as tradable on chain {state.fund.chain_id}. Say so "
@@ -301,15 +314,89 @@ def check_leg_symbols(state: FundState, legs: list[Leg], tx_builder_url: str) ->
         )
     missing = [s for s in symbols if s not in covered]
     if missing:
-        listed = sorted(covered)
-        shown = ", ".join(listed[:60]) + (f" and {len(listed) - 60} more" if len(listed) > 60 else "")
         raise RuleViolation(rules.deny(
             "unknown_symbol",
             f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in the Sherwood prices source for "
             f"chain {state.fund.chain_id} (no token or Chainlink feed there), so a portfolio cannot hold "
-            f"{'it' if len(missing) == 1 else 'them'}. Priced symbols: {shown}",
+            f"{'it' if len(missing) == 1 else 'them'}. Priced symbols: {_priced_list(covered)}",
         ))
     return ""
+
+
+def _priced_list(covered: frozenset[str]) -> str:
+    listed = sorted(covered)
+    return ", ".join(listed[:60]) + (f" and {len(listed) - 60} more" if len(listed) > 60 else "")
+
+
+_DOLLAR_TICKER_RE = re.compile(r"(?<![\w$])\$([A-Za-z][A-Za-z0-9]{0,9}(?:\.[A-Za-z]{1,2}\b)?)")
+_BARE_TICKER_RE = re.compile(r"(?<![\w$])([A-Z]{3,5})\b")
+
+
+def topic_tickers(text: str) -> list[str]:
+    """The $TICKERs a claim topic or a pitch names (upper-cased, in order; `$BRK.B` stays whole)."""
+    return list(dict.fromkeys(t.upper() for t in _DOLLAR_TICKER_RE.findall(text or "")))
+
+
+def unpriced_pitch_symbols(state: FundState, text: str, tx_builder_url: str) -> list[str]:
+    """The ship-it check on the Telegram message path: the pitch's $TICKERs when NONE of them is in
+    the prices source (nothing in it could be held), else []. Cache only, never the network: a
+    cold cache, another chain or no $TICKER is [] (the draft check still runs)."""
+    tickers = topic_tickers(text)
+    if not tickers or state.fund.chain_id != fund_symbols.PRICES_CHAIN_ID or not tx_builder_url:
+        return []
+    covered = fund_symbols.source_for(tx_builder_url).peek()
+    if covered is None or any(t in covered for t in tickers):
+        return []
+    return tickers
+
+
+def priced_examples(tx_builder_url: str, n: int = 8) -> str:
+    """A few priced symbols from the cached source ("" when cold)."""
+    covered = fund_symbols.source_for(tx_builder_url).peek() if tx_builder_url else None
+    return ", ".join(sorted(covered)[:n]) if covered else ""
+
+
+def check_claim_symbols(state: FundState, topic: str, tx_builder_url: str) -> str:
+    """fund_claim_topic: a $TICKER the prices source does not cover is refused (RuleViolation, the
+    draft check's error). A bare all-caps word that is not priced is flagged in the returned note,
+    not refused ("ETF" is a word too). Fails open when the source cannot be read."""
+    check_symbols(state, topic_tickers(topic), tx_builder_url)
+    dollar = set(topic_tickers(topic))
+    bare = [t for t in dict.fromkeys(_BARE_TICKER_RE.findall(topic or "")) if t not in dollar]
+    if not bare or state.fund.chain_id != fund_symbols.PRICES_CHAIN_ID or not tx_builder_url:
+        return ""
+    covered = fund_symbols.source_for(tx_builder_url)()
+    missing = [t for t in bare if covered is not None and t not in covered]
+    if not missing:
+        return ""
+    return (
+        f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in the Sherwood prices source for chain "
+        f"{state.fund.chain_id}: a portfolio cannot hold {'it' if len(missing) == 1 else 'them'} and "
+        "fund_draft_proposal will refuse it. If that is meant as a stock, tell the group it is not tradable here "
+        f"and release the claim (fund_release_claim). Priced symbols: {_priced_list(covered)}"  # type: ignore[arg-type]
+    )
+
+
+def draft_next_step(draft_id: str, *, agent_signs: bool) -> str:
+    """What the agent does after fund_draft_proposal, in plain words (the live group test of
+    2026-11-10: an agent fetched prepare.url, typed its own propose command and offered a one-shot)."""
+    common = (
+        f"Draft {draft_id} is recorded. If this fund has a Telegram group, the plugin posts the draft card "
+        "there with a 🚀 Ship it button by itself: do not post your own card. In the chat, say one short line "
+        "(the draft is up; the host taps 🚀 Ship it on the card) and stop. Do not call prepare.url or any "
+        "API with it, and do not write, paste or suggest a CLI command. "
+    )
+    if agent_signs:
+        return common + (
+            "Do not offer to run a one-shot: this chat has no terminal. Next: the host taps 🚀 Ship it; then "
+            "the operator runs the shipped propose command from a terminal (fund_pending_commands, in a "
+            "`hermes -z` one-shot or an approve-mode cron). The Sherwood CLI quotes and approves the WOOD bond "
+            "there."
+        )
+    return common + (
+        "Next: the host taps 🚀 Ship it, then ✍️ Co-sign, and signs the proposal from their own wallet on "
+        "the signing page. If prepare.ready is false, prepare.missing lists what the draft still needs."
+    )
 
 
 def parse_draft_args(args: dict[str, Any], state: FundState) -> DraftArgs:
@@ -526,8 +613,15 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
         return out
 
     def fund_claim_topic(args: dict[str, Any]) -> dict[str, Any]:
-        claim = svc.claim_topic(rt.fund_for(args.get("fund")), rt.agent_name(), str(args.get("topic") or ""))
-        return {"claim": asdict(claim), "say": f"drafting {claim.topic} (claim held 10 min)"}
+        fund = rt.fund_for(args.get("fund"))
+        agent = rt.agent_name()
+        topic = str(args.get("topic") or "")
+        symbol_note = check_claim_symbols(svc.load(fund), topic, svc.tx_builder_url)
+        claim = svc.claim_topic(fund, agent, topic)
+        out: dict[str, Any] = {"claim": asdict(claim), "say": f"drafting {claim.topic} (claim held 10 min)"}
+        if symbol_note:
+            out["symbol_check"] = symbol_note
+        return out
 
     def fund_release_claim(args: dict[str, Any]) -> dict[str, Any]:
         n = svc.release_claim(rt.fund_for(args.get("fund")), rt.agent_name(), args.get("topic") or None)
@@ -558,7 +652,10 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             generic_call=d.generic_call or None,
             discovered=_discovered(rt) if d.generic_call else None,
         )
-        out: dict[str, Any] = {"proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond}
+        out: dict[str, Any] = {
+            "proposal": asdict(result.proposal), "prepare": result.prepare, "bond": result.bond,
+            "next": draft_next_step(result.proposal.id, agent_signs=not rt.settings.host_cosigns),
+        }
         if symbol_note:
             out["symbol_check"] = symbol_note
         return out

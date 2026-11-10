@@ -3,7 +3,13 @@ from __future__ import annotations
 
 import pytest
 
-from sherwood_monitor.telegram.flow import IncomingMessage, PitchFlow, ReactionChange
+from sherwood_monitor.telegram.flow import (
+    NOTICE_ALREADY_DRAFTED,
+    NOTICE_WHICH_PITCH,
+    IncomingMessage,
+    PitchFlow,
+    ReactionChange,
+)
 
 CHAT = -1001
 HOST = 1
@@ -220,3 +226,146 @@ async def test_pitch_text_cannot_break_out_of_the_data_frame():
 )
 def test_trade_idea_heuristic(text, expected):
     assert PitchFlow.is_trade_idea(text) is expected
+
+
+# -- a bare "ship it" from the host (live group test, 2026-11-10) ------------------------------
+
+
+def make_noticed_flow(**kw):
+    notices = []
+    flow, events, clock = make_flow(on_notice=lambda chat, text, reply_to: notices.append((chat, text, reply_to)), **kw)
+    return flow, events, notices
+
+
+async def test_bare_host_ship_it_with_one_open_pitch_drafts_it():
+    """No reply, no $TICKER: the one open undrafted pitch in the chat is the one."""
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    ev = await flow.on_message(msg(105, HOST, "@sherwoodagentbot ship it", mentions_bot=True))
+    assert ev is not None and ev.source_message_id == 100 and ev.trigger == "ship_it" and ev.triggered_by == HOST
+    assert events == [ev] and notices == []
+    hook = flow.make_pre_llm_call_hook()
+    out = hook(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST), user_message="ship it")
+    assert out is not None and "<sherwood-fund-draft-requested>" in out["context"]
+    # It defers to the bridge's block (draft it) and to a refusal the plugin already said.
+    assert "Acknowledge in one line" not in out["context"] and "fund_draft_proposal" in out["context"]
+    assert "cannot draft" in out["context"]
+
+
+async def test_bare_host_ship_it_with_two_open_pitches_asks_which():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    await flow.on_message(msg(110, BOB, "@sherwoodagentbot short $TSLA, margins", mentions_bot=True))
+    assert await flow.on_message(msg(111, HOST, "@sherwoodagentbot ship it", mentions_bot=True)) is None
+    assert events == []
+    ((chat, text, reply_to),) = notices
+    assert chat == CHAT and reply_to == 111
+    assert "reply" in text.lower() and "$TICKER" in text
+    # The agent's turn on that message is told the plugin answered and not to pick a pitch itself.
+    hook = flow.make_pre_llm_call_hook()
+    out = hook(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST), user_message="ship it")
+    assert out is not None and "<sherwood-fund-ship-it-unresolved>" in out["context"]
+    assert "do not" in out["context"].lower()
+
+
+async def test_bare_host_ship_it_with_no_open_pitch_says_so():
+    flow, events, notices = make_noticed_flow()
+    assert await flow.on_message(msg(105, HOST, "ship it", mentions_bot=False)) is None
+    ((chat, text, reply_to),) = notices
+    assert chat == CHAT and reply_to == 105 and "no open pitch" in text.lower()
+    assert events == []
+
+
+async def test_bare_ship_it_with_a_drafted_pitch_still_open_asks_which():
+    """Review M1 (PR #45): the host shipped A; a member pitches B; the host's bare "ship it" may still
+    mean A. A drafted pitch inside its TTL counts, so the bare form is ambiguous and drafts nothing."""
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(101, HOST, "ship it", reply_to_message_id=100)) is not None
+    await flow.on_message(msg(110, BOB, "@sherwoodagentbot short $TSLA, margins", mentions_bot=True))
+    assert await flow.on_message(msg(111, HOST, "ship it")) is None
+    assert len(events) == 1 and [t for _, t, _ in notices] == [NOTICE_WHICH_PITCH]
+    # Replying to B (or naming $TSLA) still ships it.
+    ev = await flow.on_message(msg(112, HOST, "ship it $TSLA"))
+    assert ev is not None and ev.source_message_id == 110
+
+
+async def test_bare_ship_it_right_after_a_ship_points_at_the_card():
+    """Review L1: not "No open pitch... mention me with the idea"."""
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(101, HOST, "ship it")) is not None
+    assert await flow.on_message(msg(102, HOST, "ship it")) is None
+    assert [t for _, t, _ in notices] == [NOTICE_ALREADY_DRAFTED]
+
+
+async def test_host_replying_ship_it_to_a_draft_card_is_told_to_tap_the_button():
+    flow, events, notices = make_noticed_flow()
+    flow.note_bot_card(CHAT, 150)  # the draft card
+    assert await flow.on_message(msg(151, HOST, "ship it", reply_to_message_id=150, reply_to_is_bot=True)) is None
+    assert [t for _, t, _ in notices] == [NOTICE_ALREADY_DRAFTED]
+
+
+async def test_a_declined_draft_leaves_the_pitch_shippable_again():
+    """Review M3: a refusal (DraftDeclined: e.g. an unpriced symbol) does not mark the pitch drafted, logs
+    no warning, and the agent's turn is told the plugin already answered."""
+    from sherwood_monitor.telegram.types import DraftDeclined
+
+    calls = []
+
+    def decline_once(event):
+        calls.append(event)
+        if len(calls) == 1:
+            raise DraftDeclined("NFLX is not priced")
+
+    notices = []
+    flow = PitchFlow(host_for_chat=lambda chat: HOST, on_draft_requested=decline_once, clock=Clock(),
+                     on_notice=lambda chat, text, reply_to: notices.append(text))
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(101, HOST, "@sherwoodagentbot ship it", mentions_bot=True)) is None
+    assert flow.open_pitches(CHAT)[0].drafted is False and notices == []
+    out = flow.make_pre_llm_call_hook()(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST), user_message="ship it")
+    assert out is not None and "cannot be drafted" in out["context"] and "Do not" in out["context"]
+    ev = await flow.on_message(msg(102, HOST, "ship it", reply_to_message_id=100))
+    assert ev is not None and len(calls) == 2
+
+
+async def test_named_ship_it_that_matches_nothing_never_falls_back_to_the_one_pitch():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(105, HOST, "@sherwoodagentbot ship it $TSLA", mentions_bot=True)) is None
+    assert await flow.on_message(msg(106, HOST, "ship it @someoneelse")) is None
+    assert events == [] and len(notices) == 2
+
+
+async def test_ship_it_on_an_already_drafted_pitch_points_at_the_card():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(101, HOST, "ship it", reply_to_message_id=100)) is not None
+    assert await flow.on_message(msg(102, HOST, "ship it", reply_to_message_id=100)) is None
+    ((_, text, reply_to),) = notices
+    assert reply_to == 102 and "🚀 Ship it" in text and "draft card" in text
+
+
+async def test_bare_ship_it_from_a_non_host_stays_silent():
+    flow, events, notices = make_noticed_flow()
+    await flow.on_message(msg(100, ALICE, PITCH, mentions_bot=True))
+    assert await flow.on_message(msg(105, BOB, "@sherwoodagentbot ship it", mentions_bot=True)) is None
+    assert events == [] and notices == []
+    assert flow.open_pitches(CHAT)[0].drafted is False
+
+
+async def test_notice_failure_never_breaks_the_flow():
+    def boom(chat, text, reply_to):
+        raise RuntimeError("telegram down")
+
+    flow, events, _ = make_flow(on_notice=boom)
+    assert await flow.on_message(msg(105, HOST, "ship it")) is None  # logged, not raised
+
+
+async def test_pitch_context_says_unpriced_symbols_are_not_tradable_here():
+    flow, _, _ = make_flow()
+    hook = flow.make_pre_llm_call_hook()
+    await flow.on_message(msg(100, ALICE, "@sherwoodagentbot 100% $NFLX for 6 hours", mentions_bot=True))
+    out = hook(platform="telegram", chat_id=str(CHAT), sender_id=str(ALICE), user_message="100% $NFLX for 6 hours")["context"]
+    assert "prices source" in out and "web search" in out

@@ -521,7 +521,8 @@ class FundService:
             state.next_proposal_seq += 1
             state.proposals.append(record)
             state.claims = [c for c in state.claims if c.agent.lower() != proposer.name.lower()]
-            bond = _bond_section(state, proposer, max_capital, bond_quote_wood, wood_balance)
+            bond = _bond_section(state, proposer, max_capital, bond_quote_wood, wood_balance,
+                                 agent_signs=self.proposal_signer == "agent")
             if plan:
                 prepare = preview_generic_call(
                     state.fund, plan, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps,
@@ -1308,8 +1309,18 @@ def _require_proposer_or_host(state: FundState, actor: str, record: ProposalReco
     require(rules.check_host_action(state, actor))
 
 
+# proposal_signer: agent: the shipped command is `sherwood strategy propose portfolio ...`, and the CLI
+# quotes the WOOD bond and approves it (quote + 5%) when the operator runs it. A chat turn has no way
+# to quote it and nothing to do about it.
+BOND_AT_PROPOSE = (
+    "nothing to fetch now: the bond is 1% of coverage in WOOD, and the Sherwood CLI quotes and approves it "
+    "when the operator runs the shipped propose command"
+)
+
+
 def _bond_section(
-    state: FundState, agent: Agent, max_capital: int, quote: int | None, balance: int | None
+    state: FundState, agent: Agent, max_capital: int, quote: int | None, balance: int | None,
+    *, agent_signs: bool = False,
 ) -> dict[str, Any]:
     policy = agent.bond_policy
     out: dict[str, Any] = {
@@ -1318,7 +1329,10 @@ def _bond_section(
         "rule": "bond = 1% of coverage; approve quote + 5%, never unlimited; re-quote on >5% drift, never widen",
     }
     if quote is None:
-        out["missing"] = "bond_quote_wood: quote the WOOD bond for this coverage, then draft again"
+        out["missing"] = (
+            BOND_AT_PROPOSE if agent_signs
+            else "bond_quote_wood: quote the WOOD bond for this coverage, then draft again"
+        )
         return out
     plan = rules.plan_bond(quote, balance if balance is not None else 0, policy)
     steps = []

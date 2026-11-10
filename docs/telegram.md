@@ -604,11 +604,26 @@ Bot API only lets its `url` open a game or a `t.me/<bot>?start=` link. Set
    and its riff count together.
 3. At 3 distinct accounts other than the pitch's author, or when the host
    replies "ship it" to the pitch or the riff (or says "ship it" naming the
-   pitch: one of its `$TICKER`s or the author's `@handle`; an unnamed one never
-   picks "the latest" pitch), the flow emits
+   pitch: one of its `$TICKER`s or the author's `@handle`; or says a bare
+   "ship it", not a reply and naming nothing, while the chat has exactly one
+   open pitch, not yet drafted; a drafted pitch still inside its TTL counts,
+   since the host may mean it), the flow emits
    `DraftRequested(idea_by, text, source_message_id, chat_id, trigger, ...)`
    once per pitch through `on_draft_requested`. If that callback raises, the
-   next 🔥 or "ship it" retries.
+   next 🔥 or "ship it" retries. A host "ship it" that resolves to no pitch
+   (none open, several open, a name that matches none, a pitch already
+   drafted) never picks "the latest": the plugin answers in the group with one
+   line (reply to the pitch or name its `$TICKER`; or tap 🚀 Ship it on the
+   draft card) and tells the agent's turn not to draft. When the prices
+   source is cached and none of a shipped pitch's `$TICKER`s is priced, the
+   plugin names them in the group and does not claim; the pitch stays
+   shippable, so it drafts once the source prices it.
+
+Writes made in another process (the operator's `hermes -z` one-shot recording
+a proposal `proposed`) never reach the gateway's observers. The gateway's
+bridge checks each chat-bound fund's stored revision every 12 s and posts the
+proposal card for a recent proposed/voting record that has none (and refreshes
+a card whose status changed), through the same per-proposal path as an event.
 
 Only senders Hermes' Telegram allowlist admits count. The plugin's observers
 run ahead of Hermes' core handlers, so `wire()` takes the adapter's own check
