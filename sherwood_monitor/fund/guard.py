@@ -17,19 +17,35 @@ from typing import Any, Callable
 from pathlib import Path
 
 from ..propose_cmd import (
+    ASSIGNMENT_RE,
     CLI_DEFAULT_DRAWDOWN_BPS,
     CLI_PACKAGE,
+    ENV_WORDS,
     FUND_RULES_APPLIED,
+    INDIRECTION_WORDS,
     MAX_COMMAND_CHARS,
+    READ_ONLY_TOOLS,
     TERMINAL_TOOLS,
     ProposeInvocation,
     has_unquoted_hash,
     is_address,
-    looks_like_propose,
-    mentions_propose,
-    parse_propose_invocations,
+    launcher_problem,
+    names_cli,
+    normalize,
+    parse_segments,
+    plain_variable_read,
     shell_expansion,
+    tokens,
 )
+
+REFUSE_HINT = (
+    "Run the sherwood command on its own line with literal arguments (single-quote any value with spaces or "
+    "shell characters), as fund_pending_commands lists it"
+)
+
+
+def _refuse(code: str, why: str) -> str:
+    return f"fund propose blocked ({code}): {why}. {REFUSE_HINT}"
 from ..session import current_caller
 from . import authz, rules
 from .generic_call import require_agent_signer
@@ -244,60 +260,77 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
         """
         command = str((args or {}).get("command") or "")
         low = command.lower()
+        norm = normalize(command)
+        if not ("0x" in low or "sherwood" in norm or CLI_PACKAGE in norm):
+            return None  # names neither the CLI nor any vault address
         if len(command) > MAX_COMMAND_CHARS:
-            if not ("propose" in low or "proposal" in low or "sherwood" in low):
-                return None
             try:
                 fund_host = bool(_fund_states(rt))
             except GUARD_ERRORS:
                 fund_host = True  # cannot tell: refuse
-            if not fund_host:
-                return None
-            return (
-                f"fund propose blocked (command_too_long): {len(command)} characters is more than the "
-                f"{MAX_COMMAND_CHARS} the guard reads; run the propose as its own short command"
-            )
-        if not (looks_like_propose(command) or mentions_propose(command) or CLI_PACKAGE in command):
-            return None  # no propose spelled anywhere in it (a parsed propose always is)
+            return _refuse("command_too_long", f"{len(command)} characters is more than the {MAX_COMMAND_CHARS} "
+                           "the guard reads") if fund_host else None
+        cli = names_cli(command)
         try:
             states = _fund_states(rt)
         except GUARD_ERRORS as exc:
+            if not cli:
+                return None
             return f"fund propose blocked: cannot read fund state to check the fund ceilings ({scrub_paths(exc)})"
         if not states:
             return None  # no fund on this host: the general advisory check applies
         by_vault = {st.fund.vault.lower(): st for st in states}
-        present = {v for v in by_vault if v in low}
-        invocations = parse_propose_invocations(command)
-        if invocations is None:
-            if present or looks_like_propose(command):
-                return "fund propose blocked (unreadable_command): this command cannot be split into shell commands with confidence (unbalanced quotes)"
-            return None
-        # Any command that spells a propose (this far, it does) on a fund host: an expansion may
-        # build the CLI's words, or the CLI itself, out of text the guard never read.
-        expansion = shell_expansion(command)
+        present = {v for v in by_vault if v in norm}
+        if not cli and not present:
+            return None  # a command that names neither the CLI nor a fund vault is not this guard's
+        # From here the command names the CLI or a fund vault on a fund host: it must be readable as
+        # plain words, or it is refused.
+        segments = parse_segments(command)
+        if segments is None:
+            return _refuse("unreadable_command", "its quotes do not balance, so it cannot be split into commands")
+        expansion = None if plain_variable_read(command) else shell_expansion(command)
         if expansion:
-            return (
-                f"fund propose blocked (shell_expansion): this propose contains {expansion}, so bash may hand "
-                "the CLI words the guard never read. Write every value out literally, in single quotes where "
-                "needed (the commands fund_pending_commands hands out already are)"
-            )
-        if (present or invocations) and has_unquoted_hash(command):
-            return (
-                "fund propose blocked (unquoted_hash): a # outside quotes makes bash and this guard read "
-                "different flags; quote it (the commands fund_pending_commands hands out already do)"
-            )
+            return _refuse("shell_expansion", f"it contains {expansion}, so bash may hand the CLI words the guard "
+                           "never read")
+        words = [w for seg in segments for w in seg.words]
+        if (any(op.startswith("<<") for seg in segments for op in seg.operators)
+                or "()" in (tokens(command) or [])
+                or any(w.rsplit("/", 1)[-1] in INDIRECTION_WORDS for w in words)
+                or any(seg.command_word == "." for seg in segments)):
+            return _refuse("shell_indirection", "it runs text through a shell, eval, source, an alias, a function, "
+                           "a here-doc or here-string, or shopt, which the guard reads only as data")
+        if any(w in ENV_WORDS for w in words) or any(
+                seg.words and all(ASSIGNMENT_RE.match(w) for w in seg.words) for seg in segments):
+            return _refuse("environment", "it sets environment (export or an assignment) that can change what the "
+                           "CLI runs, e.g. NODE_OPTIONS or PATH")
+        if has_unquoted_hash(command):
+            return _refuse("unquoted_hash", "a # outside quotes makes bash and the guard read different words")
+        invocations: list[ProposeInvocation] = []
+        for seg in segments:
+            if seg.cli_index >= 0:
+                problem = launcher_problem(seg.words[: seg.cli_index])
+                if problem == "env":
+                    return _refuse("environment", "an assignment before the CLI (e.g. NODE_OPTIONS, PATH) can change "
+                                   "what it runs")
+                if problem:
+                    return _refuse("unsafe_launcher", "the CLI is started through a command or flag that may add or "
+                                   "change its arguments (allowed before it: env -u/-i, npx -y, pnpm dlx, node, exec, "
+                                   "time, nohup, nice -n, timeout [-s SIG] [-k DUR] DURATION)")
+                if seg.invocation is not None:
+                    invocations.append(seg.invocation)
+                    on_fund = {v for v in by_vault if any(v in w.lower() for w in seg.words)}
+                    if on_fund - {seg.invocation.vault.lower()}:
+                        return _refuse("unreadable_propose", "it names a fund vault in a propose whose --vault is "
+                                       "another address")
+            elif seg.command_word not in READ_ONLY_TOOLS and any(
+                    names_cli(w) or any(v in w.lower() for v in by_vault) for w in seg.words):
+                return _refuse("unreadable_propose", f"`{seg.command_word}` takes the CLI or a fund vault as data and "
+                               "may run it in a way the guard cannot read")
         names = ", ".join(sorted(st.fund.name for st in states))
-        claimed: set[str] = set()
         checked = False
         for inv in invocations:
-            if not inv.launcher_ok:
-                return (
-                    "fund propose blocked (unsafe_launcher): the CLI is started through a command that may add "
-                    "arguments the guard cannot see (only env assignments, env, npx, pnpm dlx, node, exec, "
-                    "command, time, nohup, nice, timeout may precede it)"
-                )
             if inv.help:
-                continue  # usage only (no --vault, no amount): it claims no vault
+                continue  # usage only (no --vault, no amount)
             if not inv.vault:
                 return (
                     f"fund propose blocked (no_vault): this host runs fund {names}; CLI 0.103.0 requires "
@@ -307,7 +340,8 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
                 bad = next(v for v in inv.vaults if not is_address(v))
                 return (
                     f"fund propose blocked (vault_not_literal): --vault {bad!r} is not a literal 0x address, so "
-                    f"the guard cannot tell whether it is {names}'s vault (the CLI takes only an address)"
+                    f"the guard cannot tell whether it is {names}'s vault (the CLI takes only an address). "
+                    + REFUSE_HINT
                 )
             st = by_vault.get(inv.vault.lower())
             if st is None:
@@ -315,17 +349,7 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
             reason = check_propose_ceilings(inv, st)
             if reason:
                 return reason
-            claimed.add(inv.vault.lower())
             checked = True
-        unclaimed = present - claimed
-        if unclaimed:
-            fund_names = ", ".join(sorted(by_vault[v].fund.name for v in unclaimed))
-            return (
-                f"fund propose blocked (unreadable_propose): this command names {fund_names}'s vault and "
-                "looks like a propose, but no `sherwood strategy propose` / `sherwood proposal create` in it "
-                "takes that vault as a literal --vault the guard can read (bash -c, eval, $(...) or a variable). "
-                "Run the command as fund_pending_commands lists it"
-            )
         proposing = [inv for inv in invocations if not inv.help]
         if checked and all(inv.vault.lower() in by_vault for inv in proposing):
             return FUND_RULES_APPLIED

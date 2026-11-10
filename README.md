@@ -532,18 +532,27 @@ template deploys (`--amount`; `--collateral-amount` for concentrated-liquidity,
 (omitted = the CLI default 2000), is blocked. The general checks below do not
 run on top.
 
-This is a check on the agent's own terminal command text, not a sandbox. On a
-host with a fund it refuses what it cannot read: a template whose capital flag
-it does not know, a missing or unreadable amount, a command that cannot be split
-into shell commands, an unquoted `#`, any shell expansion (`$`, backticks, brace
-expansion, globs, process substitution), a launcher that may add arguments
-(`xargs`, `watch`, `sudo`), a `--vault` that is not a literal address (CLI
-0.103.0 requires `--vault`), a command longer than 32 KB, and a propose-looking
-command that names a fund vault but not as a readable `sherwood ... propose
---vault` (`bash -c`, `eval`). It cannot see a propose whose text never appears in
-the command (a script file, or a variable, alias or function set by an earlier
-terminal call), or one run from a tool other than the terminal (`execute_code`). The deployment boundary still applies: a
-fund group's toolset must not include terminal, file or code tools
+### What the propose guard does and does not do
+
+It checks the plain Sherwood CLI commands the agent runs in the terminal
+against the fund's ceilings: max capital and max drawdown, read from the local
+fund record.
+
+On a host with a fund, it refuses any command that names the CLI or a fund
+vault address that it cannot read literally. That covers shell expansions (`$`,
+backticks, braces, globs, extglob), a shell, `eval`, `source`, an alias, a
+function or a here-doc, environment set for the CLI (such as `NODE_OPTIONS` or
+`PATH`), a launcher that may add arguments (`xargs`, `watch`, `sudo`), an
+unquoted `#`, and commands over 32 KB. The only exception is a plain variable
+as an option value of `sherwood vault info` or `sherwood governor info`. A
+refused command can be run as the sherwood command on its own line with literal
+arguments, which is how `fund_pending_commands` lists it.
+
+It is not a sandbox. Outside it are a command that hides both the CLI name and
+the vault, a script file the agent writes and then runs, an alias or variable
+set by an earlier terminal call, and `execute_code`. The limits that hold
+regardless are the fund's guardian review and the members' veto on chain. A
+fund group's toolset must also not include terminal, file or code tools
 ([docs/fund-host-join.md](docs/fund-host-join.md)).
 
 For any other vault the plugin blocks if any of these fail (size from
