@@ -91,6 +91,9 @@ class TelegramRuntime:
         self._people: dict[int, dict[int, Person]] = {}
         self._caps: dict[int, ChatCaps] = {}
         self._warned: set[int] = set()
+        # Called on the bot's loop once it is bound (attach inside a running loop, or the first
+        # handler call): the fund bridge starts its store sync here, never at plugin load.
+        self.on_ready: list[Callable[[], Any]] = []
 
     # -- wiring ------------------------------------------------------------
 
@@ -122,18 +125,29 @@ class TelegramRuntime:
             self.loop = asyncio.get_running_loop()
         except RuntimeError:
             self.loop = None
+        if self.loop is not None:
+            self._ready()
 
     def remember_loop(self) -> None:
-        """Bind to the loop PTB runs our handlers on, if :meth:`attach` ran outside one.
+        """Bind to the loop PTB runs our handlers on, if :meth:`attach` ran outside one (or the
+        bound loop has since closed).
 
         Tools post cards from worker threads through :meth:`submit`, which needs that loop;
         without it every such post would be dropped.
         """
-        if self.loop is None:
+        if self.loop is None or self.loop.is_closed():
             try:
                 self.loop = asyncio.get_running_loop()
             except RuntimeError:
-                pass
+                return
+            self._ready()
+
+    def _ready(self) -> None:
+        for fn in list(self.on_ready):
+            try:
+                fn()
+            except Exception as exc:
+                _log.warning("telegram runtime ready hook failed: %s", type(exc).__name__)
 
     def link_secret(self) -> str | None:
         return self._secret()

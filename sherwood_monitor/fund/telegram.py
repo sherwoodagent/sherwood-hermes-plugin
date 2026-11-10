@@ -722,6 +722,12 @@ class FundTelegramBridge:
         self.runtime: TelegramRuntime | None = None
         self._card_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._declined_said: dict[tuple[int, int], float] = {}  # (chat, pitch message) -> when said
+        # Store sync (gateway process only): writes made by another process (the operator's
+        # `hermes -z` one-shot) never reach this process's observers, so poll the fund revision.
+        self.store_sync_interval_s = STORE_SYNC_INTERVAL_S
+        self._sync_task: asyncio.Task[None] | None = None
+        self._seen_revision: dict[str, int] = {}
+        self._seen_status: dict[tuple[str, str], str] = {}
         self._join_cards: dict[tuple[str, str], float] = {}
         # Agent context bound to a chat (and the senders whose turn may receive it).
         self._chat_context: collections.deque[tuple[float, str, frozenset[str], str]] = collections.deque(maxlen=50)
@@ -1043,13 +1049,100 @@ class FundTelegramBridge:
     # -- observer: FundService -> cards ----------------------------------------------------
     def attach(self, runtime: TelegramRuntime | None) -> None:
         self.runtime = runtime
+        if runtime is not None:
+            runtime.on_ready.append(self.start_store_sync)
 
     def close(self) -> None:
-        """Plugin shutdown (the monitor's teardown): stop following fund events and cancel the
-        Telegram runtime's pending widget refreshes."""
+        """Plugin shutdown (the monitor's teardown): stop following fund events, stop the store
+        sync and cancel the Telegram runtime's pending widget refreshes."""
         self._unsubscribe()
+        if getattr(self, "_sync_task", None) is not None:
+            self.stop_store_sync()
         if self.runtime is not None:
             self.runtime.close()
+
+    # -- store sync: cards for writes made in another process ------------------------------
+    def start_store_sync(self) -> None:
+        """Start the periodic store check on the running (bot) loop. Idempotent; a no-op unless the
+        Telegram runtime is connected, so only the gateway process runs it."""
+        rt = self.runtime
+        if rt is None or not rt.connected:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = self._sync_task
+        if task is not None and not task.done() and task.get_loop() is loop:
+            return
+        self._sync_task = loop.create_task(self._store_sync_loop(), name="shfund:store-sync")
+
+    def stop_store_sync(self) -> None:
+        task, self._sync_task = self._sync_task, None
+        if task is None or task.done():
+            return
+        loop = task.get_loop()
+        if loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(task.cancel)
+        except RuntimeError:  # the loop closed in between
+            pass
+
+    async def _store_sync_loop(self) -> None:
+        failing = False
+        while True:
+            await asyncio.sleep(self.store_sync_interval_s)
+            try:
+                await self.reconcile()
+                failing = False
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not failing:
+                    _log.warning("fund store sync failed (%s); retrying quietly", type(exc).__name__)
+                failing = True
+
+    async def reconcile(self) -> int:
+        """One store check. For each fund bound to an allowed chat whose stored revision moved since
+        this process last looked: post the proposal card for a recent proposed/voting record that has
+        none, and refresh a card whose status changed. Goes through ``_sync_card`` (per-proposal lock,
+        decided on the current record), so a card is never posted twice; its card id write-back bumps
+        the revision, and the next check finds nothing to do. Returns the number of posts attempted."""
+        rt = self.runtime
+        if rt is None or not rt.connected:
+            return 0
+        names = await asyncio.to_thread(self.service.backend.list_funds)
+        posted = 0
+        for name in names:
+            st = await asyncio.to_thread(self._load, name)
+            if st is None or not st.fund.telegram_chat_id:
+                continue
+            chat = _int_or_none(st.fund.telegram_chat_id)
+            if chat is None or not rt.settings.chat_allowed(chat):
+                continue
+            if self._seen_revision.get(name) == st.revision:
+                continue
+            now = time.time()
+            clean = True
+            for rec in st.proposals:
+                key = (name, rec.id)
+                before = self._seen_status.get(key)
+                self._seen_status[key] = rec.status
+                missing = rec.status in ("proposed", "voting") and not rec.card_message_id
+                if missing and now - float(rec.updated_at or 0) > STORE_SYNC_MAX_AGE_S:
+                    continue  # an old record never got a card: not something to post now
+                if not missing and not (rec.card_message_id and before is not None and before != rec.status):
+                    continue
+                try:
+                    await self._sync_card(chat, name, rec.id)
+                    posted += int(missing)
+                except Exception as exc:
+                    clean = False
+                    _log.warning("proposal card (chat=%s proposal=%s) not synced: %s", chat, rec.id, type(exc).__name__)
+            if clean:
+                self._seen_revision[name] = st.revision
+        return posted
 
     def _submit(self, coro: Any, what: str = "card") -> None:
         """Run a card post / refresh on the bot's loop. A skipped or failed one is a WARNING (never
@@ -1244,6 +1337,10 @@ class FundTelegramBridge:
                 parts.append(str(pitch["context"]))
         parts.extend(self.take_chat_context(caller.chat_id, caller.user_id))
         return {"context": "\n\n".join(parts)} if parts else None
+
+
+STORE_SYNC_INTERVAL_S = 12.0
+STORE_SYNC_MAX_AGE_S = 24 * 3600.0  # a proposed/voting record untouched for a day gets no new card
 
 
 async def _logged(coro: Any, what: str) -> Any:

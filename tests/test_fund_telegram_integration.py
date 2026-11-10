@@ -584,3 +584,117 @@ async def test_cards_from_tool_threads_post_when_the_factory_ran_outside_a_loop(
     assert d["ok"]
     await settle_tasks()
     assert any("DRAFT" in c.kwargs.get("text", "") for c in bot.send_message.await_args_list)
+
+
+async def test_a_closed_loop_is_rebound(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    dead = asyncio.new_event_loop()
+    dead.close()
+    rt.loop = dead
+    rt.remember_loop()
+    assert rt.loop is asyncio.get_running_loop()
+
+
+# -- item 7 (review of #45): a proposal recorded in another process (the operator's hermes -z) ----------
+
+
+def _oneshot(bridge):
+    """Another process's FundService on the same store (the operator's `hermes -z` one-shot)."""
+    from sherwood_monitor.fund.service import FundService
+    from sherwood_monitor.fund.store import LocalJsonBackend
+
+    return FundService(LocalJsonBackend(bridge.service.backend._root))
+
+
+def _proposal_cards(bot):
+    return [c for c in bot.send_message.await_args_list if "<b>Proposal #9</b>" in c.kwargs.get("text", "")]
+
+
+async def _drafted_then_proposed_elsewhere(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})["ok"]
+    assert ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})["ok"]
+    await settle_tasks()
+    other = _oneshot(bridge)
+    seen = []
+    bridge.service.subscribe(seen.append)
+    other.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=9, tx_hash="0x" + "ab" * 32)
+    assert seen == []  # the gateway process heard nothing: the gap
+    return ctx, rt, bridge, bot
+
+
+async def test_the_gateway_store_sync_posts_the_card_for_a_proposal_recorded_elsewhere_once(tmp_path, monkeypatch):
+    ctx, rt, bridge, bot, = await _drafted_then_proposed_elsewhere(tmp_path, monkeypatch)
+    assert _proposal_cards(bot) == []
+    assert await bridge.reconcile() == 1
+    await settle_tasks(40)
+    assert len(_proposal_cards(bot)) == 1
+    assert bridge.service.load("alpha-fund").proposal("9").card_message_id
+    # The card id written back bumped the revision: the next tick reloads and posts nothing.
+    assert await bridge.reconcile() == 0
+    assert await bridge.reconcile() == 0
+    await settle_tasks(40)
+    assert len(_proposal_cards(bot)) == 1
+
+
+async def test_the_store_sync_runs_on_the_loop_survives_errors_and_stops_on_close(tmp_path, monkeypatch, caplog):
+    ctx, rt, bridge, bot = await _drafted_then_proposed_elsewhere(tmp_path, monkeypatch)
+    bridge.store_sync_interval_s = 0.01
+    real = bridge.service.backend.list_funds
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise OSError("disk busy")
+        return real()
+
+    monkeypatch.setattr(bridge.service.backend, "list_funds", flaky)
+    caplog.set_level("INFO", logger="sherwood_monitor")
+    bridge.stop_store_sync()  # the one connect() started sleeps 12 s; restart it at the test interval
+    await asyncio.sleep(0)
+    bridge.start_store_sync()
+    first = bridge._sync_task
+    bridge.start_store_sync()  # idempotent
+    assert bridge._sync_task is first
+    for _ in range(100):
+        await asyncio.sleep(0.01)
+        if _proposal_cards(bot):
+            break
+    await settle_tasks(40)
+    assert len(_proposal_cards(bot)) == 1
+    warned = [r for r in caplog.records if r.levelname == "WARNING" and "store sync" in r.getMessage()]
+    assert len(warned) == 1  # three failures in a row: one line
+    task = bridge._sync_task
+    bridge.close()
+    await asyncio.sleep(0.05)
+    assert task.done()
+
+
+async def test_the_store_sync_starts_when_the_adapter_connects(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert bridge._sync_task is not None and not bridge._sync_task.done()
+    bridge.close()
+
+
+async def test_the_store_sync_never_posts_drafts_or_stale_records(tmp_path, monkeypatch):
+    ctx = boot(tmp_path, monkeypatch, ChainStub())
+    _setup(ctx)
+    rt, bridge, bot, app = connect(ctx)
+    assert ctx.call_tool("fund_claim_topic", {"topic": "NVDA"})["ok"]
+    assert ctx.call_tool("fund_draft_proposal", {"topic": "NVDA", **NVDA_DRAFT})["ok"]
+    await settle_tasks()
+    n = bot.send_message.await_count
+    assert await bridge.reconcile() == 0  # a draft is never a proposal card
+    other = _oneshot(bridge)
+    other.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=9, tx_hash="0x" + "ab" * 32)
+    other.backend.update("alpha-fund", lambda st: setattr(st.proposal("9"), "updated_at", 1.0))  # days old
+    assert await bridge.reconcile() == 0
+    await settle_tasks()
+    assert bot.send_message.await_count == n
