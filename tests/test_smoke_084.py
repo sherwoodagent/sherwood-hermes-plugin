@@ -421,3 +421,55 @@ def test_member_card_has_no_share_line_when_the_share_is_unknown():
     text, _ = render_member_card(view, fund=fv)
     assert "of shares" not in text and "0.0%" not in text
     assert text.splitlines()[1].startswith("joined ")
+
+
+# == 4. weights that do not make 100% are refused at draft time ===========================
+NINETY = [{"summary": "buy TSLA", "symbol": "TSLA", "weight_bps": 5000}, {"summary": "buy NVDA", "symbol": "NVDA", "weight_bps": 4000}]
+
+
+def test_weights_off_10000_are_refused_when_drafted_not_at_ship(svc):
+    """Smoke 8c/8c2: a 9000-bps draft was recorded (holding the agent's slot) and only refused
+    at 🚀 Ship it. Now the draft is refused, with the reason Ship it gives, and nothing is recorded."""
+    from sherwood_monitor.fund.rules import NOT_PORTFOLIO_REASON, RuleViolation
+    from sherwood_monitor.fund.tools import parse_legs
+
+    svc.claim_topic("alpha-fund", "alpha", "TSLA NVDA pitch")
+    before = svc.load("alpha-fund")
+    with pytest.raises(RuleViolation) as exc:
+        svc.draft_proposal("alpha-fund", "alpha", topic="TSLA NVDA pitch", thesis="t", legs=parse_legs(NINETY, 6),
+                           max_capital=40_000_000, max_drawdown_bps=1000, strategy_duration=21600)
+    assert exc.value.code == "not_portfolio" and NOT_PORTFOLIO_REASON in exc.value.reason
+    assert "these sum to 9000" in exc.value.reason
+    after = svc.load("alpha-fund")
+    assert after.proposals == [] and after.next_proposal_seq == before.next_proposal_seq
+    assert [c.topic for c in after.claims] == ["TSLA NVDA pitch"]  # the claim stays: fix the weights, draft again
+
+
+def test_the_draft_guard_refuses_the_same_draft(as_caller):
+    rt = guard_rt()
+    rt.service.claim_topic("alpha-fund", "alpha", "TSLA NVDA pitch")
+    guard = make_fund_guard(rt)
+    args = {"topic": "TSLA NVDA pitch", "thesis": "t", "legs": NINETY, "max_capital": "40", "max_drawdown_bps": 1000,
+            "strategy_duration_seconds": 21600}
+    reason = guard("fund_draft_proposal", args)
+    assert isinstance(reason, str) and reason.startswith("fund draft blocked (not_portfolio)")
+    args["legs"] = [dict(NINETY[0]), dict(NINETY[1], weight_bps=5000)]
+    assert guard("fund_draft_proposal", args) is None
+
+
+def test_weights_must_make_100_percent_under_the_host_signer_too(tmp_path):
+    from sherwood_monitor.fund.rules import RuleViolation
+    from sherwood_monitor.fund.tools import parse_legs
+
+    s = FundService(LocalJsonBackend(tmp_path), clock=Clock())  # proposal_signer: host
+    s.create_fund(smoke_fund(), host_agent())
+    s.claim_topic("alpha-fund", "alpha", "TSLA NVDA pitch")
+    with pytest.raises(RuleViolation) as exc:
+        s.draft_proposal("alpha-fund", "alpha", topic="TSLA NVDA pitch", thesis="t", legs=parse_legs(NINETY, 6),
+                         max_capital=40_000_000, max_drawdown_bps=1000, strategy_duration=21600)
+    assert exc.value.code == "not_portfolio"
+    # Raw-calldata legs (no weights) are still the host signer's to co-sign.
+    target = "0x" + "77" * 20
+    raw = [Leg(summary="swap", kind="swap", target=target, data="0x1234", cap="40000000"), Leg(summary="back", phase="settle")]
+    assert s.draft_proposal("alpha-fund", "alpha", topic="TSLA NVDA pitch", thesis="t", legs=raw,
+                            max_capital=40_000_000, max_drawdown_bps=1000, strategy_duration=21600).proposal.id == "p-1"

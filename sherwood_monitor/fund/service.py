@@ -491,7 +491,8 @@ class FundService:
                 plan = validate_generic_call_plan(generic_call, state.fund, pull_amount=max_capital)
                 use_legs = generic_call_legs(max_capital)
             require(rules.check_draft(
-                state, agent, topic, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps, legs=use_legs, now=now
+                state, agent, topic, max_capital=max_capital, max_drawdown_bps=max_drawdown_bps, legs=use_legs, now=now,
+                require_portfolio=self.proposal_signer == "agent" and not generic_call,
             ))
             proposer = state.agent(agent)
             assert proposer is not None

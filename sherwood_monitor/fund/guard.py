@@ -247,6 +247,7 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
                 max_drawdown_bps=d.max_drawdown_bps,
                 legs=d.legs,
                 now=rt.service.clock(),
+                require_portfolio=rt.service.proposal_signer == "agent" and not d.generic_call,
             )
         except RuleViolation as exc:
             return f"fund draft blocked ({exc.code}): {exc.reason}"

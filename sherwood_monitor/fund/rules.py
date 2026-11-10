@@ -296,6 +296,34 @@ def check_legs(legs: list[Leg], max_capital: int) -> Verdict:
     return ALLOW
 
 
+MAX_PORTFOLIO_LEGS = 20  # prepare/propose-portfolio takes 1..20 legs; the CLI path matches it
+_SYMBOL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+NOT_PORTFOLIO_REASON = (
+    "with proposal_signer: agent the host agent proposes with `sherwood strategy propose portfolio`: "
+    "the draft needs legs with symbol + weight_bps summing to 10000"
+)
+
+
+def check_portfolio_legs(legs: list[Leg]) -> Verdict:
+    """The legs `sherwood strategy propose portfolio` takes: 1..20 distinct symbols, each with a
+    weight above zero, weights summing to 10000. Checked when the draft is recorded and again when
+    the host ships it, with the same reasons."""
+    execute = [leg for leg in legs if leg.phase == "execute"]
+    weights = [leg.weight_bps for leg in execute]
+    if not execute or not all(leg.symbol and w > 0 for leg, w in zip(execute, weights)) or sum(weights) != BPS:
+        got = f"; these sum to {sum(weights)}" if execute and sum(weights) != BPS else ""
+        return deny("not_portfolio", NOT_PORTFOLIO_REASON + got)
+    if len(execute) > MAX_PORTFOLIO_LEGS:
+        return deny("too_many_legs", f"a portfolio takes at most {MAX_PORTFOLIO_LEGS} legs, not {len(execute)}")
+    symbols = [leg.symbol.upper() for leg in execute]
+    for symbol in symbols:
+        if not _SYMBOL_RE.match(symbol):
+            return deny("bad_symbol", f"{symbol!r} is not a token symbol")
+    if len(set(symbols)) != len(symbols):
+        return deny("duplicate_symbol", f"each symbol appears once in a portfolio: {','.join(symbols)}")
+    return ALLOW
+
+
 def _approve_amount_from_calldata(data: str) -> int:
     """ERC-20 approve(address,uint256) amount, or 0 when the calldata is not one."""
     raw = (data or "").lower()
@@ -334,8 +362,14 @@ def check_draft(
     now: float,
     max_open: int = MAX_OPEN_PER_FUND,
     max_open_per_agent: int = MAX_OPEN_PER_AGENT,
+    require_portfolio: bool = False,
 ) -> Verdict:
-    """Everything that must hold before a draft is recorded or calldata is built."""
+    """Everything that must hold before a draft is recorded or calldata is built.
+
+    `require_portfolio` (`proposal_signer: agent`, not a Generic Call plan): the legs must be
+    what Ship it will build `sherwood strategy propose portfolio` from. Under the host signer,
+    legs that carry weights must still make 100%; raw-calldata legs without weights pass.
+    """
     v = first_failure([
         check_agent_can_act(state, agent),
         check_proposable_asset(state),
@@ -353,9 +387,10 @@ def check_draft(
         return deny("no_claim", f"claim the topic first (fund_claim_topic) so other agents know {agent} is drafting it")
     if normalize_topic(claim.topic) != normalize_topic(topic):
         return deny("claim_mismatch", f"{agent} claimed {claim.topic!r}, not {topic!r}")
-    return first_failure(
-        [check_envelope(state, max_capital, max_drawdown_bps), check_legs(legs, max_capital)]
-    )
+    checks = [check_envelope(state, max_capital, max_drawdown_bps), check_legs(legs, max_capital)]
+    if require_portfolio or any(leg.phase == "execute" and leg.weight_bps > 0 for leg in legs):
+        checks.append(check_portfolio_legs(legs))
+    return first_failure(checks)
 
 
 # -- votes and reviews -----------------------------------------------------------------
