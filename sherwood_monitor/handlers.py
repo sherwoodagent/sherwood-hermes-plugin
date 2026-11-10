@@ -1,8 +1,7 @@
-"""Per-event-type handlers: decide how to inject + whether to post to XMTP."""
+"""Per-event-type handlers: decide what to inject into the agent's next turn."""
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable
 
 from .config import Config
 from .event_buffer import EventBuffer
@@ -10,10 +9,8 @@ from .models import ChainEvent, SessionMessage
 
 _log = logging.getLogger(__name__)
 
-PostFn = Callable[[str, str], Awaitable[None]]  # (subdomain, markdown)
-
-# Events we inject as context but don't auto-post
-CHAIN_INJECT_ONLY = {
+# On-chain events we inject as context; any other type is logged and dropped.
+CHAIN_INJECT = {
     "VoteCast",
     "AgentRegistered",
     "AgentRemoved",
@@ -25,8 +22,7 @@ CHAIN_INJECT_ONLY = {
     "Withdrawn",
     # SandboxRun(uint256 indexed pid, address indexed sandbox, uint256 funding)
     # topic0 0x6fbfaa03c3db533cf914b5a5b997d8244b90daa0e259cf25627e7901d536dc16
-    # (mechanical dry-run execution; context only, the payload-stored event is
-    # the one worth surfacing to humans)
+    # (mechanical dry-run execution; context only)
     # NAME COLLISION: ICallSandbox declares a DIFFERENT SandboxRun with shape
     # (address,uint256,uint256), topic0 0x2638b671... — routing here is by
     # name only, so "SandboxRun" means exclusively the ISyndicateVault event
@@ -35,10 +31,6 @@ CHAIN_INJECT_ONLY = {
     # ICallSandbox event is ever wired, it must arrive under a distinct type
     # (e.g. "CallSandboxRun") and get its own entry here.
     "SandboxRun",
-}
-
-# Events that inject AND auto-post a summary to XMTP
-CHAIN_INJECT_AND_POST = {
     "ProposalCreated",
     "ProposalExecuted",
     "ProposalSettled",
@@ -68,134 +60,18 @@ def _format_chain_injection(subdomain: str, ev: ChainEvent, priority: str = "nor
     )
 
 
-def _format_proposal_created_summary(ev: ChainEvent) -> str:
-    name = ev.args.get("metadataName", "(unnamed)")
-    desc = ev.args.get("metadataDescription", "")
-    proposer = ev.args.get("proposer", "?")
-    fee_bps = ev.args.get("performanceFeeBps", "?")
-    duration = ev.args.get("strategyDuration", "?")
-    try:
-        duration_days = f"{int(duration) // 86400}d" if duration != "?" else "?"
-    except ValueError:
-        duration_days = "?"
-    return (
-        f"**Proposal #{ev.args.get('proposalId', '?')} — {name}**\n"
-        f"{desc}\n"
-        f"Proposer: `{proposer}` | Fee: {fee_bps} bps | Duration: {duration_days}"
-    )
-
-
-def _format_proposal_executed_summary(ev: ChainEvent) -> str:
-    capital = ev.args.get("capitalSnapshot", "?")
-    try:
-        capital_usd = f"${int(capital) / 1_000_000:,.2f}"
-    except ValueError:
-        capital_usd = capital
-    return (
-        f"**Proposal #{ev.args.get('proposalId', '?')} executed** — "
-        f"capital deployed: {capital_usd} (USDC)"
-    )
-
-
-def _format_proposal_settled_summary(ev: ChainEvent) -> str:
-    pnl_raw = ev.args.get("pnl", "0")
-    try:
-        pnl_usd = f"${int(pnl_raw) / 1_000_000:+,.2f}"
-    except ValueError:
-        pnl_usd = pnl_raw
-    duration = ev.args.get("duration", "?")
-    try:
-        duration_days = f"{int(duration) // 86400}d"
-    except ValueError:
-        duration_days = "?"
-    return (
-        f"**Proposal #{ev.args.get('proposalId', '?')} settled** — "
-        f"pnl: {pnl_usd}, duration: {duration_days}"
-    )
-
-
-def _format_proposal_cancelled_summary(ev: ChainEvent) -> str:
-    return (
-        f"**Proposal #{ev.args.get('proposalId', '?')} cancelled** "
-        f"by `{ev.args.get('cancelledBy', '?')}`"
-    )
-
-
-def _format_sandbox_payload_stored_summary(ev: ChainEvent) -> str:
-    funding = ev.args.get("funding", "?")
-    try:
-        funding_usd = f"${int(funding) / 1_000_000:,.2f}"
-    except ValueError:
-        funding_usd = funding
-    return (
-        f"**Proposal #{ev.args.get('proposalId', '?')} — sandbox payload stored** — "
-        f"funding: {funding_usd} (USDC), calls: {ev.args.get('callCount', '?')}, "
-        f"tokens: {ev.args.get('tokenCount', '?')}. Guardians: payload is ready for review."
-    )
-
-
-def _fmt_wood(raw: str) -> str:
-    try:
-        return f"{int(raw) / 1e18:,.2f} WOOD"
-    except ValueError:
-        return raw
-
-
-def _format_review_opened_summary(ev: ChainEvent) -> str:
-    return (
-        f"**Guardian review opened — proposal #{ev.args.get('proposalId', '?')}** — "
-        f"total stake at open: {_fmt_wood(ev.args.get('totalStakeAtOpen', '?'))}"
-    )
-
-
-def _format_review_resolved_summary(ev: ChainEvent) -> str:
-    blocked = str(ev.args.get("blocked", "?")).lower() in {"true", "1"}
-    verdict = "BLOCKED" if blocked else "cleared"
-    return (
-        f"**Guardian review resolved — proposal #{ev.args.get('proposalId', '?')}** — "
-        f"verdict: {verdict}, slashed: {_fmt_wood(ev.args.get('slashedAmount', '?'))}"
-    )
-
-
-def _format_guardian_slashed_summary(ev: ChainEvent) -> str:
-    return (
-        f"**Guardian slashed** — approver `{ev.args.get('approver', '?')}` "
-        f"lost {_fmt_wood(ev.args.get('ownSlash', '?'))} "
-        f"(review `{ev.args.get('reviewKey', '?')}`)"
-    )
-
-
-_CHAIN_SUMMARY_FORMATTERS: dict[str, Callable[[ChainEvent], str]] = {
-    "ProposalCreated": _format_proposal_created_summary,
-    "ProposalExecuted": _format_proposal_executed_summary,
-    "ProposalSettled": _format_proposal_settled_summary,
-    "ProposalCancelled": _format_proposal_cancelled_summary,
-    "SandboxPayloadStored": _format_sandbox_payload_stored_summary,
-    "ReviewOpened": _format_review_opened_summary,
-    "ReviewResolved": _format_review_resolved_summary,
-    "GuardianSlashed": _format_guardian_slashed_summary,
-}
-
-
 async def handle_chain_event(
     subdomain: str,
     ev: ChainEvent,
     buffer: EventBuffer,
     cfg: Config,
-    post_fn: PostFn,
 ) -> None:
     """Route a single on-chain event."""
-    if ev.type not in CHAIN_INJECT_ONLY and ev.type not in CHAIN_INJECT_AND_POST:
+    if ev.type not in CHAIN_INJECT:
         _log.warning("unhandled chain event type: %s", ev.type)
         return
 
     buffer.push(_format_chain_injection(subdomain, ev))
-
-    if ev.type in CHAIN_INJECT_AND_POST and cfg.xmtp_summaries:
-        formatter = _CHAIN_SUMMARY_FORMATTERS.get(ev.type)
-        if formatter is not None:
-            summary = formatter(ev)
-            await post_fn(subdomain, summary)
 
 
 # XMTP message types that always get injected with specific priority
@@ -232,7 +108,6 @@ async def handle_xmtp_message(
     msg: SessionMessage,
     buffer: EventBuffer,
     cfg: Config,
-    post_fn: PostFn,
 ) -> None:
     """Route a single XMTP message."""
     if msg.type in _XMTP_NEVER_INJECT:

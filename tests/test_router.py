@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -9,21 +9,18 @@ from sherwood_monitor.router import EventRouter, _DEDUPE_CAPACITY
 
 @pytest.mark.asyncio
 async def test_routes_chain_event(fixture):
-    cfg = Config(xmtp_summaries=True)
+    cfg = Config()
     buffer = MagicMock(spec=EventBuffer)
-    post = AsyncMock()
-    router = EventRouter(buffer=buffer, cfg=cfg, post_fn=post)
+    router = EventRouter(buffer=buffer, cfg=cfg)
     await router.route("alpha", fixture("chain_proposal_created"))
     buffer.push.assert_called_once()
-    post.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_routes_xmtp_message(fixture):
     cfg = Config()
     buffer = MagicMock(spec=EventBuffer)
-    post = AsyncMock()
-    router = EventRouter(buffer=buffer, cfg=cfg, post_fn=post)
+    router = EventRouter(buffer=buffer, cfg=cfg)
     await router.route("alpha", fixture("xmtp_risk_alert"))
     buffer.push.assert_called_once()
 
@@ -32,8 +29,7 @@ async def test_routes_xmtp_message(fixture):
 async def test_malformed_record_logged_not_raised(caplog):
     cfg = Config()
     buffer = MagicMock(spec=EventBuffer)
-    post = AsyncMock()
-    router = EventRouter(buffer=buffer, cfg=cfg, post_fn=post)
+    router = EventRouter(buffer=buffer, cfg=cfg)
     await router.route("alpha", {"source": "martian"})
     buffer.push.assert_not_called()
     assert any("decode error" in r.message.lower() for r in caplog.records)
@@ -41,11 +37,10 @@ async def test_malformed_record_logged_not_raised(caplog):
 
 @pytest.mark.asyncio
 async def test_handler_exception_logged_not_raised(caplog):
-    cfg = Config(xmtp_summaries=True)
+    cfg = Config()
     buffer = MagicMock(spec=EventBuffer)
     buffer.push.side_effect = RuntimeError("boom")
-    post = AsyncMock()
-    router = EventRouter(buffer=buffer, cfg=cfg, post_fn=post)
+    router = EventRouter(buffer=buffer, cfg=cfg)
     # Should not raise despite buffer.push blowing up
     await router.route(
         "alpha",
@@ -64,8 +59,7 @@ async def test_handler_exception_logged_not_raised(caplog):
 async def test_counter_increments_on_route(fixture):
     cfg = Config()
     buffer = MagicMock(spec=EventBuffer)
-    post = AsyncMock()
-    router = EventRouter(buffer=buffer, cfg=cfg, post_fn=post)
+    router = EventRouter(buffer=buffer, cfg=cfg)
     await router.route("alpha", fixture("chain_vote_cast"))
     await router.route("alpha", fixture("chain_proposal_settled"))
     assert router.events_seen("alpha") == 2
@@ -76,8 +70,7 @@ async def test_counter_increments_on_route(fixture):
 async def test_duplicate_xmtp_message_dropped(fixture):
     cfg = Config()
     buf = MagicMock(spec=EventBuffer)
-    post = AsyncMock()
-    router = EventRouter(buffer=buf, cfg=cfg, post_fn=post)
+    router = EventRouter(buffer=buf, cfg=cfg)
     raw = fixture("xmtp_risk_alert")
     await router.route("alpha", raw)
     await router.route("alpha", raw)
@@ -93,8 +86,7 @@ async def test_dedupe_bounded_capacity(monkeypatch):
     monkeypatch.setattr("sherwood_monitor.router._DEDUPE_CAPACITY", 3)
     cfg = Config()
     buf = MagicMock(spec=EventBuffer)
-    post = AsyncMock()
-    router = EventRouter(buffer=buf, cfg=cfg, post_fn=post)
+    router = EventRouter(buffer=buf, cfg=cfg)
     # Push 5 distinct XMTP messages
     for i in range(5):
         await router.route(
@@ -130,8 +122,7 @@ async def test_chain_events_not_deduped():
     """Chain events use block+tx as natural identifier; don't dedupe."""
     cfg = Config()
     buf = MagicMock(spec=EventBuffer)
-    post = AsyncMock()
-    router = EventRouter(buffer=buf, cfg=cfg, post_fn=post)
+    router = EventRouter(buffer=buf, cfg=cfg)
     ev = {"source": "chain", "type": "VoteCast", "block": 100, "tx": "0x", "args": {}}
     await router.route("alpha", ev)
     await router.route("alpha", ev)

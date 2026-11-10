@@ -1,11 +1,10 @@
-"""A plugin-owned event loop for the fund streams and the XMTP sidecar.
+"""A plugin-owned event loop for the fund streams.
 
 Hermes runs a plugin's async tools and hooks on its own loops: on the CLI a
 persistent loop that only runs while a tool call is being awaited, and in the
 gateway a fresh per-call loop in a worker thread that is closed afterwards.
-Background work started there (the `sherwood session check --stream` readers,
-the sidecar's stdout reader) either stalls between turns or is cancelled when
-the call returns. So the monitor keeps its long-lived work on one loop of its
+Background work started there (the `sherwood session check --stream` readers)
+either stalls between turns or is cancelled when the call returns. So the monitor keeps its long-lived work on one loop of its
 own, running forever in a daemon thread, and Hermes-side callers hand
 coroutines to it.
 

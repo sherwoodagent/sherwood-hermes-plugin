@@ -1,21 +1,15 @@
-"""Derive sidecar wallet key deterministically from the Sherwood primary key.
+"""Monitor-wallet key and address helpers (the gas watchdog's address).
 
-Mirrors CLAUDE.md's XMTP DB key derivation pattern:
-    xmtpDbKey = keccak256(privateKey + "xmtp-db-key")
-
-We use a different salt so the sidecar wallet is a distinct identity:
-    sidecarKey = keccak256(privateKey + salt)
-    where salt defaults to "sherwood-monitor-sidecar-v1"
+Validates the declared ``SHERWOOD_PRIVATE_KEY`` / ``SHERWOOD_AGENT_ADDRESS``
+values and derives the 0x address from the key when only the key is set.
 """
 from __future__ import annotations
 
-# eth-keys / eth-utils are imported when a key is derived, not at import time,
-# so the plugin still registers (fund tools, Telegram cards) in a Hermes venv
-# that has not installed the XMTP sidecar's crypto deps yet.
+# eth-keys is imported when an address is derived, not at import time, so the
+# plugin still registers (fund tools, Telegram cards) in a Hermes venv that has
+# not installed its crypto deps yet.
 
 import re
-
-DEFAULT_SALT = "sherwood-monitor-sidecar-v1"
 
 _PRIVATE_KEY_RE = re.compile(r"^(?:0x)?([0-9a-fA-F]{64})$")
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -31,20 +25,6 @@ def normalize_address(raw: str | None) -> str | None:
     """``0x`` + 40 hex, else ``None``."""
     value = (raw or "").strip()
     return value if _ADDRESS_RE.match(value) else None
-
-
-def derive_sidecar_key(primary_key_hex: str, salt: str = DEFAULT_SALT) -> str:
-    """Return 0x-prefixed 32-byte hex private key for the sidecar.
-
-    Uses keccak-256 (Ethereum-compatible) over ``primary_key_bytes || salt_utf8``.
-    Relies on ``eth-utils`` (backed by ``eth-hash[pycryptodome]``) for the hash.
-    """
-    from eth_utils import keccak
-
-    pk_bytes = bytes.fromhex(primary_key_hex.removeprefix("0x"))
-    data = pk_bytes + salt.encode("utf-8")
-    digest = keccak(data)
-    return "0x" + digest.hex()
 
 
 def address_from_private_key(private_key_hex: str) -> str:

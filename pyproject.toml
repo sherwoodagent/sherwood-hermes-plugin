@@ -39,7 +39,7 @@ sherwood-monitor-watchdog = "sherwood_monitor.cli_watchdog:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sherwood_monitor*"]
-exclude = ["xmtp_sidecar*", "tests*"]
+exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

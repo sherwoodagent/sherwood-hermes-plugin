@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 build/
 dist/
+node_modules/
 .coverage
 htmlcov/
 

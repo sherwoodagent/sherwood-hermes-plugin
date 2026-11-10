@@ -1,10 +1,17 @@
 """Config loader for sherwood-monitor plugin."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .yamlio import YAMLError, safe_load
+
+_log = logging.getLogger(__name__)
+
+# Keys older releases wrote that this release ignores (0.9.0 removed the XMTP
+# sidecar). A config that still has them loads as before, with one log line.
+RETIRED_KEYS = ("xmtp_summaries",)
 
 # Public Robinhood Chain (4663) RPC. It throttles under load; one balance call
 # per gas-watchdog tick is fine. Set `gas_rpc_url` to a dedicated RPC if needed.
@@ -14,7 +21,6 @@ DEFAULT_CONFIG_YAML = """# sherwood-monitor config
 # Edit `funds` to add subdomains you want to monitor.
 funds: []
 auto_start: false
-xmtp_summaries: true
 sherwood_bin: sherwood
 backoff_max_seconds: 30
 inject_mentions_only: true
@@ -35,7 +41,6 @@ proposal_reasoning_enabled: true   # if false, the agent-driven `sherwood-propos
 class Config:
     funds: list[str] = field(default_factory=list)
     auto_start: bool = False
-    xmtp_summaries: bool = True
     sherwood_bin: str = "sherwood"
     backoff_max_seconds: int = 30
     inject_mentions_only: bool = True
@@ -71,10 +76,13 @@ def load_config(path: Path) -> Config:
     if stream_stale <= 0:
         raise ValueError("stream_stale_minutes must be positive")
 
+    retired = [k for k in RETIRED_KEYS if k in raw]
+    if retired:
+        _log.info("config keys ignored (no longer used): %s", ", ".join(retired))
+
     return Config(
         funds=[str(s) for s in funds],
         auto_start=bool(raw.get("auto_start", False)),
-        xmtp_summaries=bool(raw.get("xmtp_summaries", True)),
         sherwood_bin=str(raw.get("sherwood_bin", "sherwood")),
         backoff_max_seconds=backoff_max,
         inject_mentions_only=bool(raw.get("inject_mentions_only", True)),
