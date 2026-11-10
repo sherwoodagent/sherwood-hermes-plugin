@@ -104,7 +104,9 @@ Raw calldata legs do not.
    `chain_hold`, `expired` and `cli_warning`: they mean do not run it now.
 4. Record what landed at once, as the entry's `then` says:
    `fund_set_proposal_status(proposal_id, status="proposed", onchain_id,
-   tx_hash)`. If it failed, say so; if it will never run, `status="cancelled"`.
+   tx_hash)`. The vote is open from the propose block, so the record moves
+   to `voting` at once (veto meter, countdown and ❌ Object on the card).
+   If it failed, say so; if it will never run, `status="cancelled"`.
 
 ## Order of calls (`proposal_signer: host`)
 
@@ -123,7 +125,7 @@ Raw calldata legs do not.
    `bond.swap_first`), the exact approve, then propose (`prepare.body` to
    `POST {tx_builder_url}/prepare/propose`, or the CLI).
 5. `fund_set_proposal_status(proposal_id, status="proposed", onchain_id,
-   tx_hash)`. This starts the voting clock on the card.
+   tx_hash)`. This opens voting on the card (the record moves to `voting`).
 6. If anything fails before step 5, `fund_set_proposal_status(...,
    status="cancelled")` so the slot frees up, and say so in chat.
 

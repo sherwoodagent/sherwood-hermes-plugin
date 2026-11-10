@@ -705,7 +705,14 @@ class FundService:
         tx_hash: str = "",
         card_message_id: str = "",
     ) -> ProposalRecord:
-        """Move a proposal along its lifecycle (draft -> proposed -> ... ). Proposer or host only."""
+        """Move a proposal along its lifecycle (draft -> proposed -> ... ). Proposer or host only.
+
+        Recording `proposed` opens the vote at once: the governor is optimistic veto and a
+        solo propose lands in `Pending` (LP voting) in the propose block, so the record goes
+        straight to `voting` (the card gets the veto meter, countdown and ❌ Object). Asking
+        for the status a proposal already has (or `proposed` once it is `voting`) changes
+        nothing.
+        """
         now = self.clock()
         old: dict[str, str] = {}
 
@@ -714,6 +721,8 @@ class FundService:
             if record is None:
                 raise RuleViolation(rules.deny("unknown_proposal", f"no proposal {proposal_id}"))
             _require_proposer_or_host(state, actor, record)
+            if status == record.status or (status == "proposed" and record.status == "voting"):
+                return record  # already there: a retried record, or `voting` after the auto-open
             require(rules.check_transition(record.status, status))
             if record.status == "draft" and status == "proposed":
                 require(rules.check_cooldown(state, now))
@@ -725,6 +734,8 @@ class FundService:
             if status == "proposed":
                 record.propose_tx = tx_hash or record.propose_tx
                 record.voting_ends_at = now + state.fund.voting_period
+                if state.fund.voting_period > 0:
+                    record.status = "voting"  # Pending on chain from the propose block (see docstring)
             if status == "review" and record.review_ends_at is None:
                 record.review_ends_at = now + state.fund.voting_period  # reviewPeriod = 1800 s on 4663
             if status == "vetoed":
@@ -734,7 +745,8 @@ class FundService:
             return record
 
         record = self.backend.update(fund, mutate)
-        self._emit(FundEvent(EV_STATUS, fund, proposal=record, old_status=old.get("status", "")))
+        if old:
+            self._emit(FundEvent(EV_STATUS, fund, proposal=record, old_status=old.get("status", "")))
         return record
 
     def set_chain_state(
@@ -781,7 +793,7 @@ class FundService:
         `voteEnd`, `reviewEnd` and `review.coverage.kind` (none / partial /
         full / unpriced: the guardian Approve coverage execute needs, about 35%
         of maxCapital), and the chain `state` moves the local status forward
-        (GuardianReview -> review, Approved -> approved, Executed -> executed,
+        (Pending -> voting, GuardianReview -> review, Approved -> approved, Executed -> executed,
         Rejected -> vetoed) when that is a legal step. `proposeGate.cooldownUntil`
         replaces the local cooldown; `governor` gives cooldownPeriod and
         vetoThresholdBps; `fund.depositsOpen` (the vault's openDeposits and not
@@ -1029,7 +1041,10 @@ def _start_cooldown(state: FundState, now: float) -> None:
 
 
 # tg-card `proposals[].state` -> local status the chain read may move a proposal to.
+# The names are the governor's ProposalState enum (sherwood app funds/_lib/tg-card.ts reads
+# `stateOf`); `Pending` is LP voting, open from the propose block until voteEnd.
 CHAIN_STATES = {
+    "Pending": "voting",
     "GuardianReview": "review",
     "Approved": "approved",
     "Executed": "executed",
