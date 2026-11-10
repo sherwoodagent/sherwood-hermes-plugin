@@ -1,9 +1,8 @@
-"""Environment for the processes this plugin spawns (the `sherwood` CLI, node, npm).
+"""Environment for the processes this plugin spawns (the `sherwood` CLI).
 
 The plugin's own secrets stay in the plugin's process. Children get a copy of
-the environment without them: the XMTP sidecar receives only the key derived
-from SHERWOOD_PRIVATE_KEY, over stdin, and the `sherwood` CLI reads its own
-config. Everything else (PATH, HOME, the CLI's own PRIVATE_KEY /
+the environment without them; the `sherwood` CLI reads its own config.
+Everything else (PATH, HOME, the CLI's own PRIVATE_KEY /
 ROBINHOOD_RPC_URL inputs, proxies, locale) passes through unchanged.
 """
 from __future__ import annotations

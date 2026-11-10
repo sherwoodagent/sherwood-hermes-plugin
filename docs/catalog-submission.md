@@ -10,16 +10,16 @@ Opening the catalog PR is part of the hackathon entry: it is held for the
 maintainer's go-ahead, and the repo owner (or a major contributor) must be the
 one who submits it (catalog rule 5).
 
-## 1. Wait for the v0.8.4 tag
+## 1. Wait for the v0.9.0 tag
 
 Merging the release PR into `main` runs `.github/workflows/release.yml`. When
 `pyproject.toml` carries a version with no matching tag, it creates the
-`v0.8.4` tag on exactly the commit that triggered the run (the merge commit:
+`v0.9.0` tag on exactly the commit that triggered the run (the merge commit:
 `target_commitish: ${{ github.sha }}`) and a GitHub release. Nobody tags by
 hand.
 
 ```bash
-gh release view v0.8.4 -R sherwoodagent/sherwood-hermes-plugin
+gh release view v0.9.0 -R sherwoodagent/sherwood-hermes-plugin
 ```
 
 ## 2. Resolve the commit to pin
@@ -27,28 +27,26 @@ gh release view v0.8.4 -R sherwoodagent/sherwood-hermes-plugin
 The catalog pins a full 40-character commit, never a tag name.
 
 ```bash
-SHA=$(gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.4 --jq .sha)
+SHA=$(gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.9.0 --jq .sha)
 echo "$SHA"    # 40 lowercase hex chars
 ```
 
-For v0.8.4 this is `8ede29a7a0165f8047c7e181b60b901311507028` (the merge of #38).
-
-From a local clone, `git fetch --tags origin && git rev-parse 'v0.8.4^{commit}'`
+From a local clone, `git fetch --tags origin && git rev-parse 'v0.9.0^{commit}'`
 gives the same value (`^{commit}` matters if the tag is ever annotated: a bare
 `rev-parse` would return the tag object).
 
 ### Publish the install command with the sha
 
-Hermes has no `@tag` install syntax: `hermes plugins install owner/repo@v0.8.4`
+Hermes has no `@tag` install syntax: `hermes plugins install owner/repo@v0.9.0`
 fails (Hermes turns it into a repository URL), and `--ref` accepts only a full
 40-character commit sha. The README and the bundled skill
 at the pinned commit therefore say
-`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.4 release commit>`;
+`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.9.0 release commit>`;
 that placeholder stays in the tree by design, because a commit cannot contain
 its own sha. Fill it in where it can live:
 
 ```bash
-gh release edit v0.8.4 -R sherwoodagent/sherwood-hermes-plugin --notes "$(cat <<EOF
+gh release edit v0.9.0 -R sherwoodagent/sherwood-hermes-plugin --notes "$(cat <<EOF
 Install: hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref $SHA
 (or, once listed in the Hermes catalog: hermes plugins install sherwood-monitor)
 EOF
@@ -56,8 +54,7 @@ EOF
 ```
 
 and in the consumer-repo PRs (`docs/consumer-updates.md`), which pin `$SHA`
-in place of the placeholder. For v0.8.4 the install line is
-`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 8ede29a7a0165f8047c7e181b60b901311507028`. Editing the release notes is part of the
+in place of the placeholder. Editing the release notes is part of the
 release, held for the maintainer's go-ahead like the catalog PR.
 
 ## 3. Check the plugin at that commit
@@ -73,24 +70,32 @@ Catalog CI runs `hermes plugins validate --install-deps` on a fresh clone at the
 pin. `--install-deps` installs the plugin's Python dependencies into the Hermes
 environment, so only run it locally on a throwaway Hermes install.
 
+At 0.9.0, validate passes all 15 checks, `security scan — safe` among them,
+and prints one warning: the rule-9 private core import (see "Expect in review"
+below). The propose-guard tests feed the guard two commands that pipe `echo`
+into a shell or `python3`. Those rows live in
+`fixtures/guard_piped_rows.json`, which `tests/test_guard_bypass.py` loads:
+the scanner reads data files under `fixtures/` as test data, but the same line
+in a `.py` file as code (`echo_pipe_exec`), which made the scan `caution`
+on `main` after #41 (e24117b).
+
 ## 4. Fill in the entry
 
 The copy of `catalog/sherwood-monitor.yaml` at the pinned commit has the
 placeholder, because a commit cannot carry its own sha. (After the tag, a
-follow-up PR fills the sha in on `main`, as #37 did for v0.8.3; for v0.8.4
-`main` carries `sha: "8ede29a7a0165f8047c7e181b60b901311507028"`.) Submit the
+follow-up PR fills the sha in on `main`, as #39 did for v0.8.4.) Submit the
 pinned copy, filled in:
 
 ```bash
-sed -e "s/^sha: \"<sha of the v0.8.4 tag commit>\"/sha: \"$SHA\"/" \
+sed -e "s/^sha: \"<sha of the v0.9.0 tag commit>\"/sha: \"$SHA\"/" \
     -e '/^# REPLACE before submitting/,/^# catalog CI reject anything else/d' \
     /tmp/shm-pin/catalog/sherwood-monitor.yaml > /tmp/sherwood-monitor.yaml
-grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit (8ede29a... for v0.8.4)
+grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit
 ```
 
 Check, against `plugin.yaml` at the pin:
 
-- `version` is `"0.8.4"` and `requires_hermes` matches `plugin.yaml`.
+- `version` is `"0.9.0"` and `requires_hermes` matches `plugin.yaml`.
 - `capabilities` lists the same 17 tools, 5 hooks and 5 `requires_env` names
   (`tests/test_catalog_entry.py` enforces this in this repo).
 - `tier: community`. Only Nous maintainers set `official` or `verified`.
@@ -105,11 +110,11 @@ cp /tmp/sherwood-monitor.yaml plugin-catalog/sherwood-monitor.yaml
 pip install ruamel.yaml==0.18.17
 python3 scripts/validate_plugin_catalog.py plugin-catalog/sherwood-monitor.yaml
 git add plugin-catalog/sherwood-monitor.yaml
-git commit -S -m "plugin-catalog: add sherwood-monitor 0.8.4"
+git commit -S -m "plugin-catalog: add sherwood-monitor 0.9.0"
 git log --format='%h %G?' -1      # must print G
 git push -u origin plugin-catalog/sherwood-monitor
 gh pr create -R NousResearch/hermes-agent \
-  --title "plugin-catalog: add sherwood-monitor 0.8.4" \
+  --title "plugin-catalog: add sherwood-monitor 0.9.0" \
   --body-file /tmp/sherwood-monitor-pr.md
 ```
 
@@ -133,11 +138,6 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
 
 ## Expect in review
 
-- **XMTP is Base-only.** The sidecar resolves a fund's XMTP group only from
-  the `xmtpGroupId` text record on Base's Durin L2Registry, which current
-  Sherwood CLI releases do not write; Robinhood Chain funds get on-chain
-  events only. The entry, README and disclosure say so, and the sidecar is
-  optional (it starts only with `SHERWOOD_PRIVATE_KEY`).
 - **Cron wrappers.** `hermes sherwood install-cron` writes four small
   `.py` wrapper scripts to `$HERMES_HOME/scripts/` (Hermes runs cron scripts only
   from there) and registers them with `hermes cron create`; it is disclosed.
@@ -190,8 +190,7 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
 
 - **Rule 11 (credentials come through Hermes): resolved in 0.7.0.** Up to
   0.6.0 the plugin read the Sherwood CLI's `~/.sherwood/config.json`
-  (including its `privateKey`) for the XMTP sidecar key and the gas
-  watchdog's address. 0.7.0 deletes both readers: the monitor wallet comes
+  (including its `privateKey`). 0.7.0 deletes those reads: the monitor wallet comes
   only from the declared `requires_env` entries `SHERWOOD_PRIVATE_KEY`
   (secret, optional) and `SHERWOOD_AGENT_ADDRESS` (optional), read with
   `agent.secret_scope.get_secret`; the gas watchdog's RPC is the plugin's own
@@ -207,25 +206,10 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   `config_schema`, not prompted). The catalog schema has no optional-env
   list, so the entry's `capabilities.requires_env` mirrors `requires_env`
   only.
-- **Rule 17 (no unscannable payloads).** Nothing binary is committed.
-  Building the optional XMTP sidecar runs `npm ci` in `xmtp_sidecar/`, which
-  downloads `@xmtp/node-bindings` (native) from the npm registry, pinned by
-  `package-lock.json` integrity hashes. That is disclosed.
-- **Where the sidecar is built.** Hermes offers a Node install only for a
-  root `package.json`, and this plugin has none. It installs the Python
-  package editable from a copy of the plugin in its dependency workspace
-  (`$HERMES_HOME/installs/<key>/environments/<id>/workspace/plugin-sources/sherwood-monitor-*`).
-  `setup.py` attempts `npm ci && npm run build` there when npm is on PATH
-  (the build needs Node ≥ 22); uv does not show that output, and the 0.8.3
-  and 0.8.4 cold installs never observed that build. The plugin is loaded from
-  `$HERMES_HOME/plugins/sherwood-monitor/`, so `_sidecar_dir()` uses a build
-  in that directory first. Otherwise it uses the copy named by the package's
-  install record (PEP 610 `direct_url.json`, read with `importlib.metadata`;
-  `tests/test_sidecar_dir.py`). With no build in either place the plugin
-  runs without XMTP and preflight says to build in the plugin directory. The
-  README's "Build the XMTP sidecar" is the supported path: with Node
-  22.23.4, `npm ci` and `npm run build` in `xmtp_sidecar/` succeed and
-  `dist/index.js` starts.
+- **Rule 17 (no unscannable payloads).** Nothing binary is committed, and
+  there is no Node build: the plugin is pure Python, and the install fetches
+  only Python packages (its declared dependencies and the setuptools build
+  backend).
 - **Uninstall deletes state on a default install.** The plugin keeps its
   config and state under `~/.hermes/plugins/sherwood-monitor/` in the user's
   home (`_plugin_root()` in `sherwood_monitor/__init__.py`; `funds/` from

@@ -397,8 +397,7 @@ group can steer it:
 ## Catalog rule 11: resolved in 0.7.0
 
 Up to 0.6.0 the monitor read the Sherwood CLI's `~/.sherwood/config.json`
-(its `privateKey`) for the XMTP sidecar key and the gas watchdog's address,
-outside Hermes' secret scope. 0.7.0 removes both reads. The monitor wallet
+(its `privateKey`), outside Hermes' secret scope. 0.7.0 removes those reads. The monitor wallet
 comes only from the declared secrets `SHERWOOD_PRIVATE_KEY` and
 `SHERWOOD_AGENT_ADDRESS` (Hermes' `agent.secret_scope.get_secret`), and the
 gas watchdog's RPC from the plugin's own `gas_rpc_url`. The fund features

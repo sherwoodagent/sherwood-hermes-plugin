@@ -1,0 +1,9 @@
+{
+  "_about": "Rows of tests/test_guard_bypass.py whose command pipes echo into a shell or an interpreter. They are test data the propose guard must refuse. They live here because Hermes' plugin scanner reads such a line in a .py file as runnable code (echo_pipe_exec); in a data file under fixtures/ it reads it as test data. {OK_P} and {OVER_P} are filled in from the constants of the same name in tests/test_guard_bypass.py.",
+  "DELTA2_ROWS": [
+    ["R2 decoy + echo | sh", "false && {OK_P}; echo '{OVER_P}' | sh", "shell_indirection"]
+  ],
+  "DELTA3_ROWS": [
+    ["B1 echo | python3 os.system", "echo '{OVER_P}' | python3 -c 'import os,sys; os.system(sys.stdin.read())'", "unlisted_command"]
+  ]
+}

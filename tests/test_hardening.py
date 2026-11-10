@@ -1,4 +1,4 @@
-"""Release-review hardening: child envs, the gas RPC URL, upgrade and sidecar warnings."""
+"""Release-review hardening: child envs, the gas RPC URL, upgrade warnings."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -55,23 +55,8 @@ def test_cli_version_check_gets_the_stripped_env(monkeypatch):
         monkeypatch.setenv(k, v)
     run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.71.0"))
     with patch("subprocess.run", run):
-        run_preflight("sherwood", sidecar_dir=None)
+        run_preflight("sherwood")
     assert not set(SECRETS) & set(run.call_args.kwargs["env"])
-
-
-@pytest.mark.asyncio
-async def test_node_sidecar_gets_the_stripped_env(monkeypatch, tmp_path):
-    from sherwood_monitor.sidecar import Sidecar
-
-    for k, v in SECRETS.items():
-        monkeypatch.setenv(k, v)
-    (tmp_path / "dist").mkdir()
-    (tmp_path / "dist" / "index.js").write_text("// built")
-    spawn = AsyncMock(side_effect=RuntimeError("stop after spawn"))
-    sc = Sidecar(sidecar_dir=tmp_path, primary_private_key_hex=SECRETS["SHERWOOD_PRIVATE_KEY"], db_path=tmp_path / "db")
-    with patch("asyncio.create_subprocess_exec", spawn), pytest.raises(RuntimeError):
-        await sc.start()
-    assert not set(SECRETS) & set(spawn.call_args.kwargs["env"])
 
 
 # -- N3: a bad gas_rpc_url never reaches a cron alert ----------------------------------------
@@ -101,16 +86,6 @@ def test_gas_main_with_a_schemeless_url_exits_zero_and_silent(monkeypatch, tmp_p
     assert captured.out == "" and "RPCAPIKEYMARKER" not in captured.err
 
 
-# -- P4 / N2: warnings only when they apply ---------------------------------------------------
-def test_sidecar_not_built_warning_only_when_xmtp_is_configured(tmp_path):
-    run = MagicMock(return_value=MagicMock(returncode=0, stdout="0.71.0"))
-    with patch("subprocess.run", run):
-        off = run_preflight("sherwood", sidecar_dir=tmp_path, xmtp_configured=False)
-        on = run_preflight("sherwood", sidecar_dir=tmp_path, xmtp_configured=True)
-    assert off.warnings == [] and off.sidecar_built is False
-    assert any("sidecar not built" in w for w in on.warnings)
-
-
 def _register_and_capture(tmp_path: Path, mock_ctx, funds: list[str]) -> str:
     import yaml
 
@@ -128,7 +103,6 @@ def _register_and_capture(tmp_path: Path, mock_ctx, funds: list[str]) -> str:
 
     with patch("pathlib.Path.home", return_value=tmp_path), \
          patch("sherwood_monitor.preflight.subprocess.run", MagicMock(return_value=MagicMock(returncode=0, stdout="0.71.0"))), \
-         patch("sherwood_monitor._sidecar_dir", return_value=tmp_path / "no-sidecar"), \
          patch.object(EventBuffer, "push", capture):
         from sherwood_monitor import register
 
@@ -141,7 +115,7 @@ def test_upgrade_warning_when_funds_are_configured_and_no_wallet_is_set(tmp_path
     monkeypatch.delenv("SHERWOOD_AGENT_ADDRESS", raising=False)
     text = _register_and_capture(tmp_path, mock_ctx, ["alpha-fund"])
     assert "gas watchdog is off" in text and "SHERWOOD_AGENT_ADDRESS" in text
-    assert "sidecar not built" not in text  # XMTP is not configured, so no sidecar warning (P4)
+    assert "sidecar" not in text.lower() and "xmtp" not in text.lower()
 
 
 def test_no_upgrade_warning_when_the_address_is_set(tmp_path, mock_ctx, monkeypatch):

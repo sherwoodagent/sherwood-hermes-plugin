@@ -14,9 +14,9 @@ TELEGRAM_BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
 SHERWOOD_TG_LINK_SECRET = "SHERWOOD_TG_LINK_SECRET"
 # Bearer for the app's /api/tg/link lookup; NOT the link-signing key.
 SHERWOOD_TG_API_TOKEN = "SHERWOOD_TG_API_TOKEN"
-# Monitor wallet (optional). The XMTP sidecar derives its own key from the
-# private key; the gas watchdog needs only the address. The plugin never reads
-# the Sherwood CLI's config file for either.
+# Monitor wallet (optional). The gas watchdog needs only the address, derived
+# from the private key when SHERWOOD_AGENT_ADDRESS is unset. The plugin never
+# reads the Sherwood CLI's config file for either.
 SHERWOOD_PRIVATE_KEY = "SHERWOOD_PRIVATE_KEY"
 SHERWOOD_AGENT_ADDRESS = "SHERWOOD_AGENT_ADDRESS"
 # Declared in plugin.yaml `optional_env` (defaults live in config_schema).

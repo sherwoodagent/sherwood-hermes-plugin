@@ -10,14 +10,14 @@ The Sherwood agent skill pack — installed by users via `npx skills install she
 
 When bumping any of:
 - `.claude-plugin/plugin.json` `version` field (this skill's own version)
-- The pinned Hermes plugin version (`sherwoodagent/sherwood-hermes-plugin@vX.Y.Z` in `SKILL.md`)
+- The pinned Hermes plugin release (`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the vX.Y.Z tag>` in `SKILL.md`; Hermes has no `@tag` install syntax)
 
 …the PR MUST also touch every spot the version is referenced. Today those are:
 
 | File | Pin | What it controls |
 |---|---|---|
 | `.claude-plugin/plugin.json` | `version` | Skill plugin manifest |
-| `SKILL.md` "Running on Hermes Agent" → Install | `sherwood-hermes-plugin@vX.Y.Z` | Hermes plugin install command |
+| `SKILL.md` line 27 and "Running on Hermes Agent" → Install and upgrade lines | `--ref <40-hex sha of the vX.Y.Z tag>` (`gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/vX.Y.Z --jq .sha`) | Hermes plugin install command |
 | `SKILL.md` `metadata.version` | same as `plugin.json` | `scripts/check-skill.sh` fails if they differ; the release tag is `v<version>` |
 
 Sub-skills under `skills/*/SKILL.md` carry their OWN `version` frontmatter — bump those independently when their behavior changes.

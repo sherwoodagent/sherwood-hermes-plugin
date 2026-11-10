@@ -6,8 +6,10 @@ Fund: 40 USDG max capital, 1000 bps max drawdown; an attempt is 4000 USDG / 9000
 from __future__ import annotations
 
 import asyncio
+import json
 import shlex
 import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -357,6 +359,20 @@ BASE_P = f"sherwood strategy propose portfolio --vault {VAULT} --tokens TSLA --w
 OK_P = BASE_P + " --amount 40 --max-drawdown-bps 1000"
 OVER_P = BASE_P + " --amount 4000 --max-drawdown-bps 9000"
 
+
+def _piped_rows() -> dict[str, list[tuple[str, str, str]]]:
+    """Rows whose command pipes echo into a shell or an interpreter, from fixtures/guard_piped_rows.json
+    (Hermes' plugin scanner reads such a line in a .py file as code). Same rows, filled in here."""
+    raw = json.loads((Path(__file__).resolve().parent.parent / "fixtures" / "guard_piped_rows.json").read_text())
+    return {
+        table: [(label, command.format(OK_P=OK_P, OVER_P=OVER_P), expected) for label, command, expected in rows]
+        for table, rows in raw.items()
+        if not table.startswith("_")
+    }
+
+
+PIPED_ROWS = _piped_rows()
+
 DELTA_ROWS = [
     # N1: commander runs these (the help token is an option's value, or an operand after `--`).
     ("N1 --name -h", OVER_P + " --name -h", "exceeds_max_capital"),
@@ -487,7 +503,7 @@ DELTA2_ROWS = [
     # R2: a decoy propose that never runs next to a hidden one.
     ("R2 decoy + bash -c", f"false && {OK_P}; bash -c '{OVER_P}'", "shell_indirection"),
     ("R2 decoy + sh <<< here-string", f"true || {OK_P}\nsh <<< '{OVER_P}'", "shell_indirection"),
-    ("R2 decoy + echo | sh", f"false && {OK_P}; echo '{OVER_P}' | sh", "shell_indirection"),
+    *PIPED_ROWS["DELTA2_ROWS"],  # R2 decoy, then the over-ceiling propose piped into a shell
     ("R2 calldata-only decoy + bash -c", f"sherwood --calldata-only strategy propose portfolio --vault {VAULT} {TAIL} --amount 40 --max-drawdown-bps 1000 --proposer 0x{'11' * 20} --metadata-uri ipfs://x; bash -c '{OVER_P}'", "shell_indirection"),
     ("R2 decoy + alias", f"shopt -s expand_aliases\nalias sw='{OVER_P}'\nfalse && {OK_P}\nsw", "shell_indirection"),
     ("R2 decoy + here-doc apostrophe desync", f"false && {OK_P}\ncat >/dev/null <<'EOF'\nit's\nEOF\n{OVER_P}\ncat >/dev/null <<'EOF'\n'\nEOF", "shell_indirection"),
@@ -630,7 +646,7 @@ DELTA3_ROWS = [
     # B1: a read-only tool's output piped or written into something that runs it.
     ("B1 echo | xargs env", f"echo '{OVER_P}' | xargs env", "unlisted_command"),
     ("B1 echo | xargs nice", f"echo '{OVER_P}' | xargs nice", "unlisted_command"),
-    ("B1 echo | python3 os.system", f"echo '{OVER_P}' | python3 -c 'import os,sys; os.system(sys.stdin.read())'", "unlisted_command"),
+    *PIPED_ROWS["DELTA3_ROWS"],  # B1 the propose piped into python3 -c os.system
     ("B1 printf | perl system", f"printf '%s' '{OVER_P}' | perl -e 'system(<STDIN>)'", "unlisted_command"),
     ("B1 echo > file then grep | xargs env", f"echo '{OVER_P}' > notes.txt; grep -h sherwood notes.txt | xargs env", "unlisted_command"),
     ("B1 grep sherwood | xargs env", "grep -h sherwood notes.txt | xargs env", "unlisted_command"),

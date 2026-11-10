@@ -95,6 +95,21 @@ Robinhood Chain (2026-10-20) and left uncertified, so proposals price at tier 2:
 | LighterPerpStrategy (template) | `0x62f85891b1914c48eA35eA9f81EA49BB31C2e5Cd` |
 | zkLighter proxy (venue; TierRegistry counterparty) | `0x94bAB9693Ba2f6358507eFfcbd372b0660AFfF9d` |
 
+### Generic Call (from `sherwood-strategies`, unaudited, never certified)
+
+`GenericCallStrategy` also comes from `sherwood-strategies` and is unaudited. It was deployed on
+Robinhood Chain on 2026-11-07 at block 108,600,958 and approved on the StrategyFactory
+`0xb06788F027268a9A06c3AD41a88559530D2E54b1` in the same run; the source is an exact match on
+Sourcify. Source: `deployments/4663.json` in `sherwood-strategies` (`GENERIC_CALL_TEMPLATE`); the
+protocol's `chains/4663.json` does not carry it. It is tier 2 for good and never certified:
+`execute()` and `settle()` price at `(2, 10000)`, so coverage and the bond are sized on the whole
+pull. It binds no venue, so there is no counterparty to list. Use CLI 0.104.0 or later (older
+releases encode the old balance patch). See [GenericCallStrategy](SKILL.md#genericcallstrategy).
+
+| Item | Address |
+|------|---------|
+| GenericCallStrategy (template) | `0xee67db9630fCB4F69C013928b2113C5489B39833` |
+
 ## WOOD and where to buy it
 
 | Item | Address |

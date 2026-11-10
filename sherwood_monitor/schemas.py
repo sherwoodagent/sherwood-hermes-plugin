@@ -5,7 +5,7 @@ START = {
     "name": "sherwood_monitor_start",
     "description": (
         "Start monitoring a Sherwood fund. Spawns a streaming subprocess "
-        "that forwards on-chain events and XMTP messages into this conversation. "
+        "that forwards on-chain events into this conversation. "
         "Use this when the user asks to watch a new fund or after adding "
         "one to the config."
     ),

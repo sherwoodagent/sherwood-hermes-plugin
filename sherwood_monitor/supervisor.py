@@ -260,12 +260,12 @@ class Supervisor:
             state.exit_event.set()
 
     async def _run_once(self, state: _State) -> None:
-        # --no-xmtp: the plugin's own sidecar owns XMTP (send + subscribe).
-        # The CLI's session-check path would either duplicate that work or,
-        # on glibc-2.36 hosts where the CLI's @xmtp/node-bindings fails to
-        # load, block the subprocess entirely before any on-chain events
-        # emerge. The `--no-xmtp` flag landed in CLI 0.40.5; the effective
-        # floor is MIN_CLI_VERSION in preflight (enforced on load).
+        # --no-xmtp: the monitor streams on-chain events only, so the CLI
+        # skips its XMTP catch-up. On glibc-2.36 hosts, where the CLI's
+        # @xmtp/node-bindings fails to load, that path would also block the
+        # subprocess before any on-chain events emerge. The `--no-xmtp` flag
+        # landed in CLI 0.40.5; the effective floor is MIN_CLI_VERSION in
+        # preflight (enforced on load).
         proc = await asyncio.create_subprocess_exec(
             self._cfg.sherwood_bin,
             "session",

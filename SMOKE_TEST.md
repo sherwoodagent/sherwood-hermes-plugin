@@ -4,7 +4,7 @@
 
 ## What you're testing
 
-The `sherwood-monitor` plugin you're running: on-chain event streaming + autonomous cron digests + risk guardrails + cross-fund exposure + XMTP subscribe/send via a bundled TypeScript sidecar. Your job is to prove it works end-to-end against a live Sherwood deployment and report with evidence. "Evidence" means logs, state files, and observed behavior — not assertions.
+The `sherwood-monitor` plugin you're running: on-chain event streaming + autonomous cron digests + risk guardrails + cross-fund exposure. Your job is to prove it works end-to-end against a live Sherwood deployment and report with evidence. "Evidence" means logs, state files, and observed behavior — not assertions.
 
 ## Ground rules
 
@@ -112,49 +112,6 @@ Goal: prove the streaming supervisor spawns, reads, and stops a child process cl
 
 ---
 
-## Phase 2.5 — Sidecar health + membership + send test
-
-Goal: confirm the XMTP sidecar is alive, the sidecar wallet is a member of the target fund's group, and a real XMTP post reaches the group.
-
-### Confirm sidecar process exists
-
-    ps aux | grep xmtp_sidecar | grep -v grep > "$RUN_DIR/2.5-ps-sidecar.txt"
-
-Expected: one process running something like `node .../xmtp_sidecar/dist/index.js`. Non-zero pid. If absent, the sidecar didn't spawn — check `/tmp/sherwood-monitor.log` for the reason (most common: `npm` missing at install time, or `SHERWOOD_PRIVATE_KEY` unset in the Hermes profile `.env`; the plugin does not read `~/.sherwood/config.json`).
-
-### Read the sidecar address
-
-Call `sherwood_monitor_status()` and look at the output (it should include a `sidecar_address` field after Phase 3 of this PR lands; alternatively read `~/.hermes/plugins/sherwood-monitor/sidecar.json`):
-
-    cat ~/.hermes/plugins/sherwood-monitor/sidecar.json > "$RUN_DIR/2.5-sidecar-json.txt"
-
-Save the 0x address as `$SIDECAR_ADDR`.
-
-### Confirm membership (or fix it)
-
-1. `sherwood chat $SUB members > "$RUN_DIR/2.5-members-before.txt"` — check if `$SIDECAR_ADDR` is listed.
-2. If not: as the fund creator, run:
-   ```
-   sherwood chat $SUB add $SIDECAR_ADDR
-   ```
-3. Re-check: `sherwood chat $SUB members > "$RUN_DIR/2.5-members-after.txt"` — `$SIDECAR_ADDR` should now appear.
-
-### Send a test message via the sidecar
-
-Call the tool (the agent can do this directly; the plugin exposes an LLM tool or the Sidecar can be invoked via `sherwood_monitor_status` first to confirm `sidecar_ok: true`).
-
-Without a direct send tool (by design — the agent posts via handlers, not on demand), simulate a send by triggering an event through the replay path in Phase 3, then re-read the group log:
-
-    sherwood chat $SUB log --limit 5 > "$RUN_DIR/2.5-chat-log-after-send.txt"
-
-Expected: a recent markdown message posted by `$SIDECAR_ADDR` (or at least a new message not from you) showing a proposal summary.
-
-**Pass condition:** sidecar process running; sidecar address is a group member; a test auto-post from the sidecar address appears in the group log.
-
-**Pass condition (fail-open):** if the sidecar never spawned (missing Node, skipped build), the plugin should have injected a clear warning explaining why. Save that warning text to `$RUN_DIR/2.5-sidecar-skipped-reason.txt` and mark this phase as YELLOW with a note.
-
----
-
 ## Phase 3 — Reactive event injection (mainnet-safe)
 
 Goal: prove events arriving from the subprocess actually reach you on the next turn via `pre_llm_call`.
@@ -213,23 +170,7 @@ The Sherwood CLI stores a per-fund cursor at `~/.sherwood/sessions/`. Resetting 
 
 4. Call `sherwood_monitor_status()` again. `events_seen` for `$SUB` should now be `EVENTS_BEFORE + N` where N matches the event count above.
 
-### XMTP auto-post check (observational only)
-
-Auto-posts only happen for LIVE proposal lifecycle events, not replays (the plugin's post-fn runs on the handler path, so replays will also trigger posts — but that would spam the real group). To avoid this:
-
-**Before replay:** temporarily disable auto-posts by editing config:
-```bash
-sed -i.bak 's/xmtp_summaries: true/xmtp_summaries: false/' ~/.hermes/plugins/sherwood-monitor/config.yaml
-```
-
-And restore after replay:
-```bash
-mv ~/.hermes/plugins/sherwood-monitor/config.yaml.bak ~/.hermes/plugins/sherwood-monitor/config.yaml
-```
-
-Skip XMTP validation in this phase. Instead, record to `$RUN_DIR/3-xmtp-note.md`: "xmtp_summaries disabled during replay to prevent spam; XMTP auto-post verified separately via code review of handlers.py — see CHAIN_INJECT_AND_POST set."
-
-**Pass condition:** injection observed (≥1 event), `events_seen` counter advanced, no spam sent to the real XMTP group.
+**Pass condition:** injection observed (≥1 event), `events_seen` counter advanced.
 
 **If fail:**
 - No injection → check `$RUN_DIR/sherwood-monitor.log` for errors. Check `sherwood_monitor_status()` `stderr_tail` for subprocess errors. Check `~/.sherwood/sessions/$SUB.json` still has the old cursor (reset may not have worked).
@@ -376,7 +317,7 @@ Precondition: `sherwood proposal list $SUB --json` includes at least one already
 
 2. Reset the cursor far enough back to re-observe the `ProposalSettled` event (same technique as Phase 3).
 
-3. With the supervisor running and `xmtp_summaries: false` set in config, the stream will re-emit the `ProposalSettled` event, which routes through `handle_chain_event` → injects a `<sherwood-event type="ProposalSettled">` block. This validates the injection path.
+3. With the supervisor running, the stream will re-emit the `ProposalSettled` event, which routes through `handle_chain_event` → injects a `<sherwood-event type="ProposalSettled">` block. This validates the injection path.
 
 4. **Note carefully:** Path B does NOT exercise the `post_tool_call` hook, because the hook only fires when YOU (the agent) invoke `sherwood proposal settle ...` via the terminal tool. It doesn't fire on replay. Record this limitation in `$RUN_DIR/6-path-B-note.md`.
 

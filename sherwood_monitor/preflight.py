@@ -1,20 +1,15 @@
-"""Preflight checks for the Sherwood CLI and the XMTP sidecar.
+"""Preflight checks for the Sherwood CLI.
 
 The plugin never opens or inspects the Sherwood CLI's own config file; the CLI
 reports its own configuration errors when the supervisor runs it.
 """
 from __future__ import annotations
 
-import logging
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from .childenv import child_env
-
-if TYPE_CHECKING:
-    from .sidecar import Sidecar
 
 # 0.71.0 is the CLI release that ships the `syndicate` → `fund` product
 # rename (the `sherwood fund` command) — 0.68.0/0.69.0 were claimed by the
@@ -23,17 +18,11 @@ if TYPE_CHECKING:
 # floor to the release that ships it.
 MIN_CLI_VERSION = "0.71.0"
 
-_log = logging.getLogger(__name__)
-
 
 @dataclass(frozen=True)
 class PreflightResult:
     cli_ok: bool
     cli_version: str | None
-    sidecar_built: bool
-    sidecar_ok: bool
-    sidecar_address: str | None
-    missing_memberships: list[str]
     warnings: list[str] = field(default_factory=list)
 
 
@@ -69,52 +58,14 @@ def check_cli_installed(
     return True, version
 
 
-def check_sidecar_built(sidecar_dir: Path) -> bool:
-    """Return True if xmtp_sidecar/dist/index.js exists."""
-    return (sidecar_dir / "dist" / "index.js").is_file()
-
-
-async def check_sidecar_health(sidecar: "Sidecar") -> tuple[bool, str | None]:
-    """Ping the sidecar. Return (ok, address_or_None)."""
-    try:
-        await sidecar.call("ping", {}, timeout=5.0)
-        return True, sidecar.address
-    except Exception as exc:
-        _log.warning("sidecar ping failed: %s", exc)
-        return False, None
-
-
-async def check_memberships(sidecar: "Sidecar", funds: list[str]) -> list[str]:
-    """Return list of subdomains where the sidecar isn't a member of the XMTP group."""
-    missing: list[str] = []
-    for sub in funds:
-        try:
-            if not await sidecar.is_member(sub):
-                missing.append(sub)
-        except Exception as exc:
-            _log.warning("membership check failed for %s: %s", sub, exc)
-            missing.append(sub)  # treat errors as "unknown, surface"
-    return missing
-
-
 def run_preflight(
     sherwood_bin: str,
-    sidecar_dir: Path | None = None,
     home: Path | None = None,
-    xmtp_configured: bool = True,
 ) -> PreflightResult:
     """Run all preflight checks and collect warnings.
 
-    Sidecar health and membership checks are NOT included here — those need
-    an async context and an already-running sidecar.  Call
-    ``check_sidecar_health`` and ``check_memberships`` from ``register()``
-    after the sidecar is spawned.
-
     ``home`` is accepted for call-site compatibility and unused: nothing here
     reads files under the user's home.
-
-    ``xmtp_configured`` False (no SHERWOOD_PRIVATE_KEY): the sidecar is never
-    started, so the sidecar warnings are not shown; ``sidecar_built`` is still set.
     """
     del home
     warnings: list[str] = []
@@ -131,27 +82,8 @@ def run_preflight(
                 f"{MIN_CLI_VERSION}. Upgrade: npm i -g @sherwoodagent/cli@latest"
             )
 
-    # Synchronous sidecar-built check (no running sidecar needed)
-    if sidecar_dir is None:
-        sidecar_built = False
-        if xmtp_configured:
-            warnings.append(
-                "XMTP sidecar directory not configured. "
-                "Set sidecar_dir to enable XMTP streams."
-            )
-    else:
-        sidecar_built = check_sidecar_built(sidecar_dir)
-        if not sidecar_built and xmtp_configured:
-            warnings.append(
-                f"XMTP sidecar not built. Run: cd {sidecar_dir} && npm ci && npm run build"
-            )
-
     return PreflightResult(
         cli_ok=cli_ok,
         cli_version=cli_version,
-        sidecar_built=sidecar_built,
-        sidecar_ok=False,       # filled in after async health check
-        sidecar_address=None,   # filled in after async health check
-        missing_memberships=[],  # filled in after async membership check
         warnings=warnings,
     )
