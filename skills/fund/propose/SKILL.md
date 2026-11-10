@@ -64,8 +64,12 @@ Raw calldata legs do not.
 ## The bond
 
 - **Bond = 1% of coverage.** Coverage is the max capital. The draft response
-  shows `bond_value_asset_units`; quote it in WOOD (the CLI quotes it from the
-  WOOD TWAP feed) and pass `bond_quote_wood`.
+  shows `bond_value_asset_units`. With `proposal_signer: agent` there is
+  nothing to quote at draft time: the Sherwood CLI quotes the WOOD bond and
+  approves it when the operator runs the shipped propose command, so a draft
+  without `bond_quote_wood` is complete (`bond.missing` says so) and the rest
+  of this section is the CLI's job. With `proposal_signer: host`, quote it in
+  WOOD (the CLI quotes it from the WOOD TWAP feed) and pass `bond_quote_wood`.
 - **Approve quote + 5%, never unlimited.** The only WOOD allowance you ever
   grant for a bond is `approve_wood` from the draft response, to the
   governor's bond escrow. A `max`/unlimited approval is blocked outright.
@@ -91,7 +95,9 @@ Raw calldata legs do not.
 1. `fund_status` (use `scope` for the chain, the vault, and which templates
    `sherwood strategy list` actually printed), then `fund_draft_proposal`
    with symbol + `weight_bps` legs or a generic-call `calls` plan. The draft
-   card posts in the group.
+   card posts in the group by itself. Do what the result's `next` says: one
+   short line in the chat, then stop. Do not fetch `prepare.url`, do not type
+   a `sherwood ...` command for anyone, do not offer a one-shot.
 2. Wait for the host's 🚀 Ship it. Never propose a draft the host has not
    shipped: shipping is the go-ahead (the plugin's rule; nothing on chain
    enforces it, so it is on you).

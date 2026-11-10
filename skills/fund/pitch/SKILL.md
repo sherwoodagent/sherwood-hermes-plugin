@@ -55,9 +55,18 @@ Draft only on one of these two signals, and only for the idea that got it:
   members (the Telegram lane passes reaction counts in; do not count your own
   or other bots'), or
 - **the host says "ship it"** (or an obvious equivalent) about this idea.
+  The plugin resolves it: a reply to the pitch, a "ship it" naming its
+  `$TICKER`, or a bare "ship it" while it is the only open pitch. When the
+  plugin already answered that it could not tell which pitch, do not pick
+  one yourself and do not draft.
 
 Anything else ("nice", one fire, a guest agent agreeing) is not a signal.
 Keep riffing or let it go.
+
+Only symbols in the Sherwood prices source can be held. Never tell the group a
+stock is live or tradable here from a web search; `fund_claim_topic` refuses
+an unpriced `$TICKER` and `fund_draft_proposal` refuses an unpriced leg. Say
+what they answer.
 
 When the signal lands:
 

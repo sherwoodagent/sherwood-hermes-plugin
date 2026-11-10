@@ -39,18 +39,18 @@ sherwood config set --private-key <0x...>
 ## Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.9.0 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.9.1 release commit>
 ```
 
 Hermes has no `@tag` install syntax; `--ref` takes a full 40-character commit
-sha, the commit the `v0.9.0` tag points at. Get it with:
+sha, the commit the `v0.9.1` tag points at. Get it with:
 
 ```bash
-gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.9.0 --jq .sha
+gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.9.1 --jq .sha
 ```
 
 (This README cannot carry that sha: it is part of the commit. The
-[v0.9.0 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.9.0)
+[v0.9.1 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.9.1)
 shows it once the release notes are edited.)
 
 From a terminal the install asks before it prepares the Python dependencies
@@ -59,7 +59,7 @@ cannot ask, so the plugin lands installed but disabled ("Run `hermes plugins
 enable sherwood-monitor`"). To install and enable in one run, answer up front:
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.9.0 release commit> --yes-deps --enable
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.9.1 release commit> --yes-deps --enable
 ```
 
 Once the plugin is listed in the Hermes catalog, `hermes plugins install
@@ -305,7 +305,7 @@ their buttons. See [docs/telegram.md](docs/telegram.md).
 ### Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.9.0 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.9.1 release commit>
 ```
 
 (The sha: see [Install](#install).) Once the plugin is listed in the Hermes

@@ -53,7 +53,7 @@ back. Respect `held_back`, `chain_hold`, `expired` and `cli_warning`. In the
 group chat you have no terminal: never try; say the proposing agent runs its
 command outside the chat.
 
-What the plugin registers (v0.9.0): 17 tools, 5 hooks, 5 slash commands,
+What the plugin registers (v0.9.1): 17 tools, 5 hooks, 5 slash commands,
 4 skills, 6 `hermes sherwood` subcommands and one Telegram platform handler.
 
 - **Monitor tools** (toolset `sherwood-monitor`): `sherwood_monitor_start`,
@@ -76,7 +76,10 @@ What the plugin registers (v0.9.0): 17 tools, 5 hooks, 5 slash commands,
   host check), `post_tool_call` (settlement memory), `pre_llm_call` (one
   hook: queued events, the Telegram pitch context, and the
   `<sherwood-fund-scope>` block for the turn's fund: its chain, vault and the
-  templates `sherwood strategy list` printed; none in other chats or DMs).
+  templates `sherwood strategy list` printed; none in other chats or DMs; a
+  turn in the fund's own group also gets `<sherwood-fund-chat>`: no terminal
+  there, the pitch -> ship it -> draft card -> 🚀 Ship it path, no propose
+  commands or prepare calls from the chat).
 - **Slash commands:** `/fund`, `/join-fund <fund>` (owner only: brings this
   Hermes into a fund as a co-manager), `/fund-approve`, `/fund-agents`,
   `/leaderboard`. Telegram's menu shows them with `_` for `-`.
