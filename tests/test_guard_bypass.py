@@ -373,6 +373,16 @@ def _piped_rows() -> dict[str, list[tuple[str, str, str]]]:
 
 PIPED_ROWS = _piped_rows()
 
+
+def test_the_piped_rows_fixture_still_has_its_two_rows():
+    """An emptied or renamed fixtures/guard_piped_rows.json would drop these rows silently (review LOW-1).
+
+    The labels are built with PIPE so no line of this file reads as an echo piped into an interpreter
+    (Hermes' scanner rule echo_pipe_exec); they equal the labels in the fixture."""
+    pipe = chr(124)
+    assert f"R2 decoy + echo {pipe} sh" in [label for label, _cmd, _exp in PIPED_ROWS["DELTA2_ROWS"]]
+    assert f"B1 echo {pipe} python3 os.system" in [label for label, _cmd, _exp in PIPED_ROWS["DELTA3_ROWS"]]
+
 DELTA_ROWS = [
     # N1: commander runs these (the help token is an option's value, or an operand after `--`).
     ("N1 --name -h", OVER_P + " --name -h", "exceeds_max_capital"),

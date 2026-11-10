@@ -31,6 +31,8 @@ SHA=$(gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.9.0 --jq .sha
 echo "$SHA"    # 40 lowercase hex chars
 ```
 
+For v0.9.0 this is `6d0a3cd3c822b24adb39e94cceaa3a540bc54b7c` (the merge of #40).
+
 From a local clone, `git fetch --tags origin && git rev-parse 'v0.9.0^{commit}'`
 gives the same value (`^{commit}` matters if the tag is ever annotated: a bare
 `rev-parse` would return the tag object).
@@ -54,7 +56,8 @@ EOF
 ```
 
 and in the consumer-repo PRs (`docs/consumer-updates.md`), which pin `$SHA`
-in place of the placeholder. Editing the release notes is part of the
+in place of the placeholder. For v0.9.0 the install line is
+`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 6d0a3cd3c822b24adb39e94cceaa3a540bc54b7c`. Editing the release notes is part of the
 release, held for the maintainer's go-ahead like the catalog PR.
 
 ## 3. Check the plugin at that commit
@@ -83,14 +86,15 @@ on `main` after #41 (e24117b).
 
 The copy of `catalog/sherwood-monitor.yaml` at the pinned commit has the
 placeholder, because a commit cannot carry its own sha. (After the tag, a
-follow-up PR fills the sha in on `main`, as #39 did for v0.8.4.) Submit the
+follow-up PR fills the sha in on `main`, as #39 did for v0.8.4; for v0.9.0
+`main` carries `sha: "6d0a3cd3c822b24adb39e94cceaa3a540bc54b7c"`.) Submit the
 pinned copy, filled in:
 
 ```bash
 sed -e "s/^sha: \"<sha of the v0.9.0 tag commit>\"/sha: \"$SHA\"/" \
     -e '/^# REPLACE before submitting/,/^# catalog CI reject anything else/d' \
     /tmp/shm-pin/catalog/sherwood-monitor.yaml > /tmp/sherwood-monitor.yaml
-grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit
+grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit (6d0a3cd... for v0.9.0)
 ```
 
 Check, against `plugin.yaml` at the pin:

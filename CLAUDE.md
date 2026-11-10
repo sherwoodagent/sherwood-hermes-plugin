@@ -21,11 +21,16 @@ Then open follow-up PRs in the consumer repos:
 
 | Repo | File | What to update |
 |---|---|---|
-| `sherwoodagent/sherwood` (main) | `mintlify-docs/cli/cron-jobs.mdx` | Cron list, install pin |
-| `sherwoodagent/sherwood` (main) | `mintlify-docs/cli/installation.mdx` | Install pin |
-| `sherwoodagent/sherwood` (main) | `CLAUDE.md` § Version bump checklist | Update the row for hermes plugin |
-| `sherwoodagent/skill` | `SKILL.md` "Running on Hermes Agent" → Install | `@vX.Y.Z` pin |
+| `sherwoodagent/mintlify-docs` | `cli/cron-jobs.mdx` | Cron list, install pin (`--ref <sha>`) |
+| `sherwoodagent/mintlify-docs` | `cli/installation.mdx` | Install, headless-install and upgrade lines (`--ref <sha>`) |
+| `sherwoodagent/mintlify-docs` | `guides/set-up-grok.mdx` | Install pin (`--ref <sha>`) |
+| `sherwoodagent/skill` | `SKILL.md` line 27 and "Running on Hermes Agent" → Install and upgrade lines | `--ref <sha>` pin; a skill release (bump its version) |
 | `sherwoodagent/skill` | `CLAUDE.md` | Update reference if needed |
+| `sherwoodagent/sherwood` (main) | `CLAUDE.md` § Version bump checklist, and the `hermes-plugin`, `mintlify-docs`, `skill` submodule pointers | The Hermes plugin rows if a surface moved; the pointers once the consumer PRs merge |
+
+Hermes has no `@tag` install syntax: every pin is the 40-hex commit the tag points at
+(`gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v<version> --jq .sha`).
+`docs/consumer-updates.md` lists each release's exact hunks.
 
 ## `MIN_CLI_VERSION` (separate floor)
 
