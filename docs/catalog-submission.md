@@ -10,16 +10,16 @@ Opening the catalog PR is part of the hackathon entry: it is held for the
 maintainer's go-ahead, and the repo owner (or a major contributor) must be the
 one who submits it (catalog rule 5).
 
-## 1. Wait for the v0.8.3 tag
+## 1. Wait for the v0.8.4 tag
 
 Merging the release PR into `main` runs `.github/workflows/release.yml`. When
 `pyproject.toml` carries a version with no matching tag, it creates the
-`v0.8.3` tag on exactly the commit that triggered the run (the merge commit:
+`v0.8.4` tag on exactly the commit that triggered the run (the merge commit:
 `target_commitish: ${{ github.sha }}`) and a GitHub release. Nobody tags by
 hand.
 
 ```bash
-gh release view v0.8.3 -R sherwoodagent/sherwood-hermes-plugin
+gh release view v0.8.4 -R sherwoodagent/sherwood-hermes-plugin
 ```
 
 ## 2. Resolve the commit to pin
@@ -27,28 +27,26 @@ gh release view v0.8.3 -R sherwoodagent/sherwood-hermes-plugin
 The catalog pins a full 40-character commit, never a tag name.
 
 ```bash
-SHA=$(gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.3 --jq .sha)
+SHA=$(gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.4 --jq .sha)
 echo "$SHA"    # 40 lowercase hex chars
 ```
 
-For v0.8.3 this is `5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3` (the merge of #36).
-
-From a local clone, `git fetch --tags origin && git rev-parse 'v0.8.3^{commit}'`
+From a local clone, `git fetch --tags origin && git rev-parse 'v0.8.4^{commit}'`
 gives the same value (`^{commit}` matters if the tag is ever annotated: a bare
 `rev-parse` would return the tag object).
 
 ### Publish the install command with the sha
 
-Hermes has no `@tag` install syntax: `hermes plugins install owner/repo@v0.8.3`
+Hermes has no `@tag` install syntax: `hermes plugins install owner/repo@v0.8.4`
 fails (Hermes turns it into a repository URL), and `--ref` accepts only a full
 40-character commit sha. The README and the bundled skill
 at the pinned commit therefore say
-`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit>`;
+`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.4 release commit>`;
 that placeholder stays in the tree by design, because a commit cannot contain
 its own sha. Fill it in where it can live:
 
 ```bash
-gh release edit v0.8.3 -R sherwoodagent/sherwood-hermes-plugin --notes "$(cat <<EOF
+gh release edit v0.8.4 -R sherwoodagent/sherwood-hermes-plugin --notes "$(cat <<EOF
 Install: hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref $SHA
 (or, once listed in the Hermes catalog: hermes plugins install sherwood-monitor)
 EOF
@@ -56,8 +54,7 @@ EOF
 ```
 
 and in the consumer-repo PRs (`docs/consumer-updates.md`), which pin `$SHA`
-in place of the placeholder. For v0.8.3 the install line is
-`hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3`. Editing the release notes is part of the
+in place of the placeholder. Editing the release notes is part of the
 release, held for the maintainer's go-ahead like the catalog PR.
 
 ## 3. Check the plugin at that commit
@@ -75,21 +72,21 @@ environment, so only run it locally on a throwaway Hermes install.
 
 ## 4. Fill in the entry
 
-On `main`, `catalog/sherwood-monitor.yaml` already carries
-`sha: "5d4bd5bab798c96e4e5e3c2fc863929b1a8eeaf3"` for v0.8.3. The copy at the pinned commit still has
-the placeholder, because a commit cannot carry its own sha. Submit the
+The copy of `catalog/sherwood-monitor.yaml` at the pinned commit has the
+placeholder, because a commit cannot carry its own sha. (After the tag, a
+follow-up PR fills the sha in on `main`, as #37 did for v0.8.3.) Submit the
 pinned copy, filled in:
 
 ```bash
-sed -e "s/^sha: \"<sha of the v0.8.3 tag commit>\"/sha: \"$SHA\"/" \
+sed -e "s/^sha: \"<sha of the v0.8.4 tag commit>\"/sha: \"$SHA\"/" \
     -e '/^# REPLACE before submitting/,/^# catalog CI reject anything else/d' \
     /tmp/shm-pin/catalog/sherwood-monitor.yaml > /tmp/sherwood-monitor.yaml
-grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit (5d4bd5b... for v0.8.3)
+grep -n '^sha:' /tmp/sherwood-monitor.yaml   # must show the 40-hex commit
 ```
 
 Check, against `plugin.yaml` at the pin:
 
-- `version` is `"0.8.3"` and `requires_hermes` matches `plugin.yaml`.
+- `version` is `"0.8.4"` and `requires_hermes` matches `plugin.yaml`.
 - `capabilities` lists the same 17 tools, 5 hooks and 5 `requires_env` names
   (`tests/test_catalog_entry.py` enforces this in this repo).
 - `tier: community`. Only Nous maintainers set `official` or `verified`.
@@ -104,11 +101,11 @@ cp /tmp/sherwood-monitor.yaml plugin-catalog/sherwood-monitor.yaml
 pip install ruamel.yaml==0.18.17
 python3 scripts/validate_plugin_catalog.py plugin-catalog/sherwood-monitor.yaml
 git add plugin-catalog/sherwood-monitor.yaml
-git commit -S -m "plugin-catalog: add sherwood-monitor 0.8.3"
+git commit -S -m "plugin-catalog: add sherwood-monitor 0.8.4"
 git log --format='%h %G?' -1      # must print G
 git push -u origin plugin-catalog/sherwood-monitor
 gh pr create -R NousResearch/hermes-agent \
-  --title "plugin-catalog: add sherwood-monitor 0.8.3" \
+  --title "plugin-catalog: add sherwood-monitor 0.8.4" \
   --body-file /tmp/sherwood-monitor-pr.md
 ```
 
@@ -141,6 +138,51 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   `.py` wrapper scripts to `$HERMES_HOME/scripts/` (Hermes runs cron scripts only
   from there) and registers them with `hermes cron create`; it is disclosed.
   Its test runs the real `hermes` binary in a scratch `HERMES_HOME`.
+- **The rule-9 warning (private core import).** `hermes plugins validate`
+  passes, with one warning: `private core imports (catalog rule 9 …):
+  sherwood_monitor/telegram/scope.py:89
+  tui_gateway.launch_profile_policy.owner_secret_scope`. The reason:
+  - The Telegram fund handlers run on Hermes' Telegram adapter loop, outside
+    any agent turn. So when the adapter connects, the plugin captures the
+    profile's secret mapping and installs it around each handler call. That
+    way `get_secret` reads this profile's secrets when `multiplex_profiles`
+    is on.
+  - Inside a turn the plugin uses the documented
+    `agent.secret_scope.current_secret_scope()`.
+  - Outside one it imports `owner_secret_scope(home)`, the mapping Hermes'
+    own gateway, cron and delegate code bind for a profile. For the launch
+    profile (the process's own home) that is the process env plus `.env`, so
+    a secret injected by launchd, systemd or `op run` is kept. For another
+    profile's home it is built from that profile's files, as
+    `build_profile_secret_scope` does.
+  - Hermes has no public equivalent today. The import is guarded: without it
+    the plugin falls back to `agent.secret_scope.build_profile_secret_scope(home)`.
+  - Nothing is rebound or patched; validate's `no core override` check
+    passes.
+  If the reviewers want the import gone, the plugin can use the fallback
+  alone or ask for a public seam.
+- **What `show` and `validate` say about isolation.** `hermes plugins show
+  sherwood-monitor` prints `Runs in: Hermes process — runs in the plugin host
+  (plugins.isolation: host)`, and validate's isolation report says `verdict:
+  host`. The entry's `known_issues` say to keep `plugins.isolation:
+  in_process`. These do not contradict each other:
+  - **The line has two parts.** The first part is where the plugin runs now:
+    `in_process` is Hermes' default. The dimmed part is the static audit
+    (`hermes_cli/plugin_isolation_audit.py`).
+  - **The audit cannot see the Telegram handler.** It reads only direct
+    `<obj>.register_*(...)` calls. The plugin looks up
+    `register_platform_handler` with `getattr(ctx,
+    "register_platform_handler", None)`, so that it still loads on a Hermes
+    without the method, and the audit does not see it. Hermes lists that
+    method as unsupported in the plugin host ("the handler factory receives
+    the platform's native SDK client"). Validate's own note says
+    `register_cli_command` is skipped there.
+  - **Under `isolation: host`** the Telegram handler and `hermes sherwood`
+    are missing, as `known_issues` says.
+  - **`Listens: (none)`** is the manifest's `listens` list of Hermes events,
+    and the plugin subscribes to none. The `subscribe` in the audit's
+    `ctx_methods` is the plugin's own `FundService.subscribe`, not a Hermes
+    subscription.
 
 - **Rule 11 (credentials come through Hermes): resolved in 0.7.0.** Up to
   0.6.0 the plugin read the Sherwood CLI's `~/.sherwood/config.json`
@@ -161,10 +203,23 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   `config_schema`, not prompted). The catalog schema has no optional-env
   list, so the entry's `capabilities.requires_env` mirrors `requires_env`
   only.
-- **Rule 17 (no unscannable payloads).** Nothing binary is committed. The
-  install runs `npm ci` in `xmtp_sidecar/`, which downloads
-  `@xmtp/node-bindings` (native) from the npm registry, pinned by
+- **Rule 17 (no unscannable payloads).** Nothing binary is committed.
+  Building the optional XMTP sidecar runs `npm ci` in `xmtp_sidecar/`, which
+  downloads `@xmtp/node-bindings` (native) from the npm registry, pinned by
   `package-lock.json` integrity hashes. That is disclosed.
+- **Where the sidecar is built.** Hermes offers a Node install only for a
+  root `package.json`, and this plugin has none. It installs the Python
+  package editable from a copy of the plugin in its dependency workspace
+  (`$HERMES_HOME/installs/<key>/environments/<id>/workspace/plugin-sources/sherwood-monitor-*`).
+  `setup.py` tries `npm ci && npm run build` there when npm is on PATH, and
+  uv does not show that output. The plugin is loaded from
+  `$HERMES_HOME/plugins/sherwood-monitor/`, so `_sidecar_dir()` uses a build
+  in that directory first. Otherwise it uses the copy named by the package's
+  install record (PEP 610 `direct_url.json`, read with `importlib.metadata`;
+  `tests/test_sidecar_dir.py`). With no build in either place, preflight
+  says to build in the plugin directory, and the README's "Build the XMTP
+  sidecar" does that. The cold install of 0.8.3 ran with npm off PATH, so a
+  build under Hermes is not verified end to end.
 - **Rule 12 (approvals).** The fund guard returns Hermes' approval shape for
   host actions with a per-action `rule_key`; it never auto-approves.
 

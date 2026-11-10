@@ -39,16 +39,31 @@ sherwood config set --private-key <0x...>
 ## Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.4 release commit>
 ```
 
 Hermes has no `@tag` install syntax; `--ref` takes a full 40-character commit
-sha. Use the commit the `v0.8.3` tag points at: it is on the
-[v0.8.3 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.3),
-or `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.3 --jq .sha`.
-(This README cannot carry that sha: it is part of the commit.) Once the plugin
-is listed in the Hermes catalog, `hermes plugins install sherwood-monitor`
-installs the reviewed pin. Hermes ≥ 0.21.5.
+sha, the commit the `v0.8.4` tag points at. Get it with:
+
+```bash
+gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.8.4 --jq .sha
+```
+
+(This README cannot carry that sha: it is part of the commit. The
+[v0.8.4 release page](https://github.com/sherwoodagent/sherwood-hermes-plugin/releases/tag/v0.8.4)
+shows it once the release notes are edited.)
+
+From a terminal the install asks before it prepares the Python dependencies
+and enables the plugin. Without one (CI, a script, an agent's own shell) it
+cannot ask, so the plugin lands installed but disabled ("Run `hermes plugins
+enable sherwood-monitor`"). To install and enable in one run, answer up front:
+
+```bash
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.4 release commit> --yes-deps --enable
+```
+
+Once the plugin is listed in the Hermes catalog, `hermes plugins install
+sherwood-monitor` installs the reviewed pin. Hermes ≥ 0.21.5.
 
 A fresh install prompts for five environment variables (Hermes' `requires_env`):
 `TELEGRAM_BOT_TOKEN`, `SHERWOOD_TG_LINK_SECRET`, `SHERWOOD_TG_API_TOKEN` (only
@@ -83,21 +98,34 @@ SHERWOOD_PRIVATE_KEY=0x...      # optional, secret: only for XMTP; the address i
 
 ### What installation does
 
-1. Installs the Python package (`sherwood_monitor`)
-2. Runs `npm ci && npm run build` inside the bundled XMTP sidecar at `xmtp_sidecar/` (~30 seconds, one-time). This step pins `@xmtp/node-bindings` to a build that loads on glibc 2.36 (Debian 12), avoiding the common `GLIBC_2.38 not found` failure you'd hit with a global `@sherwoodagent/cli` install on older Debian/Ubuntu.
-3. On first Hermes boot, if `SHERWOOD_PRIVATE_KEY` is set: the plugin derives a **sidecar wallet** from it (`keccak256(primaryKey + "sherwood-monitor-sidecar-v1")`), spawns the sidecar process, and verifies group membership for each configured fund. Without it the sidecar is not started (one log line) and everything else works.
+1. Clones the plugin into `$HERMES_HOME/plugins/sherwood-monitor/` (Hermes
+   loads it from there) and, once you consent, prepares its Python
+   dependencies. Hermes installs the `sherwood_monitor` package, editable,
+   from a copy of the plugin in its dependency workspace
+   (`$HERMES_HOME/installs/…/workspace/plugin-sources/sherwood-monitor-…`).
+2. That package build runs `setup.py`, which tries `npm ci && npm run build`
+   in the copy's `xmtp_sidecar/` when `npm` is on PATH (about 30 seconds). The
+   plugin uses a built sidecar from its own `xmtp_sidecar/` first, then from
+   that copy. Hermes does not show the build's output, so if you use XMTP,
+   build the sidecar yourself once ([Build the XMTP sidecar](#build-the-xmtp-sidecar)).
+   Hermes itself offers a Node install only for a `package.json` at the
+   plugin root, and this plugin has none.
+3. On first Hermes boot, if `SHERWOOD_PRIVATE_KEY` is set: the plugin derives a **sidecar wallet** from it (`keccak256(primaryKey + "sherwood-monitor-sidecar-v1")`), spawns the sidecar process, and verifies group membership for each configured fund. Without the key the sidecar is not started (one log line) and everything else works. With the key but no built sidecar, the plugin says once where to build it.
 
-### If the install fails mid-sidecar
+### Build the XMTP sidecar
 
-The Python package installs fine even if the sidecar build fails; XMTP is just disabled until you rebuild. To skip the build and rebuild manually:
+Only for XMTP (`SHERWOOD_PRIVATE_KEY` set). It needs Node ≥ 22 and npm. Build
+it in the plugin's own directory, then restart Hermes:
 
 ```bash
-SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1 hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit>
-# find the installed location:
-python3 -c "import sherwood_monitor, pathlib; print(pathlib.Path(sherwood_monitor.__file__).parent.parent / 'xmtp_sidecar')"
-cd <that path>
+cd "${HERMES_HOME:-$HOME/.hermes}/plugins/sherwood-monitor/xmtp_sidecar"
 npm ci && npm run build
 ```
+
+The pinned `@xmtp/node-bindings` loads on glibc 2.36 (Debian 12), which
+avoids the `GLIBC_2.38 not found` failure a global `@sherwoodagent/cli`
+install hits on older Debian/Ubuntu. `setup.py` skips its own attempt when
+`SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1` is set in its environment.
 
 ## Configure
 
@@ -268,7 +296,7 @@ vectors: [docs/telegram.md](docs/telegram.md).
 ### Install
 
 ```bash
-hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.3 release commit>
+hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref <40-hex sha of the v0.8.4 release commit>
 ```
 
 (The sha: see [Install](#install).) Once the plugin is listed in the Hermes
@@ -365,11 +393,15 @@ wallet. Then record the vault with `fund_setup`.
 - **Generic Call.** A draft with `template: "generic-call"` and a `calls`
   plan (`executeCalls`, `settleCalls`, `settlePatches`, `sweepTokens`)
   instead of legs. The plugin checks the plan the way the Sherwood CLI
-  0.104.0 compiles it and refuses an unlimited approval given as approve,
-  increaseAllowance, Permit2 approve, permit or setApprovalForAll (raw
-  `data` or `signature` + `args`); a multicall-wrapped approve,
-  `increaseApproval` and ERC777 `authorizeOperator` still pass, pending a
-  follow-up. The draft's preview is unsigned and not execution acceptance. At ship it writes the plan to
+  0.104.0 compiles it. It also checks approvals, as raw `data` or
+  `signature` + `args`, and inside `multicall` / `batch` / Multicall3
+  `aggregate*` wrappers. It refuses operator approvals that are switched on
+  (`setApprovalForAll`, ERC777 `authorizeOperator`, DAI `permit`). It caps
+  an `approve`-style approval of the vault asset at the plan's pull. Any
+  other token's approval is refused at or above 2^255 (2^159 for Permit2).
+  The full list is in
+  [docs/hackathon-disclosure.md](docs/hackathon-disclosure.md). The draft's
+  preview is unsigned and not execution acceptance. At ship it writes the plan to
   `<fund state dir>/<fund>/generic-call/p-N.json` (mode 0600) and hands out
   `sherwood strategy propose generic-call --vault <vault> --calls <plan.json>
   --amount <max capital> --duration <e.g. 6h> --max-drawdown-bps <bps>
@@ -617,11 +649,11 @@ The plugin bundles a small TypeScript sidecar at `xmtp_sidecar/` that speaks JSO
 - **Subscribe** — for each configured fund, `sidecar.stream_start` opens a message stream; new messages flow into the plugin's EventRouter as `<sherwood-event source="xmtp" ...>` blocks on your next turn.
 - **Send** — when the plugin auto-posts a proposal-lifecycle summary, it's the sidecar that delivers the XMTP message (not the Sherwood CLI).
 
-Why a sidecar? `@xmtp/node-sdk`'s native bindings are glibc-ABI-sensitive. When the CLI is installed globally via `npm i -g`, npm's `overrides` block is not honored — meaning the binding that ships depends on the host glibc being ≥ 2.38. The sidecar's own `package.json` IS the root of its install tree, so its `overrides` apply and it pulls the pinned binding, which loads on glibc 2.36 (Debian 12). Tradeoff: ~30 seconds of `npm ci && npm run build` at pip install time.
+Why a sidecar? `@xmtp/node-sdk`'s native bindings are glibc-ABI-sensitive. When the CLI is installed globally via `npm i -g`, npm's `overrides` block is not honored — meaning the binding that ships depends on the host glibc being ≥ 2.38. The sidecar's own `package.json` IS the root of its install tree, so its `overrides` apply and it pulls the pinned binding, which loads on glibc 2.36 (Debian 12). Tradeoff: about 30 seconds of `npm ci && npm run build`, once ([Build the XMTP sidecar](#build-the-xmtp-sidecar)).
 
 ### Running on a host without Node
 
-If `npm` isn't on PATH at install time, the sidecar build is skipped (with a loud stderr banner) and XMTP features disable themselves gracefully. Everything else still works:
+Without a built sidecar (no Node or npm, or nobody ran the build), XMTP stays off and the plugin says once where to build it. Everything else still works:
 
 - On-chain event injection → unaffected
 - Risk guardrails (`pre_tool_call`) → unaffected
@@ -629,7 +661,7 @@ If `npm` isn't on PATH at install time, the sidecar build is skipped (with a lou
 - Cross-fund exposure → unaffected
 - Cron digests → unaffected (they deliver via Hermes' gateway, not XMTP)
 
-Install Node ≥ 22, rebuild via the manual steps above, and XMTP lights up on next restart.
+Install Node ≥ 22, build it as in [Build the XMTP sidecar](#build-the-xmtp-sidecar), and XMTP starts on the next restart.
 
 ## Institutional memory
 
@@ -639,12 +671,17 @@ the plugin injects a `<sherwood-settlement>` block into the agent's next turn:
 ```
 <sherwood-settlement fund="alpha-fund" action="settle" proposal_id="42"
   pnl_usd="500.0" tx="0xabc...">
-REMEMBER THIS — use the remember-settlement skill to persist it to memory.
+REMEMBER THIS: persist it to memory as the remember-settlement steps in the
+sherwood-monitor:sherwood-agent skill say (skill_view
+name="sherwood-monitor:sherwood-agent",
+file_path="skills/remember-settlement/SKILL.md").
 </sherwood-settlement>
 ```
 
-The bundled `remember-settlement` skill primes the agent to call its `memory`
-tool and store a one-line record. Over weeks this becomes a fund history the
+The `remember-settlement` steps are a file inside the bundled skill pack,
+which Hermes registers as `sherwood-monitor:sherwood-agent`. They are not a
+skill of their own, so the block names the pack and the file. They prime the
+agent to call its `memory` tool and store a one-line record. Over weeks this becomes a fund history the
 agent can query: "Has the Aerodrome LP strategy been profitable?", "Which
 proposer has the best track record?", "What's our average P&L on 7-day
 strategies for alpha-fund?"
@@ -709,10 +746,11 @@ who signs what and the known limitations, is in
   `SHERWOOD_TG_PERSONAL_LINKS`, `TELEGRAM_BOT_USERNAME`,
   `SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD`, `SHERWOOD_MONITOR_PYTHON`, and in the
   sidecar `SIDECAR_BASE_RPC` / `SIDECAR_L2_REGISTRY`.
-- **Install-time download.** `npm ci` in `xmtp_sidecar/` fetches
-  `@xmtp/node-bindings`, a native binary, from the npm registry, pinned by
-  `package-lock.json` integrity hashes. `SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1`
-  skips it.
+- **Sidecar build download.** `npm ci` in `xmtp_sidecar/` (run by hand in
+  the plugin directory, or tried by `setup.py` in Hermes' dependency
+  workspace) fetches `@xmtp/node-bindings`, a native binary, from the npm
+  registry, pinned by `package-lock.json` integrity hashes.
+  `SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD=1` skips the `setup.py` attempt.
 
 ## License
 

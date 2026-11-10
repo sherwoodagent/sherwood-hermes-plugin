@@ -24,15 +24,17 @@ from typing import Any, NoReturn
 
 from .callspec import (
     MAX_SAFE_INTEGER,
+    Approval,
     Binding,
     Function,
     SpecError,
     address_words,
+    approvals_in,
     decode_check,
     encode_call,
     parse_signature,
     patch_word_index,
-    unlimited_grant,
+    wrapper_signature,
 )
 from .models import CHAIN_ID_ROBINHOOD, TOKEN_ADDRESSES_4663, Fund, Leg, ProposalRecord
 from .rules import RuleViolation, deny, is_address
@@ -161,14 +163,95 @@ def _calldata(value: Any, where: str) -> str:
     return text
 
 
-def _no_unlimited_grant(compiled: bytes, where: str) -> None:
-    """The plugin's rule, on the compiled bytes: raw data and signature + args are the same call."""
-    grant = unlimited_grant(compiled)
-    if grant:
+def _asset_keys(fund: Fund) -> set[str]:
+    asset = _asset_address(fund)
+    return {_PLACEHOLDER_ASSET} | ({asset.lower()} if asset else set())
+
+
+def _check_approvals(compiled: bytes, target_key: str, where: str, fund: Fund, pull_amount: int) -> None:
+    """The plugin's approval rules, on the compiled bytes (raw data and signature + args are the
+    same call), including every call inside a wrapper ``callspec.approvals_in`` opens:
+
+    - an operator approval switched on is refused (setApprovalForAll, DAI permit, authorizeOperator);
+    - an approval of the vault asset may not exceed the plan's pull (when the pull is known):
+      the clone never receives more of the asset than the pull;
+    - any other token's approval is refused at or above half its type's range (2^255, 2^159 for
+      Permit2), the bound ``units.is_unlimited`` uses: the plan does not say how much of that
+      token the clone will hold, so no tighter bound is known.
+    """
+    try:
+        found = approvals_in(compiled, target_key)
+    except SpecError as exc:
+        _fail("bad_calldata", f"{where}: {exc}")
+    assets = _asset_keys(fund)
+    for a in found:
+        label = f"{a.path}{a.label}"
+        if a.amount is None:
+            if a.on:
+                _fail(
+                    "unlimited_approve",
+                    f"{where} {label} turns on an operator approval over every token; "
+                    "operator approvals are never allowed",
+                )
+            continue
+        if a.amount >= a.unlimited_bound:
+            bound = "2^255" if a.bits == 256 else f"2^{a.bits - 1}"
+            _fail(
+                "unlimited_approve",
+                f"{where} grants an unlimited allowance ({label} of {a.amount}, at or above {bound}, which the "
+                "plugin treats as unlimited); unlimited approvals are never allowed. Approve the exact amount, "
+                "or $pullAmount",
+            )
+        if pull_amount > 0 and a.token in assets and a.amount > pull_amount:
+            _fail(
+                "approve_above_pull",
+                f"{where} {label} approves {a.amount} base units of the vault asset, above this plan's pull of "
+                f"{pull_amount}; the clone never holds more of the asset than the pull. Approve at most the "
+                "pull ($pullAmount)",
+            )
+
+
+def _check_patch_into_approval(
+    approving: list[Approval], *, where: str, call_index: int, word_index: int, token_key: str,
+    mul_num: int, mul_den: int,
+) -> None:
+    """A settle patch into a call that approves writes the amount at settle time, past the checks
+    on the amount written in the plan. So such a patch may write only that approval's amount word,
+    only from the approved token's own balance, and never scaled up: the allowance is then at most
+    what the clone holds of that token. An operator approval (a flag) or an approval inside a
+    wrapper takes no patch at all."""
+    if mul_num > mul_den:
+        # balance * mulNum / mulDen written into an approving call could be any size.
         _fail(
             "unlimited_approve",
-            f"{where} grants an unlimited allowance ({grant}); unlimited approvals are never allowed. "
-            "Approve the exact amount, or $pullAmount",
+            f"{where} scales a balance up (mulNum {mul_num} > mulDen {mul_den}) into settle call {call_index}, "
+            "which approves; a patch into an approving call may write at most the balance (mulNum <= mulDen)",
+        )
+    wrapped = [a for a in approving if a.path]
+    if wrapped:
+        _fail(
+            "approve_patch",
+            f"{where} writes into settle call {call_index}, which approves inside a wrapper "
+            f"({wrapped[0].path}{wrapped[0].label}); a patch may not write into a wrapped approval",
+        )
+    grant = approving[0]
+    if grant.amount is None:
+        _fail(
+            "approve_patch",
+            f"{where} writes into settle call {call_index}, an operator approval ({grant.label}); "
+            "a patch may not write into one",
+        )
+    if word_index != grant.word:
+        _fail(
+            "approve_patch",
+            f"{where} writes word {word_index} of settle call {call_index} ({grant.label}); in an approving call "
+            f"only the amount word ({grant.word}) may be patched",
+        )
+    if token_key != grant.token:
+        _fail(
+            "approve_patch",
+            f"{where} writes the balance of {token_key} into the amount of settle call {call_index} "
+            f"({grant.label} of {grant.token}); a patched approval amount must be the approved token's own balance",
         )
 
 
@@ -276,7 +359,7 @@ def _compile_call(call: Any, where: str, fund: Fund, binding: Binding) -> tuple[
         stored["signature"] = signature.strip()
     if note and note.strip():
         stored["note"] = note.strip()[:300]
-    _no_unlimited_grant(compiled, where)
+    _check_approvals(compiled, target_key, where, fund, binding.pull_amount)
     if target_key in (_PLACEHOLDER_ASSET, (_asset_address(fund) or "").lower()) and not _asset_call_ok(compiled):
         _fail(
             "bad_call",
@@ -323,6 +406,7 @@ def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) ->
     plan: dict[str, list[Any]] = {key: [] for key in _PLAN_KEYS}
     targets: set[str] = set()
     settle_compiled: list[tuple[bytes, Function | None]] = []
+    settle_targets: list[str] = []
     for leg_name, key in (("execute", "executeCalls"), ("settle", "settleCalls")):
         calls = lists[key]
         if len(calls) > MAX_CALLS_PER_LEG:
@@ -335,6 +419,7 @@ def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) ->
             total += len(compiled)
             if leg_name == "settle":
                 settle_compiled.append((compiled, fn))
+                settle_targets.append(target_key)
         if total > MAX_LEG_CALLDATA:
             _fail("bad_calldata", f"the {leg_name} leg carries {total} bytes of calldata; the template takes at most {MAX_LEG_CALLDATA}")
     if len(lists["sweepTokens"]) > MAX_SWEEP_TOKENS:
@@ -407,6 +492,21 @@ def validate_generic_call_plan(raw: Any, fund: Fund, *, pull_amount: int = 0) ->
         mul_den = int(scales.get("mulDen", 0))
         if (mul_num == 0) != (mul_den == 0):
             _fail("bad_plan", f"{where} must set mulNum and mulDen both, or neither (a half-set scale is rejected)")
+        wrapper = wrapper_signature(data)
+        if wrapper:
+            # A patch into a wrapper can rewrite an inner call (its selector, an aggregate row's
+            # target) at settle time, after every check here ran on the calls as written.
+            _fail(
+                "approve_patch",
+                f"{where} writes into settle call {call_index}, a {wrapper} wrapper; a patch may not write "
+                "into a wrapper call (it could turn an inner call into an approval at settle)",
+            )
+        approving = approvals_in(data, settle_targets[call_index])
+        if approving:
+            _check_patch_into_approval(
+                approving, where=where, call_index=call_index, word_index=word_index,
+                token_key=token_key, mul_num=mul_num, mul_den=mul_den,
+            )
         if (call_index, word_index) in patched:
             _fail("bad_plan", f"{where} writes word {word_index} of settle call {call_index}, which another patch already writes")
         patched.add((call_index, word_index))

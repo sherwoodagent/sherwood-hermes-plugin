@@ -101,6 +101,21 @@ SELECTORS = {
     "transferFrom(address,address,uint256)": "23b872dd",
     "safeTransferFrom(address,address,uint256)": "42842e0e",
     "safeTransferFrom(address,address,uint256,bytes)": "b88d4fde",
+    "increaseApproval(address,uint256)": "d73dd623",  # the older OpenZeppelin name
+    "authorizeOperator(address)": "959b8c3f",  # ERC777
+    "approveAndCall(address,uint256,bytes)": "cae9ca51",
+    # Wrappers whose inner calls run as the caller (a delegatecall into the same contract).
+    "multicall(bytes[])": "ac9650d8",  # OpenZeppelin Multicall, Uniswap periphery
+    "multicall(uint256,bytes[])": "5ae401dc",  # Uniswap SwapRouter02 (deadline)
+    "multicall(bytes32,bytes[])": "1f0464d1",  # Uniswap SwapRouter02 (previous block hash)
+    "batch(bytes[],bool)": "d2423b51",  # BoringBatchable
+    # Multicall3: each (target, ..., callData) is called by the aggregator itself.
+    "aggregate((address,bytes)[])": "252dba42",
+    "aggregate3((address,bool,bytes)[])": "82ad56cb",
+    "aggregate3Value((address,bool,uint256,bytes)[])": "174dea71",
+    "tryAggregate(bool,(address,bytes)[])": "bce38bd7",
+    "blockAndAggregate((address,bytes)[])": "c3077fa9",
+    "tryBlockAndAggregate(bool,(address,bytes)[])": "399542e9",
 }
 
 
@@ -216,6 +231,23 @@ def _parse_param(param: str, *, function_input: bool) -> Param:
     return Param(type=kind + array, name=name, components=components)
 
 
+MAX_TYPE_NESTING = 16
+
+
+def _nesting(text: str) -> int:
+    """Deepest tuple nesting plus the longest run of array dimensions: what the parser, ``coerce``
+    and the encoder recurse on. Capped so a pathological signature is refused, not a RecursionError."""
+    depth = deepest = 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif ch == ")":
+            depth -= 1
+    dims = max((m.group(0).count("[") for m in re.finditer(r"(?:\[[0-9]*\])+", text)), default=0)
+    return deepest + dims
+
+
 def parse_signature(signature: Any) -> Function:
     """CLI ``parseCallSignature``: ``name(type,...)`` with or without the ``function`` keyword."""
     text = str(signature or "").strip()
@@ -223,6 +255,8 @@ def parse_signature(signature: Any) -> Function:
         raise SpecError("the signature is empty or longer than 1024 characters")
     if any(not (" " <= ch <= "~") for ch in text):
         raise SpecError("the signature must be printable ASCII")
+    if _nesting(text) > MAX_TYPE_NESTING:
+        raise SpecError(f"the signature nests tuples or arrays deeper than {MAX_TYPE_NESTING} levels")
     full = text if text.startswith("function ") else f"function {text}"
     match = _FUNCTION_RE.fullmatch(full)
     if not match:
@@ -420,9 +454,12 @@ def encode_call(fn: Function, args: Any, b: Binding, where: str) -> bytes:
         raise SpecError(f"{where}: {fn.name} takes {len(fn.inputs)} argument(s), got {got}")
     try:
         coerced = [coerce(p, values[k], b, f"argument {k}") for k, p in enumerate(fn.inputs)]
+        body = _encode_tuple(list(fn.inputs), coerced)
     except SpecError as exc:
         raise SpecError(f"{where}: {exc}") from None
-    return bytes.fromhex(fn.selector) + _encode_tuple(list(fn.inputs), coerced)
+    except RecursionError:
+        raise SpecError(f"{where}: the arguments nest too deeply to encode") from None
+    return bytes.fromhex(fn.selector) + body
 
 
 # -- ABI decoding check (raw data given with a signature) -------------------------------------------
@@ -438,19 +475,21 @@ def _safe(n: int, what: str) -> int:
     return n
 
 
-def _decode_tuple(params: list[Param], buf: bytes, base: int, depth: int) -> None:
+def _decode_tuple(params: list[Param], buf: bytes, base: int, depth: int) -> list[Any]:
     pos = base
+    out: list[Any] = []
     for p in params:
         if is_dynamic(p):
             offset = _safe(_read_word(buf, pos), "an offset")
-            _decode_one(p, buf, base + offset, depth + 1)
+            out.append(_decode_one(p, buf, base + offset, depth + 1))
             pos += 32
         else:
-            _decode_one(p, buf, pos, depth + 1)
+            out.append(_decode_one(p, buf, pos, depth + 1))
             pos += 32 * static_words(p)
+    return out
 
 
-def _decode_one(p: Param, buf: bytes, pos: int, depth: int) -> None:
+def _decode_one(p: Param, buf: bytes, pos: int, depth: int) -> Any:
     if depth > 32:
         raise SpecError("it nests deeper than 32 levels")
     if not is_dynamic(p) and pos + 32 * static_words(p) > len(buf):
@@ -462,27 +501,40 @@ def _decode_one(p: Param, buf: bytes, pos: int, depth: int) -> None:
             length = _safe(_read_word(buf, pos), "an array length")
             if length * 32 > len(buf):
                 raise SpecError("an array length runs past the data")
-            _decode_tuple([inner] * length, buf, pos + 32, depth)
-        else:
-            if int(arr[2]) * 32 > len(buf):
-                raise SpecError("a fixed array runs past the data")
-            _decode_tuple([inner] * int(arr[2]), buf, pos, depth)
-        return
+            return _decode_tuple([inner] * length, buf, pos + 32, depth)
+        if int(arr[2]) * 32 > len(buf):
+            raise SpecError("a fixed array runs past the data")
+        return _decode_tuple([inner] * int(arr[2]), buf, pos, depth)
     if p.type == "tuple":
-        _decode_tuple(list(p.components), buf, pos, depth)
-        return
+        return _decode_tuple(list(p.components), buf, pos, depth)
     if p.type in ("bytes", "string"):
         length = _safe(_read_word(buf, pos), "a length")
         if pos + 32 + length > len(buf):
             raise SpecError("a bytes or string length runs past the data")
-        return
+        raw = buf[pos + 32 : pos + 32 + length]
+        return raw if p.type == "bytes" else raw.decode("utf-8", errors="replace")
     word = _read_word(buf, pos)
-    if p.type == "bool" and word > 1:
-        raise SpecError("a bool word is not 0 or 1")
-    if _INT_TYPE_RE.fullmatch(p.type) and int(p.type.split("int", 1)[1] or 256) <= 48:
-        # viem reads uint8..uint48 (and int) through bytesToNumber, which refuses an unsafe number.
+    if p.type == "bool":
+        if word > 1:
+            raise SpecError("a bool word is not 0 or 1")
+        return bool(word)
+    if p.type == "address":
+        return "0x" + buf[pos + 12 : pos + 32].hex()
+    if _INT_TYPE_RE.fullmatch(p.type):
         value = word - 2**256 if not p.type.startswith("u") and word >= 2**255 else word
-        _safe(abs(value), "a small integer")
+        if int(p.type.split("int", 1)[1] or 256) <= 48:
+            # viem reads uint8..uint48 (and int) through bytesToNumber, which refuses an unsafe number.
+            _safe(abs(value), "a small integer")
+        return value
+    return buf[pos : pos + int(p.type[len("bytes"):] or 32)]  # bytesN
+
+
+def decode_args(fn: Function, data: bytes) -> list[Any]:
+    """The arguments of ``data`` (selector included) as ``fn`` types them, or SpecError."""
+    try:
+        return _decode_tuple(list(fn.inputs), data[4:], 0, 0)
+    except RecursionError:
+        raise SpecError("it nests too deeply to decode") from None
 
 
 def decode_check(fn: Function, data: bytes) -> None:
@@ -499,7 +551,7 @@ def decode_check(fn: Function, data: bytes) -> None:
     if not fn.inputs:
         return
     try:
-        _decode_tuple(list(fn.inputs), data[4:], 0, 0)
+        decode_args(fn, data)
     except SpecError as exc:
         raise SpecError(f"data does not decode as {fn.canonical}: {exc}") from None
 
@@ -539,40 +591,114 @@ def patch_word_index(fn: Function, arg_index: int) -> int:
 @dataclass(frozen=True)
 class _Grant:
     label: str
-    word: int  # argument word that carries the grant
-    bits: int  # amount width; 0 for an on/off flag
+    word: int | None  # argument word that carries the amount or the on/off flag; None: always on
+    bits: int  # amount width; 0 for an operator approval (a flag)
+    token_word: int | None = None  # argument word naming the token (Permit2); None: the call's target
 
 
 _GRANTS: dict[str, _Grant] = {
     SELECTORS["approve(address,uint256)"]: _Grant("approve", 1, 256),
     SELECTORS["increaseAllowance(address,uint256)"]: _Grant("increaseAllowance", 1, 256),
+    SELECTORS["increaseApproval(address,uint256)"]: _Grant("increaseApproval", 1, 256),
+    SELECTORS["approveAndCall(address,uint256,bytes)"]: _Grant("approveAndCall", 1, 256),
     # Permit2 AllowanceTransfer.approve(token, spender, uint160 amount, uint48 expiration)
-    SELECTORS["approve(address,address,uint160,uint48)"]: _Grant("Permit2 approve", 2, 160),
+    SELECTORS["approve(address,address,uint160,uint48)"]: _Grant("Permit2 approve", 2, 160, token_word=0),
     # EIP-2612 permit(owner, spender, value, deadline, v, r, s)
     SELECTORS["permit(address,address,uint256,uint256,uint8,bytes32,bytes32)"]: _Grant("permit", 2, 256),
     # DAI-style permit(holder, spender, nonce, expiry, bool allowed, v, r, s): allowed=true is unlimited
     SELECTORS["permit(address,address,uint256,uint256,bool,uint8,bytes32,bytes32)"]: _Grant("DAI permit", 4, 0),
     SELECTORS["setApprovalForAll(address,bool)"]: _Grant("setApprovalForAll", 1, 0),
+    # ERC777 authorizeOperator(operator): an operator over every token the holder has
+    SELECTORS["authorizeOperator(address)"]: _Grant("authorizeOperator", None, 0),
 }
 
+# Wrappers whose calls the scan opens: (signature, how to read the inner calls). "self": a
+# bytes[] argument of calls into the same target (a delegatecall, so they run as the clone);
+# "aggregate": (target, ..., callData) tuples the aggregator calls itself.
+_WRAPPERS: dict[str, tuple[str, str, int]] = {
+    SELECTORS["multicall(bytes[])"]: ("multicall(bytes[])", "self", 0),
+    SELECTORS["multicall(uint256,bytes[])"]: ("multicall(uint256,bytes[])", "self", 1),
+    SELECTORS["multicall(bytes32,bytes[])"]: ("multicall(bytes32,bytes[])", "self", 1),
+    SELECTORS["batch(bytes[],bool)"]: ("batch(bytes[],bool)", "self", 0),
+    SELECTORS["aggregate((address,bytes)[])"]: ("aggregate((address,bytes)[])", "aggregate", 0),
+    SELECTORS["aggregate3((address,bool,bytes)[])"]: ("aggregate3((address,bool,bytes)[])", "aggregate", 0),
+    SELECTORS["aggregate3Value((address,bool,uint256,bytes)[])"]: (
+        "aggregate3Value((address,bool,uint256,bytes)[])", "aggregate", 0,
+    ),
+    SELECTORS["tryAggregate(bool,(address,bytes)[])"]: ("tryAggregate(bool,(address,bytes)[])", "aggregate", 1),
+    SELECTORS["blockAndAggregate((address,bytes)[])"]: ("blockAndAggregate((address,bytes)[])", "aggregate", 0),
+    SELECTORS["tryBlockAndAggregate(bool,(address,bytes)[])"]: (
+        "tryBlockAndAggregate(bool,(address,bytes)[])", "aggregate", 1,
+    ),
+}
+MAX_WRAPPER_DEPTH = 3
+APPROVAL_FORMS = tuple(sorted({g.label for g in _GRANTS.values()}))
+WRAPPER_FORMS = tuple(sig for sig, _, _ in _WRAPPERS.values())
 
-def unlimited_grant(data: bytes) -> str | None:
-    """Why this calldata grants an unlimited allowance, or None.
 
-    An amount of at least half its type's range counts as unlimited: 2^255 for a uint256
-    approve, the same bound ``units.is_unlimited`` and ``rules.check_legs`` use, and 2^159 for
-    Permit2's uint160. An operator approval (setApprovalForAll, DAI permit) is unlimited when on.
+def wrapper_signature(data: bytes) -> str | None:
+    """The wrapper ``data`` calls (one of ``WRAPPER_FORMS``), or None when it is not one."""
+    entry = _WRAPPERS.get(data[:4].hex()) if len(data) >= 4 else None
+    return entry[0] if entry else None
+
+
+@dataclass(frozen=True)
+class Approval:
+    """One approval a call makes: whose token, how much (None for an operator flag), and where."""
+
+    label: str
+    token: str  # lowercase token address, or the caller's target key (e.g. "$asset")
+    amount: int | None
+    bits: int
+    on: bool
+    path: str  # "" at the top level, else the wrapper chain, e.g. "multicall(bytes[]) call 1: "
+    word: int | None = None  # argument word of the amount (or flag) in its own call; None: none
+
+    @property
+    def unlimited_bound(self) -> int:
+        return 2 ** (self.bits - 1)
+
+
+def _wrapper_calls(selector: str, data: bytes, target: str) -> list[tuple[str, bytes]]:
+    signature, kind, arg = _WRAPPERS[selector]
+    try:
+        decoded = decode_args(parse_signature(signature), data)
+    except SpecError as exc:
+        raise SpecError(f"{signature} wraps calls that do not decode ({exc}), so they cannot be checked for approvals") from None
+    if kind == "self":
+        return [(target, bytes(inner)) for inner in decoded[arg]]
+    return [(str(row[0]).lower(), bytes(row[-1])) for row in decoded[arg]]
+
+
+def approvals_in(data: bytes, target: str, *, depth: int = 0, path: str = "") -> list[Approval]:
+    """Every approval ``data`` makes when called on ``target``, opening the wrappers in ``_WRAPPERS``.
+
+    Raises SpecError for a wrapper whose calls do not decode or that nests deeper than
+    ``MAX_WRAPPER_DEPTH``: a call the plugin cannot read is not a call it can vouch for.
     """
-    grant = _GRANTS.get(data[:4].hex())
-    if grant is None:
-        return None
-    start = 4 + 32 * grant.word
-    if len(data) < start + 32:
-        return None  # truncated: the token's ABI decoder reverts, nothing is granted
-    value = int.from_bytes(data[start : start + 32], "big")
-    if grant.bits == 0:
-        return f"{grant.label} turns on an operator approval over every token" if value else None
-    if value >= 2 ** (grant.bits - 1):
-        bound = "2^255" if grant.bits == 256 else f"2^{grant.bits - 1}"
-        return f"{grant.label} of {value} (at or above {bound}, which the plugin treats as unlimited)"
-    return None
+    selector = data[:4].hex() if len(data) >= 4 else ""
+    grant = _GRANTS.get(selector)
+    if grant is not None:
+        def word(i: int) -> int | None:
+            start = 4 + 32 * i
+            return int.from_bytes(data[start : start + 32], "big") if len(data) >= start + 32 else None
+
+        value = word(grant.word) if grant.word is not None else 1
+        if value is None:
+            return []  # truncated: the token's ABI decoder reverts, nothing is granted
+        token = target
+        if grant.token_word is not None:
+            token_word = word(grant.token_word)
+            token = "0x" + (token_word or 0).to_bytes(32, "big")[12:].hex()
+        if grant.bits == 0:
+            return [Approval(grant.label, token, None, 0, bool(value), path, grant.word)]
+        return [Approval(grant.label, token, value, grant.bits, True, path, grant.word)]
+    if selector in _WRAPPERS:
+        signature = _WRAPPERS[selector][0]
+        if depth >= MAX_WRAPPER_DEPTH:
+            raise SpecError(f"{path}{signature} nests wrappers deeper than {MAX_WRAPPER_DEPTH} levels")
+        found: list[Approval] = []
+        for i, (inner_target, inner) in enumerate(_wrapper_calls(selector, data, target)):
+            found += approvals_in(inner, inner_target, depth=depth + 1, path=f"{path}{signature} call {i}: ")
+        return found
+    return []

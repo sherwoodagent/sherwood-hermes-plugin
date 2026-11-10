@@ -1,7 +1,7 @@
-# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.3)
+# Disclosure: Sherwood group-chat fund (sherwood-monitor v0.8.4)
 
 This is the disclosure for the Nous Hermes hackathon entry and for the Hermes
-plugin catalog (rule 13). It describes what the plugin does at v0.8.3, who
+plugin catalog (rule 13). It describes what the plugin does at v0.8.4, who
 signs what, what it reads, and what does not work yet.
 
 ## What it is
@@ -46,12 +46,34 @@ plugin adds no contracts:
   `proposal_signer: agent` a proposal can instead be a Generic Call clone:
   an unaudited template (tier 2 at full notional, never certified) that runs
   a fixed list of calls. The plugin checks the plan's shape the way the CLI
-  0.104.0 compiles it, refuses unlimited approvals given as approve,
-  increaseAllowance, Permit2 approve, permit or setApprovalForAll (a
-  multicall-wrapped approve, `increaseApproval` and ERC777
-  `authorizeOperator` still pass, pending a follow-up), and refuses calls to
-  the vault or the governor; the CLI refuses the rest it reads from
-  the chain. Guardians abstain on it (UNAUDITED_TEMPLATE), so execute stays
+  0.104.0 compiles it and refuses calls to the vault or the governor; the
+  CLI refuses the rest it reads from the chain. The plugin also checks
+  approvals, which the CLI does not. It reads every call as compiled (raw
+  `data` and `signature` + `args` alike), and every call inside a
+  `multicall(bytes[])`, `multicall(uint256,bytes[])`,
+  `multicall(bytes32,bytes[])`, `batch(bytes[],bool)` or Multicall3
+  `aggregate`, `aggregate3`, `aggregate3Value`, `tryAggregate`,
+  `blockAndAggregate` or `tryBlockAndAggregate` wrapper, up to three
+  wrappers deep; a wrapper it cannot decode is refused. It refuses an
+  operator approval that is switched on (`setApprovalForAll(…, true)`,
+  ERC777 `authorizeOperator`, DAI `permit` with `allowed` true). It bounds
+  `approve`, `increaseAllowance`, `increaseApproval`, `approveAndCall`,
+  EIP-2612 `permit` and Permit2 `approve`. An approval of the vault asset
+  may not be above the plan's pull: the amount of the vault asset the clone
+  takes from the vault at execute (`--amount`, the draft's max capital). An
+  approval of any other token is refused only at or above 2^255 (2^159 for
+  Permit2), because the plan does not say how much of that token the clone
+  will hold. Those bounds check the amounts written in the plan. A settle
+  patch, which writes a balance into a call at settle time, may write into
+  a call that approves only that approval's amount word, only from the
+  approved token's own balance, and never scaled up (`mulNum` above
+  `mulDen`). An operator approval and any call to one of the wrappers above
+  take no patch, since a patch into a wrapper could rewrite an inner call at
+  settle. A patched amount is therefore at most what the clone holds of that
+  token at settle. The checks fail closed: a settle-leg approval of the
+  asset above the pull is refused, and so is an approval inside a Multicall3
+  `aggregate`, though the aggregator, not the clone, makes it. Approvals in
+  other forms, or behind other wrappers, are not recognized. Guardians abstain on it (UNAUDITED_TEMPLATE), so execute stays
   blocked (InsufficientApproveCoverage) and the vault stays locked until a
   guardian operator allows it or the proposal is cancelled. The plugin does
   not lift that gate.

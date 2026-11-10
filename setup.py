@@ -55,7 +55,7 @@ def _build_sidecar() -> None:
         sys.stderr.write(
             _banner(
                 "npm not found on PATH. XMTP will be unavailable until you "
-                "install Node >=20 and run:\n"
+                "install Node >=22 and run:\n"
                 f"    cd {SIDECAR_DIR}\n"
                 "    npm ci && npm run build\n"
                 "On-chain monitoring, risk hooks, and exposure still work."
