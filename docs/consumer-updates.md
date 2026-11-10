@@ -1,4 +1,67 @@
-# Consumer-repo updates for v0.8.4
+# Consumer-repo updates for v0.9.0
+
+## v0.9.0 (tag pending)
+
+0.9.0 removes the plugin's XMTP sidecar and its XMTP posting. The plugin is
+pure Python now: no Node step at install, no `xmtp_sidecar/`, no `setup.py`.
+`sherwood session check --stream --no-xmtp` (the CLI flag) stays. After the
+tag, take the sha from
+`gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.9.0 --jq .sha`
+and pin it in the consumer PRs below.
+
+What 0.9.0 changes for consumers:
+
+- **No XMTP from the plugin.** The sidecar, its derived wallet, its group
+  membership check and the proposal-lifecycle auto-posts are gone. On-chain
+  events still reach the agent as before.
+- **No Node for the plugin.** Node 22 and npm are needed only for the
+  Sherwood CLI itself. `SHERWOOD_MONITOR_SKIP_SIDECAR_BUILD` is gone.
+- **`SHERWOOD_PRIVATE_KEY`** stays in `requires_env`, now only as the gas
+  watchdog's fallback for its address when `SHERWOOD_AGENT_ADDRESS` is unset.
+  Docs should say to set `SHERWOOD_AGENT_ADDRESS` and leave the key unset.
+- **`xmtp_summaries`** is gone from `config.yaml`; an old config that has it
+  still loads (one log line).
+- **Upgrades** leave a built `xmtp_sidecar/` and `~/.hermes/xmtp/` on disk,
+  unused; the README's "Upgrading from 0.8.x" says they can be deleted.
+- **Unchanged:** the tools (17), hooks (5), slash commands (5), skills (4),
+  the Telegram platform handler, `requires_env` names, the five crons,
+  `MIN_CLI_VERSION` (`0.71.0`) and the CLI floors (0.103.0 portfolio,
+  0.104.0 generic-call).
+
+Consumer edits (on top of the new pin; these supersede the v0.8.4 note
+below about a sidecar rebuild recipe):
+
+- **`sherwoodagent/skill` `SKILL.md`, "Running on Hermes Agent":**
+  - the intro's sentence on XMTP streaming and posting goes;
+  - "How XMTP works (why the plugin ships a sidecar)" and its derived-wallet
+    paragraph go;
+  - Requirements: drop "Node ≥ 22 and npm (for the bundled sidecar build)",
+    "for XMTP and", "the sidecar derives its own key from it" and the
+    `npm ci && npm run build` sentence;
+  - the preflight sentence drops "or (with `SHERWOOD_PRIVATE_KEY` set) a
+    built sidecar (`xmtp_sidecar/dist/index.js`)";
+  - the "If the install fails mid-sidecar" rebuild block goes;
+  - "One-time onboarding per vault" (sidecar membership,
+    `sherwood chat <vault> add 0xSidecarAddr...`) goes;
+  - the Configure example drops `xmtp_summaries`;
+  - near the top, the CLI's own Node/XMTP note links "Running on Hermes
+    Agent" for the glibc symptom, which lived in the removed sidecar section:
+    keep the note (it is about the CLI), drop or retarget the link.
+
+  This repo's bundled copy (`skills/sherwood-agent/`) is synced from that
+  repo with `scripts/refresh_skill_pack.sh` and is not edited here, so it
+  still has the sidecar text until the skill PR merges and the pack is
+  refreshed.
+- **`sherwoodagent/mintlify-docs`:** `cli/installation.mdx` Note: replace
+  "`SHERWOOD_PRIVATE_KEY` is only for XMTP, which works only for funds whose
+  XMTP group id is in their ENS record on Base; Robinhood Chain funds get
+  nothing from it, so leave it unset" with "`SHERWOOD_PRIVATE_KEY` is
+  optional (the gas watchdog derives the address from it when
+  `SHERWOOD_AGENT_ADDRESS` is unset); leave it unset". `cli/cron-jobs.mdx`:
+  the new pin only (the cron set is unchanged). Drop any other mention of
+  the plugin's sidecar or of Node for the plugin.
+- **`sherwoodagent/sherwood`:** the `hermes-plugin` pointer and, once the
+  two above merge, their pointers.
 
 ## v0.8.4
 

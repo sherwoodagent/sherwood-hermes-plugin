@@ -18,20 +18,16 @@ funds are configured and remind the user how to add one:
 `edit ~/.hermes/plugins/sherwood-monitor/config.yaml`.
 
 On-chain events reach you through `sherwood session check --stream
---no-xmtp`, for every fund. XMTP is optional and works only for funds whose
-XMTP group id is in their ENS record on Base; Robinhood Chain funds have
-none, so never tell a user to add the sidecar to a Robinhood Chain fund's
-group: it cannot help.
+--no-xmtp`, for every fund.
 
 The gas watchdog needs only `SHERWOOD_AGENT_ADDRESS` (the monitor wallet's
 address) in the Hermes profile `.env`. `SHERWOOD_PRIVATE_KEY` (secret) is
-needed only for XMTP; the address is derived from it when unset. Without
+not needed; when the address is unset, it is derived from the key. Without
 either, the gas watchdog is off and everything else works; the plugin says
 so once in a `<sherwood-monitor-warning>` when funds are configured. Since
 0.7.0 the plugin never reads the Sherwood CLI's `~/.sherwood/config.json`.
-If a user upgraded from 0.6.0, tell them to set `SHERWOOD_AGENT_ADDRESS`
-(and the key only if they use XMTP, a dedicated monitor key, never a
-fund-managing key). Never ask for a key in chat.
+If a user upgraded from 0.6.0, tell them to set `SHERWOOD_AGENT_ADDRESS`.
+Never ask for a key in chat.
 
 ## Group-chat fund (one-time check per session)
 
@@ -57,7 +53,7 @@ back. Respect `held_back`, `chain_hold`, `expired` and `cli_warning`. In the
 group chat you have no terminal: never try; say the proposing agent runs its
 command outside the chat.
 
-What the plugin registers (v0.8.4): 17 tools, 5 hooks, 5 slash commands,
+What the plugin registers (v0.9.0): 17 tools, 5 hooks, 5 slash commands,
 4 skills, 6 `hermes sherwood` subcommands and one Telegram platform handler.
 
 - **Monitor tools** (toolset `sherwood-monitor`): `sherwood_monitor_start`,
@@ -74,7 +70,7 @@ What the plugin registers (v0.8.4): 17 tools, 5 hooks, 5 slash commands,
   and `fund_record_vote` for someone else's vote) refuse anyone but the
   fund's host and ask a human to approve each call.
 - **Hooks:** `on_session_start` (catch-up, then make sure the streams run),
-  `on_session_finalize` (stops the streams and the XMTP sidecar only when
+  `on_session_finalize` (stops the streams only when
   Hermes shuts down, `reason="shutdown"`; `atexit` is the fallback), `pre_tool_call` (risk checks on
   `sherwood proposal create` / `strategy propose`, the fund rules and the
   host check), `post_tool_call` (settlement memory), `pre_llm_call` (one

@@ -1,12 +1,11 @@
 manifest_version: 2
 name: sherwood-monitor
-version: "0.8.4"
+version: "0.9.0"
 description: >-
-  Bridges Sherwood fund events into Hermes (on-chain events; XMTP too for
-  funds whose XMTP group is in Base's ENS record), and runs a group-chat fund:
-  your Hermes pitches trades in a Telegram group, members deposit and object,
-  guest Hermes agents join as co-managers. Slash commands: /fund, /join-fund,
-  /fund-approve, /fund-agents, /leaderboard.
+  Bridges Sherwood fund events (on-chain) into Hermes, and runs a group-chat
+  fund: your Hermes pitches trades in a Telegram group, members deposit and
+  object, guest Hermes agents join as co-managers. Slash commands: /fund,
+  /join-fund, /fund-approve, /fund-agents, /leaderboard.
 author: Sherwood
 license: MIT
 homepage: https://sherwood.sh
@@ -40,10 +39,9 @@ requires_env:
   # The monitor wallet. The plugin never reads the Sherwood CLI's config file.
   - name: SHERWOOD_PRIVATE_KEY
     description: >-
-      Optional; leave blank to run without XMTP (XMTP only works for funds whose group is in
-      Base's ENS record). If set, use a dedicated monitor key, never a fund-managing key: the
-      XMTP sidecar derives its own separate key from it, and the gas watchdog uses its address
-      when SHERWOOD_AGENT_ADDRESS is unset
+      Optional; leave blank and set SHERWOOD_AGENT_ADDRESS instead. If set, use a dedicated
+      monitor key, never a fund-managing key: the gas watchdog derives the address it checks
+      from it when SHERWOOD_AGENT_ADDRESS is unset (never used to sign)
     url: https://docs.sherwood.sh
     secret: true
   - name: SHERWOOD_AGENT_ADDRESS
