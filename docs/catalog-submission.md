@@ -215,15 +215,26 @@ Then wait for the catalog CI job (`plugin-catalog-ci.yml`) to go green.
   root `package.json`, and this plugin has none. It installs the Python
   package editable from a copy of the plugin in its dependency workspace
   (`$HERMES_HOME/installs/<key>/environments/<id>/workspace/plugin-sources/sherwood-monitor-*`).
-  `setup.py` tries `npm ci && npm run build` there when npm is on PATH, and
-  uv does not show that output. The plugin is loaded from
+  `setup.py` attempts `npm ci && npm run build` there when npm is on PATH
+  (the build needs Node ≥ 22); uv does not show that output, and the 0.8.3
+  and 0.8.4 cold installs never observed that build. The plugin is loaded from
   `$HERMES_HOME/plugins/sherwood-monitor/`, so `_sidecar_dir()` uses a build
   in that directory first. Otherwise it uses the copy named by the package's
   install record (PEP 610 `direct_url.json`, read with `importlib.metadata`;
-  `tests/test_sidecar_dir.py`). With no build in either place, preflight
-  says to build in the plugin directory, and the README's "Build the XMTP
-  sidecar" does that. The cold install of 0.8.3 ran with npm off PATH, so a
-  build under Hermes is not verified end to end.
+  `tests/test_sidecar_dir.py`). With no build in either place the plugin
+  runs without XMTP and preflight says to build in the plugin directory. The
+  README's "Build the XMTP sidecar" is the supported path: with Node
+  22.23.4, `npm ci` and `npm run build` in `xmtp_sidecar/` succeed and
+  `dist/index.js` starts.
+- **Uninstall deletes state on a default install.** The plugin keeps its
+  config and state under `~/.hermes/plugins/sherwood-monitor/` in the user's
+  home (`_plugin_root()` in `sherwood_monitor/__init__.py`; `funds/` from
+  `fund/store.py`). With the default `HERMES_HOME` that is the directory
+  Hermes clones the plugin into, so `hermes plugins remove sherwood-monitor`
+  deletes `config.yaml` and `funds/` with it; the README ("Upgrade and
+  uninstall") and the entry's `known_issues` say to back them up first. An
+  in-place `hermes plugins install ... --force --ref <sha>` keeps them
+  (Hermes keeps untracked files).
 - **Rule 12 (approvals).** The fund guard returns Hermes' approval shape for
   host actions with a per-action `rule_key`; it never auto-approves.
 
