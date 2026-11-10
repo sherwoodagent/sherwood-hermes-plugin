@@ -533,11 +533,24 @@ safe if the agent holds general-purpose tools. For a fund group:
 
 When the agent attempts `sherwood strategy propose` or `sherwood proposal create`
 on a **fund vault** (a fund configured on this host), the fund's own ceilings
-apply, read from the local fund record with no chain read: the command's
-capital (`--amount`, or `--max-capital` on `proposal create`) above max capital,
-`--max-drawdown-bps` above max drawdown (omitted = the CLI default 2000), an
-unreadable amount, or no `--vault` at all is blocked. The general checks below
-do not run on top.
+apply, read from the local fund record with no chain read: the capital the
+template deploys (`--amount`; `--collateral-amount` for concentrated-liquidity,
+`--deposit` for lighter-perp, `--asset-in` for launchpad, `--max-capital` on
+`proposal create`) above max capital, or `--max-drawdown-bps` above max drawdown
+(omitted = the CLI default 2000), is blocked. The general checks below do not
+run on top.
+
+This is a check on the agent's own terminal command text, not a sandbox. On a
+host with a fund it refuses what it cannot read: a template whose capital flag
+it does not know, a missing or unreadable amount, a command that cannot be split
+into shell commands, an unquoted `#`, a `--vault` that is not a literal address
+(CLI 0.103.0 requires `--vault`), and a propose-looking command that names a
+fund vault but not as a readable `sherwood ... propose --vault` (`bash -c`,
+`eval`, `$(...)`, a variable). It cannot see a propose built entirely at run
+time with no literal fund address in the command, or one run from a tool other
+than the terminal (`execute_code`). The deployment boundary still applies: a
+fund group's toolset must not include terminal, file or code tools
+([docs/fund-host-join.md](docs/fund-host-join.md)).
 
 For any other vault the plugin blocks if any of these fail (size from
 `--size-usd`, else `--amount` / `--max-capital`):

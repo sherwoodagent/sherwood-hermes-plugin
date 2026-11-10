@@ -28,8 +28,9 @@ from .childenv import child_env
 
 _log = logging.getLogger(__name__)
 _ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
-_JSON_FLAG_RE = re.compile(r"(^|\s)--json\b", re.MULTILINE)
+_JSON_FLAG_RE = re.compile(r"^\s+--json\b", re.MULTILINE)  # an option line, not a mention in prose
 _SUPPORTS_JSON: dict[str, bool] = {}  # sherwood binary -> `vault info --help` lists --json
+HELP_TIMEOUT_S = 15.0
 NO_JSON_REASON = (
     "`sherwood vault info` has no machine-readable output on the installed CLI (its help lists no --json); "
     "the general position-sizing check is skipped (advisory, fails open)"
@@ -37,20 +38,26 @@ NO_JSON_REASON = (
 
 
 async def vault_info_supports_json(sherwood_bin: str) -> bool:
-    """Whether `sherwood vault info --help` lists a `--json` option (read once per binary)."""
+    """Whether `sherwood vault info --help` lists a `--json` option. Read once per binary and
+    process, failures included (a timeout kills the child), so a propose never waits on it twice."""
     if sherwood_bin in _SUPPORTS_JSON:
         return _SUPPORTS_JSON[sherwood_bin]
     supported = False
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             sherwood_bin, "vault", "info", "--help",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=child_env(),
         )
-        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+        stdout, _stderr = await asyncio.wait_for(proc.communicate(), timeout=HELP_TIMEOUT_S)
         supported = proc.returncode == 0 and bool(_JSON_FLAG_RE.search(stdout.decode("utf-8", "replace")))
-    except (OSError, ValueError) as exc:  # no binary, a timeout, unreadable output
-        _log.warning("could not read `sherwood vault info --help`: %s", exc)
-        return False  # not cached: a missing binary may be installed later
+    except (OSError, ValueError) as exc:  # no binary, a timeout (TimeoutError), unreadable output
+        _log.warning("could not read `sherwood vault info --help`: %r", exc)
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
     _SUPPORTS_JSON[sherwood_bin] = supported
     return supported
 

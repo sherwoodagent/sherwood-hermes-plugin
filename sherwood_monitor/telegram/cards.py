@@ -432,8 +432,11 @@ def render_fund_card(
                     item += f" · {clock}"
             lines.append(item)
     if f.cooldown_until and f.cooldown_until > current:
-        hhmm = datetime.fromtimestamp(int(f.cooldown_until), tz=timezone.utc).strftime("%H:%M")
-        lines += ["", f"⏳ Next proposal possible at {hhmm} UTC"]
+        try:
+            hhmm = datetime.fromtimestamp(int(f.cooldown_until), tz=timezone.utc).strftime("%H:%M") + " UTC"
+        except (OverflowError, OSError, ValueError):  # a stored time no calendar holds
+            hhmm = "an unknown time"
+        lines += ["", f"⏳ Next proposal possible at {hhmm}"]
     lines.append("")
     agents = ", ".join(esc(a) for a in f.agents) if f.agents else "none"
     lines.append(f"{members_label(f)} · Agents {agents}")

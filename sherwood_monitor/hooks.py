@@ -163,7 +163,7 @@ def _parse_propose_command(command: str) -> tuple[str, float, str] | None:
     `--size-usd`, else the capital flag the CLI really takes (`--amount`, or
     `--max-capital` on `proposal create`), in the vault asset's units.
     """
-    invocations = parse_propose_invocations(command)
+    invocations = [inv for inv in parse_propose_invocations(command) or [] if not inv.help]  # --help proposes nothing
     if not invocations:
         return None
     inv = invocations[0]

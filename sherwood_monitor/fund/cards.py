@@ -58,7 +58,11 @@ class FundCard:
 
 
 def hhmm(ts: float) -> str:
-    return time.strftime("%H:%M", time.gmtime(ts))
+    """HH:MM UTC; never raises (a time no calendar holds reads as "an unknown time")."""
+    try:
+        return time.strftime("%H:%M", time.gmtime(ts))
+    except (OverflowError, OSError, ValueError, TypeError):
+        return "an unknown time"
 
 
 def bond_note(status: str) -> str:
