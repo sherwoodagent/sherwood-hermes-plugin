@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from telegram import InlineKeyboardMarkup, InputMediaPhoto, LinkPreviewOptions
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError, TimedOut
 
 from .cards import has_disabled, render_proposal_card, strip_disabled, view_fund_markup
 from .types import FundGateway, FundView, Person, ProposalView, maybe_await
@@ -37,6 +37,7 @@ from .widget import (
     WIDGET_HTML,
     build_position,
     data_fingerprint,
+    is_member_or_host,
     position_text,
     widget_data,
 )
@@ -47,6 +48,8 @@ CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4096
 # 👤 My position widgets kept per fund chat for refreshes (the latest tappers; older ones stay as sent).
 WIDGETS_PER_CHAT = 50
+# Widget data edits per refresh pass; the rest wait for the next pass.
+WIDGET_EDITS_PER_PASS = 20
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 Tick = Callable[[], Awaitable[bool]]  # returns False when the card is final
@@ -372,27 +375,44 @@ class ProposalCards:
 class PositionWidgets:
     """👤 My position: one member's position as a widget in their DM with the bot.
 
-    ``send`` delivers it; ``refresh`` rewrites the data of the widgets already sent for a fund
-    chat when what they show changed. The latest widget per member is kept in memory
-    (``sent``: fund chat -> member -> (DM message id, data fingerprint)), so after a restart a
-    member's next tap sends a fresh one.
+    ``send`` delivers it. ``request`` asks for a refresh pass over the widgets already sent for a
+    fund chat and returns at once: the pass runs as its own task, one at a time per chat (requests
+    made while one runs collapse into a single follow-up), so it never holds a card lock or delays
+    a handler. A pass rewrites only widgets whose values changed, at most ``max_calls`` of them,
+    with ``editMessageWidgetData`` (the caption is a dated snapshot and is not edited). The latest
+    widget per member or host is kept in memory (``sent``: fund chat -> member -> (DM message id,
+    data fingerprint)), so after a restart a member's next tap sends a fresh one.
     """
 
-    def __init__(self, gateway: FundGateway, *, base_url: str | None = None, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        gateway: FundGateway,
+        *,
+        base_url: str | None = None,
+        clock: Callable[[], float] = time.time,
+        max_calls: int = WIDGET_EDITS_PER_PASS,
+    ) -> None:
         self.gateway = gateway
         self.base_url = base_url
         self.clock = clock
+        self.max_calls = max_calls
         self.sent: dict[int, dict[int, tuple[int, str]]] = {}
+        self._passes: dict[int, asyncio.Task] = {}
+        self._again: set[int] = set()
 
     async def send(self, bot: Any, dm_chat_id: int, fund: FundView, user_id: int) -> str:
         """Send ``user_id``'s position in ``fund`` to their private chat with the bot.
 
         A widget first (Bot API 10.4 ``sendWidget`` through ``do_api_request``: PTB 22.8 speaks
         10.0). Telegram shows widgets only in private chats in production, so ``dm_chat_id`` is
-        always the member's DM. Any refusal of the widget other than a refused DM (an older Bot
-        API answers 404, which PTB raises as ``InvalidToken``; a widget over a limit) sends the
-        same plain text as a DM message instead. Returns ``"widget"`` or ``"text"``; raises
-        ``Forbidden`` when the bot may not write to this user, or the text send's error.
+        always the member's DM. A refusal of the widget (an older Bot API answers 404, which PTB
+        raises as ``EndPointNotFound``; a widget over a limit) sends the same plain text as a DM
+        message instead. Returns ``"widget"`` or ``"text"``.
+
+        Raises without stepping down: ``Forbidden`` (the bot may not write to this user yet),
+        ``TimedOut`` (the widget may have arrived: a text copy could be a duplicate) and
+        ``RetryAfter`` (Telegram asks to wait), and the text send's error. Only a member or the
+        host is remembered for refreshes.
         """
         now = self.clock()
         pos = build_position(fund, user_id)
@@ -409,13 +429,13 @@ class PositionWidgets:
                     "reply_markup": markup,
                 },
             )
-        except Forbidden:
+        except (Forbidden, TimedOut, RetryAfter):
             raise
         except Exception as exc:  # noqa: BLE001 - any other refusal of the widget falls back to the text
             _log.info("sendWidget to %s failed (%s); sending the position as text", dm_chat_id, exc)
         else:
             message_id = sent.get("message_id") if isinstance(sent, dict) else getattr(sent, "message_id", None)
-            if message_id is not None and fund.telegram_chat_id is not None:
+            if message_id is not None and fund.telegram_chat_id is not None and is_member_or_host(fund, user_id):
                 self.note(int(fund.telegram_chat_id), user_id, int(message_id), data_fingerprint(pos))
             return "widget"
         # parse_mode=None: plain text whatever PTB Defaults say, so names and titles show literally.
@@ -432,51 +452,111 @@ class PositionWidgets:
         while len(widgets) > WIDGETS_PER_CHAT:
             widgets.pop(next(iter(widgets)))
 
-    async def refresh(self, bot: Any, chat_id: int, fund: FundView | None = None) -> int:
-        """Rewrite the data of this fund chat's widgets whose content changed.
+    def request(self, bot: Any, chat_id: int, fund: FundView | None = None) -> asyncio.Task | None:
+        """Ask for a refresh pass of this fund chat's widgets; never waits for it.
 
-        Called where the plugin has just re-read the fund anyway (a proposal card refresh, the
-        ``/fund`` card), never on a timer. ``editMessageWidgetData``, then the caption, so clients
-        without widgets see the same numbers. A widget that can no longer be edited (deleted, the
-        bot blocked) is forgotten. Returns how many changed; never raises.
+        Returns the task running the passes (None when there is nothing to refresh). A request
+        made while a pass runs collapses into one follow-up pass, which reads the stored fund.
+        """
+        chat = int(chat_id)
+        if not self.sent.get(chat):
+            return None
+        running = self._passes.get(chat)
+        if running is not None and not running.done():
+            self._again.add(chat)
+            return running
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+        task = loop.create_task(self._run_passes(bot, chat, fund), name=f"shfund:widgets:{chat}")
+        self._passes[chat] = task
+        return task
+
+    async def idle(self) -> None:
+        """Wait until no refresh pass is running (tests, shutdown)."""
+        while self._passes:
+            await asyncio.gather(*list(self._passes.values()), return_exceptions=True)
+
+    async def _run_passes(self, bot: Any, chat: int, fund: FundView | None) -> None:
+        try:
+            await self.refresh(bot, chat, fund)
+            while chat in self._again:
+                self._again.discard(chat)
+                await self.refresh(bot, chat)
+        finally:
+            if self._passes.get(chat) is asyncio.current_task():
+                self._passes.pop(chat, None)
+
+    def _restore(self, widgets: dict[int, tuple[int, str]], user_id: int, entry: tuple[int, str], last: str) -> None:
+        """Put the old fingerprint back so the next pass retries (unless a new tap replaced the widget)."""
+        if widgets.get(user_id) == entry:
+            widgets[user_id] = (entry[0], last)
+
+    def _forget(self, widgets: dict[int, tuple[int, str]], user_id: int, entry: tuple[int, str]) -> None:
+        if widgets.get(user_id) == entry:
+            widgets.pop(user_id, None)
+
+    async def refresh(self, bot: Any, chat_id: int, fund: FundView | None = None) -> int:
+        """One pass: rewrite the data of this fund chat's widgets whose values changed.
+
+        At most ``max_calls`` edits; the rest keep their old fingerprint and go first next pass.
+        The new fingerprint is recorded before the edit. A widget is forgotten only when it is gone
+        (deleted, not editable, the chat gone, the bot blocked); on ``TimedOut`` / ``NetworkError``
+        it keeps its old fingerprint for the next pass, and ``RetryAfter`` ends the pass. Returns
+        how many widgets were rewritten; never raises.
         """
         widgets = self.sent.get(int(chat_id))
         if not widgets:
             return 0
         try:
             fund = fund if fund is not None else await maybe_await(self.gateway.fund_for_chat(chat_id))
-            if fund is None:
-                return 0
-            markup = view_fund_markup(fund.vault, self.base_url)
-            now = self.clock()
-            changed = 0
-            for user_id, (message_id, last) in list(widgets.items()):
+        except Exception as exc:  # noqa: BLE001 - a widget refresh never breaks the card that triggered it
+            _log.warning("position widget refresh for %s: fund not read: %s", chat_id, exc)
+            return 0
+        if fund is None:
+            return 0
+        now = self.clock()
+        calls = changed = 0
+        for user_id, (message_id, last) in list(widgets.items()):
+            if calls >= self.max_calls:
+                break
+            try:
                 pos = build_position(fund, user_id)
                 fp = data_fingerprint(pos)
-                if fp == last:
-                    continue
-                try:
-                    await bot.do_api_request(
-                        "editMessageWidgetData",
-                        api_kwargs={"chat_id": user_id, "message_id": message_id, "chat_data": widget_data(pos, now=now)},
-                    )
-                except RetryAfter:
-                    break  # the next refresh moment tries again
-                except TelegramError as exc:
-                    if not _is_not_modified(exc):
-                        _log.debug("position widget %s/%s dropped: %s", user_id, message_id, exc)
-                        widgets.pop(user_id, None)
-                        continue
-                widgets[user_id] = (message_id, fp)
-                changed += 1
-                try:
-                    await bot.edit_message_caption(
-                        chat_id=user_id, message_id=message_id, caption=position_text(pos, now=now), parse_mode=None,
-                        reply_markup=markup,
-                    )
-                except TelegramError as exc:
-                    _log.debug("position widget caption %s/%s not edited: %s", user_id, message_id, exc)
-            return changed
-        except Exception as exc:  # noqa: BLE001 - a widget refresh never breaks the card that triggered it
-            _log.warning("position widget refresh for %s failed: %s", chat_id, exc)
-            return 0
+                data = widget_data(pos, now=now)
+            except Exception as exc:  # noqa: BLE001 - one member's data never stops the others
+                _log.warning("position widget %s/%s not built: %s", user_id, message_id, exc)
+                continue
+            if fp == last:
+                continue
+            entry = (message_id, fp)
+            widgets[user_id] = entry  # before the await, so an overlapping pass does not repeat it
+            calls += 1
+            try:
+                await bot.do_api_request(
+                    "editMessageWidgetData", api_kwargs={"chat_id": user_id, "message_id": message_id, "chat_data": data}
+                )
+            except RetryAfter as exc:
+                self._restore(widgets, user_id, entry, last)
+                _log.info("position widget refresh for %s rate-limited: %s", chat_id, exc)
+                break
+            except Forbidden as exc:  # the bot was blocked or the user is gone
+                _log.debug("position widget %s/%s forgotten: %s", user_id, message_id, exc)
+                self._forget(widgets, user_id, entry)
+                continue
+            except BadRequest as exc:
+                if _is_not_modified(exc):
+                    changed += 1
+                elif _is_gone(exc):
+                    _log.debug("position widget %s/%s forgotten: %s", user_id, message_id, exc)
+                    self._forget(widgets, user_id, entry)
+                else:  # refused data: keep the widget, try again when the values change
+                    _log.info("position widget %s/%s edit refused: %s", user_id, message_id, exc)
+                continue
+            except TelegramError as exc:  # TimedOut, NetworkError, a 5xx: keep it for the next pass
+                _log.info("position widget %s/%s edit failed, kept: %s", user_id, message_id, exc)
+                self._restore(widgets, user_id, entry, last)
+                continue
+            changed += 1
+        return changed

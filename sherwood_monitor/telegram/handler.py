@@ -33,7 +33,7 @@ from typing import Any, Awaitable, Callable
 
 from telegram import Message, MessageEntity, Update
 from telegram.constants import ChatType, ParseMode
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
     BaseHandler,
     CallbackQueryHandler,
@@ -59,6 +59,7 @@ from .links import build_link, decode_start_payload, encode_start_payload
 from .runtime import TelegramRuntime
 from .scope import capture_secret_scope
 from .types import FundActionError, FundView, Person, maybe_await
+from .widget import is_member_or_host
 
 _log = logging.getLogger(__name__)
 
@@ -67,6 +68,10 @@ OBSERVER_GROUP = -10
 CALLBACK_PATTERN = r"^shfund:"
 START_PAYLOAD_RE = re.compile(r"^/start(?:@\w+)?\s+(sf[a-z]_\S+)\s*$")
 GROUP_TYPES = (ChatType.GROUP, ChatType.SUPERGROUP)
+POSITION_BUSY = "Telegram is busy right now. Tap 👤 My position again in a few seconds."
+POSITION_FAILED = "Couldn't send your position right now. Tap 👤 My position on the fund card in the group again."
+# /start sfm_… from someone who is not a member or the host of that fund: nothing fund-specific.
+POSITION_MEMBERS_ONLY = "👤 My position is for members of a fund's group. Join from the fund card in the group first."
 
 
 def _safe(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
@@ -420,11 +425,22 @@ class FundHandlers:
     async def _cb_propose(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
         url = await maybe_await(self.rt.gateway.host_signing_url(chat_id, arg, int(query.from_user.id)))
         if not url:
-            await self._refuse(query, context, "The signing page isn't ready for this draft yet.")
+            await self._refuse(query, context, await self._no_cosign_reason(chat_id, arg))
             return
         await self.deliver_personal_link(
             query, context, kind="propose", fund=fund, url=url, start_payload=_start_payload("propose", fund.vault, arg)
         )
+
+    async def _no_cosign_reason(self, chat_id: int, draft_id: str) -> str:
+        """Why ✍️ Co-sign gave no signing page. It stays live after 🚀 Ship it, so once the proposal
+        is on chain (or the draft was cancelled) the answer says so instead of "not ready"."""
+        view = await maybe_await(self.rt.gateway.proposal(chat_id, draft_id))
+        status = (getattr(view, "status", "") or "").lower() if view is not None else ""
+        if status == "cancelled":
+            return "This draft was cancelled: there is nothing to co-sign."
+        if view is not None and (view.onchain_id is not None or status not in ("", "draft")):
+            return f"Proposal #{view.display_id} is already on chain: there is nothing left to co-sign."
+        return "The signing page isn't ready for this draft yet."
 
     async def _cb_host_action(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
         by = int(query.from_user.id)
@@ -527,15 +543,26 @@ class FundHandlers:
 
         The personal-link ladder without its group rung: 1. the widget in the DM (a plain text DM when
         Telegram refuses the widget: ``TelegramRuntime.send_position``); 2. when the bot may not DM
-        them yet, the start link, whose ``/start`` then sends it there; 3. the alert. Returns
-        ``"widget"``, ``"text"``, ``"start_link"`` or ``"failed"``.
+        them yet, the start link, whose ``/start`` then sends it there; 3. the alert. A slow or
+        rate-limited send does not step down: the member is told to check the DM or try again.
+        Returns ``"widget"``, ``"text"``, ``"timeout"``, ``"busy"``, ``"start_link"`` or ``"failed"``.
         """
         user_id = int(query.from_user.id)
         username = self._bot_username(context)
         try:
             how = await self.rt.send_position(context.bot, user_id, fund, user_id)
+        except TimedOut:  # it may have arrived: no second copy, no start link
+            await _answer(query, f"Sending took too long. Check our DM chat (@{username}) and tap again if it isn't there.")
+            return "timeout"
+        except RetryAfter:
+            await _answer(query, POSITION_BUSY)
+            return "busy"
         except TelegramError as exc:  # Forbidden (never started the bot) or the text DM failed too
             _log.debug("position DM to %s failed: %s", user_id, exc)
+        except Exception:  # noqa: BLE001 - the tap is always answered
+            _log.exception("position for %s not built", user_id)
+            await _answer(query, POSITION_FAILED, show_alert=True)
+            return "failed"
         else:
             await _answer(query, f"Sent your position to our DM chat (@{username}).")
             return how
@@ -567,7 +594,7 @@ class FundHandlers:
         sent = await msg.reply_html(text, reply_markup=markup, link_preview_options=NO_PREVIEW)
         if sent is not None and getattr(sent, "message_id", None) is not None:
             self.rt.flow.note_bot_card(chat_id, int(sent.message_id))
-        await self.rt.refresh_position_widgets(chat_id, fund)  # the read above is fresh: members' widgets follow
+        self.rt.request_position_refresh(chat_id, fund)  # the read above is fresh; its own task, the reply is not held
 
     @_safe
     async def cmd_leaderboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -603,10 +630,7 @@ class FundHandlers:
             await msg.reply_text("That fund isn't available here.")
             return
         if kind == "position":  # 👤 My position, after the start link: this DM is the member's private chat
-            try:
-                await self.rt.send_position(context.bot, int(msg.chat.id), fund, int(user.id))
-            except TelegramError as exc:
-                _log.debug("position for %s not sent: %s", user.id, exc)
+            await self._start_position(msg, context, fund, int(user.id))
             return
         if kind == "propose":
             if fund.host_tg_id is None or int(user.id) != int(fund.host_tg_id):
@@ -643,6 +667,28 @@ class FundHandlers:
                 )
         text, markup = render_personal_link(kind, url, fund.name, deposit_url=deposit_url)
         await msg.reply_html(text, reply_markup=markup, link_preview_options=NO_PREVIEW)
+
+    async def _start_position(self, msg: Any, context: Any, fund: FundView, user_id: int) -> None:
+        """``/start sfm_<vault>``: the position for a member or the host of that fund only (the
+        payload carries no secret, so anyone could type it); everyone else gets one line with
+        nothing fund-specific. When nothing can be sent, the member still gets one line."""
+        if not is_member_or_host(fund, user_id):
+            reply = POSITION_MEMBERS_ONLY
+        else:
+            try:
+                await self.rt.send_position(context.bot, int(msg.chat.id), fund, user_id)
+                return
+            except TimedOut:
+                reply = "If your position doesn't appear here in a moment, tap 👤 My position in the group again."
+            except RetryAfter:
+                reply = POSITION_BUSY
+            except Exception as exc:  # noqa: BLE001 - the member never lands in an empty chat
+                _log.info("position for %s not sent: %s", user_id, exc)
+                reply = POSITION_FAILED
+        try:
+            await msg.reply_text(reply)
+        except TelegramError as exc:
+            _log.debug("position reply for %s not sent: %s", user_id, exc)
 
     # -- observers ---------------------------------------------------------------
 

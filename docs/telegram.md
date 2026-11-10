@@ -277,7 +277,11 @@ with `callback_query_id` and no `receiver_user_id`, passed through
 `api_kwargs`, then still answers the callback query. The text is plain (no
 parse mode). If Telegram refuses it, with `SHERWOOD_TG_PERSONAL_LINKS=dm`, or
 outside a group, the refusal is the pop-up alert it was before. Short notes
-("Voting is closed for this proposal.") stay toasts.
+("Voting is closed for this proposal.") stay toasts. Ephemeral messages need
+a Bot API server at 10.2 or later: an older one (a self-hosted
+`telegram-bot-api`, say) may ignore the parameter and post the text to the
+whole group. On such a server set `SHERWOOD_TG_PERSONAL_LINKS=dm`, which
+restores the pop-ups.
 
 Greyed-out buttons (Bot API 10.3 `InlineKeyboardButton.disabled`, an empty
 `DisabledButton`, sent through `api_kwargs` with no other action field):
@@ -287,7 +291,8 @@ Greyed-out buttons (Bot API 10.3 `InlineKeyboardButton.disabled`, an empty
   and 📊 View fund moved up under a finger that was reaching for ❌ Object.
 - A draft card after 🚀 Ship it (no CLI command to show) turns that button into
   a disabled "🚀 Shipped" and keeps ✍️ Co-sign, which the ship toast tells the
-  host to tap next. Before, both buttons were cleared.
+  host to tap next. Before, both buttons were cleared. Once the proposal is on
+  chain (or the draft was cancelled), ✍️ Co-sign answers that, not "not ready".
 - Cards whose edit already adds a stamp line where the buttons were (the
   shipped CLI command, "✅ Approved by @host") still drop their buttons.
   Drafts that are cancelled or never shipped are never edited, so they keep
@@ -344,28 +349,44 @@ button under the widget is the public 📊 View fund page. The widget is sent
 without `allow_queries`: Hermes polls with PTB 22.8's `Update.ALL_TYPES`,
 which has no `widget_query`, so queries would never reach the plugin.
 
-The caption carries the same values as plain text. Clients without widget
-support show it instead of the widget, and the chat list shows it as the
-preview.
+The caption carries the same values as plain text, as of the time it was sent,
+and ends with that time ("As of 14:05 UTC. Tap 👤 My position again for the
+latest."). Clients without widget support show it instead of the widget, and
+the chat list shows it as the preview. Refreshes do not edit it.
 
 Delivery ladder (each step falls back to the next):
 
 1. The widget, in the DM.
-2. If Telegram refuses the widget for any reason other than a refused DM (an
-   older Bot API answers 404, which PTB raises as `InvalidToken`; a widget
-   over a limit), the same text as a plain DM message.
+2. If Telegram refuses the widget for any reason other than a refused DM, a
+   timeout or a rate limit (an older Bot API answers 404, which PTB raises as
+   `EndPointNotFound`; a widget over a limit), the same text as a plain DM
+   message.
 3. If the bot may not DM the member yet, the start link
    `t.me/<bot>?start=sfm_<vault hex>`. `/start` then sends the widget in the
-   DM.
+   DM, to a recorded member or the host of that fund only: the payload holds
+   no secret, so anyone else gets one line with nothing about the fund. If
+   nothing can be sent there, the member gets one line saying to try again
+   from the group.
 4. An alert asking the member to start the bot.
 
-Refreshes use `editMessageWidgetData` and then `editMessageCaption`, and run
-only when the plugin re-reads the fund anyway: a proposal card refresh (vote,
-tally, status) and `/fund`. There is no timer. Only widgets whose content
-changed are edited. The runtime keeps the latest widget per member, at most 50
-per fund chat, in memory, so after a restart a member's next tap sends a fresh
-one. A widget that can no longer be edited (deleted, the bot blocked) is
-forgotten.
+A send that times out does not step down: the widget may have arrived, so the
+member is told to check the DM and tap again rather than getting a second copy.
+A rate limit tells them to try again in a few seconds.
+
+Refreshes rewrite the widget's data with `editMessageWidgetData`, one call per
+widget whose values changed. They run when the plugin re-reads the fund anyway:
+a proposal card refresh (vote, tally, status) and `/fund`. There is no timer.
+Each refresh is its own task, so it never holds a card lock and never delays a
+vote, a ship or the `/fund` reply. Only one pass runs per fund chat; requests
+made meanwhile collapse into one follow-up pass. A pass makes at most 20 edits
+and stops at a rate limit; the rest wait for the next pass. A newer read whose
+values are unchanged (only its block time moved) edits nothing.
+
+The runtime keeps the latest widget per member or host, at most 50 per fund
+chat, in memory. After a restart a member's next tap sends a fresh one. A
+non-member's widget is not kept. A widget is forgotten only when it is gone:
+deleted, no longer editable, or the bot blocked. On a timeout or network error
+it is kept and retried in the next pass.
 
 ## Host signing page (contract with the app lane)
 

@@ -884,8 +884,9 @@ class FundService:
                 fund,
                 record.id,
                 against_bps=_opt_int(row.get("againstBps")),
-                voting_ends_at=_opt_float(row.get("voteEnd")),
-                review_ends_at=_opt_float(row.get("reviewEnd")),
+                # A window end that is not unix seconds (milliseconds, junk) is not stored.
+                voting_ends_at=plausible_timestamp(_opt_float(row.get("voteEnd"))),
+                review_ends_at=plausible_timestamp(_opt_float(row.get("reviewEnd"))),
                 guardian_coverage=_coverage_kind(row),
             )
             target = CHAIN_STATES.get(str(row.get("state") or ""))

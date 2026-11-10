@@ -215,6 +215,22 @@ async def test_ship_it_keeps_the_co_sign_button_live():
     assert second == [[{"text": "✍️ Co-sign (host)", "callback_data": "shfund:propose:d7"}]]
 
 
+async def test_co_sign_after_the_proposal_is_on_chain_says_so():
+    """✍️ Co-sign stays live after 🚀 Ship it; once the proposal is on chain the answer says that,
+    not "not ready" (and a cancelled draft says it was cancelled)."""
+    rt, gw, bot = make_runtime()
+    gw.signing_url = None  # host_signing_url only signs a draft
+    gw.proposals["d7"] = make_proposal(id="d7", status="draft")
+    q = await tap(rt, bot, "shfund:propose:d7", HOST)
+    assert refusal_text(q, bot) == "The signing page isn't ready for this draft yet."
+    gw.proposals["d7"] = make_proposal(id="d7", status="voting", onchain_id=9)
+    q = await tap(rt, bot, "shfund:propose:d7", HOST)
+    assert refusal_text(q, bot) == "Proposal #9 is already on chain: there is nothing left to co-sign."
+    gw.proposals["d7"] = make_proposal(id="d7", status="cancelled")
+    q = await tap(rt, bot, "shfund:propose:d7", HOST)
+    assert refusal_text(q, bot) == "This draft was cancelled: there is nothing to co-sign."
+
+
 async def test_ship_it_failure_shows_reason_and_keeps_buttons():
     rt, gw, bot = make_runtime()
     gw.fail_ship = True
