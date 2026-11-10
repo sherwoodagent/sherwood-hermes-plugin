@@ -523,21 +523,27 @@ safe if the agent holds general-purpose tools. For a fund group:
 
 ## Risk checks
 
-When the agent attempts `sherwood strategy propose` or `sherwood proposal create`,
-the plugin blocks if any of these fail:
+When the agent attempts `sherwood strategy propose` or `sherwood proposal create`
+on a **fund vault** (a fund configured on this host), the fund's own ceilings
+apply, read from the local fund record with no chain read: the command's
+capital (`--amount`, or `--max-capital` on `proposal create`) above max capital,
+`--max-drawdown-bps` above max drawdown (omitted = the CLI default 2000), an
+unreadable amount, or no `--vault` at all is blocked. The general checks below
+do not run on top.
+
+For any other vault the plugin blocks if any of these fail (size from
+`--size-usd`, else `--amount` / `--max-capital`):
 
 - Position size > 25% of vault AUM
 - Total portfolio exposure > 50% of vault AUM
 - Protocol not in the vault's configured mandate list
 
-Day-1 limitation: the default state fetcher calls `sherwood vault info
-<sub> --json`, a subcommand that does not yet exist in the Sherwood CLI
-as of this plugin version. Until that subcommand lands upstream, the
-state fetcher returns `None` and the `pre_tool_call` hook fails-open
-(allows the proposal) and logs a warning. This is deliberate: we ship
-the enforcement scaffolding without synthesizing fake vault state. Once
-the CLI subcommand exists, checks engage automatically — no plugin
-change required.
+These general checks are advisory and fail open: they need vault state from
+`sherwood vault info --json`, and the Sherwood CLI (0.103.0) has no `--json`
+there. The state fetcher reads `sherwood vault info --help` once and runs the
+read only when it lists `--json`; until then it returns `None`, and the
+`pre_tool_call` hook allows the proposal and logs why. Once the CLI ships the
+flag, the checks engage with no plugin change.
 
 ## Development
 
