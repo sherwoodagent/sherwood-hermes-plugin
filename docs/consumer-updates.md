@@ -1,13 +1,25 @@
 # Consumer-repo updates for v0.9.0
 
-## v0.9.0 (tag pending)
+## v0.9.0
 
 0.9.0 removes the plugin's XMTP sidecar and its XMTP posting. The plugin is
 pure Python now: no Node step at install, no `xmtp_sidecar/`, no `setup.py`.
-`sherwood session check --stream --no-xmtp` (the CLI flag) stays. After the
-tag, take the sha from
-`gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.9.0 --jq .sha`
-and pin it in the consumer PRs below.
+`sherwood session check --stream --no-xmtp` (the CLI flag) stays.
+
+The `v0.9.0` tag points at `6d0a3cd3c822b24adb39e94cceaa3a540bc54b7c` (the merge of
+#40): `gh api repos/sherwoodagent/sherwood-hermes-plugin/commits/v0.9.0 --jq .sha`.
+Install: `hermes plugins install sherwoodagent/sherwood-hermes-plugin --ref 6d0a3cd3c822b24adb39e94cceaa3a540bc54b7c`
+(add `--force` when upgrading from an earlier `--ref` install).
+
+The skill's sidecar text left first, in sherwoodagent/skill#124 (skill
+0.35.3, merged). The pin PRs below move every consumer to 0.9.0. Every merge
+is held for the maintainer.
+
+| Repo | PR | 0.9.0 commit | Waits on |
+|---|---|---|---|
+| `sherwoodagent/mintlify-docs` | [#140](https://github.com/sherwoodagent/mintlify-docs/pull/140) | `5e89666` | maintainer merge |
+| `sherwoodagent/skill` | [#125](https://github.com/sherwoodagent/skill/pull/125) | `37c5a16` | maintainer merge (skill release 0.35.4) |
+| `sherwoodagent/sherwood` | [#746](https://github.com/sherwoodagent/sherwood/pull/746) (draft) | `6f537d1` | #140 and #125 merging, then two pointer commits |
 
 What 0.9.0 changes for consumers:
 
@@ -87,11 +99,11 @@ The consumer PRs opened for 0.8.1 now pin 0.8.4, with the same edits as the
 drafts to the group-chat fund's "Who signs" bullet. Every merge is held for
 the maintainer.
 
-| Repo | PR | 0.8.4 commit | Waits on |
+| Repo | PR | 0.8.4 commit | Status |
 |---|---|---|---|
-| `sherwoodagent/mintlify-docs` | [#139](https://github.com/sherwoodagent/mintlify-docs/pull/139) | `705d36e` | maintainer merge |
-| `sherwoodagent/skill` | [#123](https://github.com/sherwoodagent/skill/pull/123) | `ba866a9` | maintainer merge (skill release 0.35.2) |
-| `sherwoodagent/sherwood` | [#744](https://github.com/sherwoodagent/sherwood/pull/744) (draft) | `36b533f` | #139 and #123 merging, then two pointer commits |
+| `sherwoodagent/mintlify-docs` | [#139](https://github.com/sherwoodagent/mintlify-docs/pull/139) | `705d36e` | merged as `989ff6b` |
+| `sherwoodagent/skill` | [#123](https://github.com/sherwoodagent/skill/pull/123) | `ba866a9` | merged as `57fba6a` (skill v0.35.2) |
+| `sherwoodagent/sherwood` | [#744](https://github.com/sherwoodagent/sherwood/pull/744) | `36b533f` | merged as `7a7f5a3`, with the two pointer commits |
 
 Two more consumer doc edits come from the cold install of 0.8.3. The consumer
 PRs above do not make them yet:
