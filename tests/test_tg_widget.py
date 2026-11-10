@@ -187,7 +187,7 @@ async def test_a_refused_widget_falls_back_to_a_text_dm(refusal):
     bot.do_api_request.side_effect = refusal
     q = await tap(rt, bot, TAP, BOB)
     kw = bot.send_message.await_args.kwargs
-    assert kw["chat_id"] == BOB and "parse_mode" not in kw and "api_kwargs" not in kw
+    assert kw["chat_id"] == BOB and kw["parse_mode"] is None and "api_kwargs" not in kw
     assert kw["text"].startswith("👤 Your position · </script><img")  # the caption's text, literally
     assert kw["reply_markup"].to_dict()["inline_keyboard"][0][0]["text"] == "📊 View fund"
     assert answered_text(q) == "Sent your position to our DM chat (@sherwoodagentbot)."
@@ -238,7 +238,7 @@ async def test_refresh_rewrites_changed_widgets_only():
     data = json.loads(kw["chat_data"])
     assert data["p"][0]["a"] == 1500 and data["u"] == int(NOW) + 120
     caption = bot.edit_message_caption.await_args.kwargs  # clients without widgets see the same numbers
-    assert caption["chat_id"] == ALICE and "Against 15.0% of 20%" in caption["caption"]
+    assert caption["chat_id"] == ALICE and "Against 15.0% of 20%" in caption["caption"] and caption["parse_mode"] is None
     assert caption["reply_markup"].to_dict()["inline_keyboard"][0][0]["text"] == "📊 View fund"
     assert await rt.refresh_position_widgets(CHAT) == 0
 

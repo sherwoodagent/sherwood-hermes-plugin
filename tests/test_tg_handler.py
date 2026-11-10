@@ -164,7 +164,7 @@ async def test_host_only_callbacks_refuse_members(data):
     q = await tap(rt, bot, data, BOB)
     # Bot API 10.4: an ephemeral reply to the callback (no receiver_user_id), seen only by the tapper.
     sent = bot.send_message.await_args.kwargs
-    assert sent["text"] == "Only the fund host can do that." and "parse_mode" not in sent
+    assert sent["text"] == "Only the fund host can do that." and sent["parse_mode"] is None
     assert sent["api_kwargs"] == {"ephemeral_message_parameters": {"callback_query_id": "q1"}}
     q.answer.assert_awaited_once()  # the query is still answered, with no pop-up
     assert answered_text(q) is None

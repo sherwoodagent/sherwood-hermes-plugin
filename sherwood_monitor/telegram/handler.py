@@ -205,6 +205,7 @@ class FundHandlers:
                 await context.bot.send_message(
                     chat_id=chat.id,
                     text=text,
+                    parse_mode=None,  # plain text whatever PTB Defaults say: a reason may quote a name
                     link_preview_options=NO_PREVIEW,
                     api_kwargs={"ephemeral_message_parameters": {"callback_query_id": query.id}},
                 )

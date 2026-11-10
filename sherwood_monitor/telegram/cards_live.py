@@ -418,7 +418,10 @@ class PositionWidgets:
             if message_id is not None and fund.telegram_chat_id is not None:
                 self.note(int(fund.telegram_chat_id), user_id, int(message_id), data_fingerprint(pos))
             return "widget"
-        await bot.send_message(chat_id=int(dm_chat_id), text=text, reply_markup=markup, link_preview_options=NO_PREVIEW)
+        # parse_mode=None: plain text whatever PTB Defaults say, so names and titles show literally.
+        await bot.send_message(
+            chat_id=int(dm_chat_id), text=text, parse_mode=None, reply_markup=markup, link_preview_options=NO_PREVIEW
+        )
         return "text"
 
     def note(self, chat_id: int, user_id: int, message_id: int, fingerprint: str) -> None:
@@ -468,7 +471,8 @@ class PositionWidgets:
                 changed += 1
                 try:
                     await bot.edit_message_caption(
-                        chat_id=user_id, message_id=message_id, caption=position_text(pos, now=now), reply_markup=markup
+                        chat_id=user_id, message_id=message_id, caption=position_text(pos, now=now), parse_mode=None,
+                        reply_markup=markup,
                     )
                 except TelegramError as exc:
                     _log.debug("position widget caption %s/%s not edited: %s", user_id, message_id, exc)
