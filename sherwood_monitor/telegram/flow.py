@@ -85,7 +85,10 @@ NOTICE_WHICH_PITCH = (
     "Which pitch? Reply \"ship it\" to the pitch itself, or name its $TICKER. "
     "A draft card ships with its 🚀 Ship it button."
 )
-NOTICE_ALREADY_DRAFTED = "That idea already has a draft: tap 🚀 Ship it on its draft card."
+NOTICE_ALREADY_DRAFTED = (
+    "That idea was already sent for drafting: tap 🚀 Ship it on its draft card "
+    "(or see the reply above for why it could not be drafted)."
+)
 
 
 def is_ship_it(text: str | None) -> bool:

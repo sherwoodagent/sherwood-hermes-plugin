@@ -95,7 +95,6 @@ class PricedSymbols:
         self._until = now + (TTL_S if self._value is not None else FAILURE_TTL_S)
         return self._value
 
-
     def peek(self) -> frozenset[str] | None:
         """The cached symbols while still fresh, else None. Never reads the network (the Telegram
         message path uses this; a cold cache means "not checked here")."""
