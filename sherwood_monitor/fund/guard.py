@@ -1,10 +1,14 @@
-"""pre_tool_call guard for fund drafts.
+"""pre_tool_call guard for fund drafts and for terminal proposes on a fund vault.
 
 Runs before `fund_draft_proposal` (the only fund tool that maps to calldata)
 and blocks the call when the draft would break a coordination rule or exceed
-the fund's max capital / drawdown. Unlike the CLI risk check, this fails
+the fund's max capital / drawdown. A terminal `sherwood strategy propose` /
+`sherwood proposal create` whose vault belongs to a fund on this host is held
+to the same ceilings, read from the local fund record (no chain read); one that
+passes is answered with `FUND_RULES_APPLIED`, so the general advisory sizing
+rule in hooks.py does not run on top. Unlike the CLI risk check, this fails
 CLOSED: fund state is local and authoritative, so "cannot check" means the
-draft is not safe to build.
+draft or propose is not safe to run.
 """
 from __future__ import annotations
 
@@ -12,13 +16,23 @@ from typing import Any, Callable
 
 from pathlib import Path
 
+from ..propose_cmd import (
+    CLI_DEFAULT_DRAWDOWN_BPS,
+    FUND_RULES_APPLIED,
+    TERMINAL_TOOLS,
+    ProposeInvocation,
+    looks_like_propose,
+    parse_propose_invocations,
+)
 from ..session import current_caller
 from . import authz, rules
 from .generic_call import require_agent_signer
+from .models import FundState
 from .rules import RuleViolation
 from .runtime import FundRuntime
 from .store import FundNotFound, default_state_dir, scrub_paths
 from .tools import GUARD_ERRORS, parse_draft_args
+from .units import UnitsError, format_units, to_base_units
 
 GUARDED_TOOLS = frozenset({"fund_draft_proposal"}) | authz.HOST_TOOLS | {"fund_record_vote"}
 
@@ -62,7 +76,66 @@ def rebind_markers(rt: FundRuntime) -> tuple[str, ...]:
                 extra.append(p.rstrip("/").lower())
     return tuple(m.lower() for m in REBIND_MARKERS) + tuple(dict.fromkeys(extra))
 
-FundGuard = Callable[[str, dict[str, Any]], "str | dict | None"]
+FundGuard = Callable[[str, dict[str, Any]], Any]  # block reason | directive | FUND_RULES_APPLIED | None
+
+
+def _fund_states(rt: FundRuntime) -> list[FundState]:
+    """Every fund on this host that has a vault. Raises when fund state cannot be read."""
+    out = []
+    for name in rt.service.backend.list_funds():
+        st = rt.service.load(name)
+        if st.fund.vault:
+            out.append(st)
+    return out
+
+
+def _amount_text(units: int, st: FundState) -> str:
+    return f"{format_units(units, st.fund.asset_decimals)} {st.fund.asset}"
+
+
+def check_propose_ceilings(inv: ProposeInvocation, st: FundState) -> str | None:
+    """A propose for fund `st`'s vault against the fund's own ceilings: a block reason, or None.
+
+    The capital is the command's `--amount` (`--max-capital` on `proposal create`;
+    `--deposit` / `--asset-in` on the templates that take those), in human asset units.
+    A missing or unreadable amount is refused. `--max-drawdown-bps` omitted means the
+    CLI default (2000 bps), which is checked like a typed one.
+    """
+    f = st.fund
+    name = f.name
+    if not inv.capital:
+        return (
+            f"fund propose blocked (no_amount): a propose for {name}'s vault must name its capital with "
+            f"--amount (or --max-capital), so the fund ceiling can be checked"
+        )
+    amounts: list[int] = []
+    for flag, raw in inv.capital:
+        try:
+            amounts.append(to_base_units(raw, f.asset_decimals))
+        except (UnitsError, ValueError):
+            return f"fund propose blocked (bad_amount): cannot read {flag} {raw!r} as an amount of {f.asset} for {name}"
+    capital = max(amounts)
+    if f.max_capital is not None and capital > int(f.max_capital):
+        return (
+            f"fund propose blocked (exceeds_max_capital): {_amount_text(capital, st)} is above the fund "
+            f"ceiling {_amount_text(int(f.max_capital), st)} for {name}"
+        )
+    if inv.drawdown is None:
+        drawdown, typed = CLI_DEFAULT_DRAWDOWN_BPS, False
+    else:
+        try:
+            drawdown, typed = int(inv.drawdown), True
+        except ValueError:
+            return f"fund propose blocked (bad_drawdown): cannot read --max-drawdown-bps {inv.drawdown!r} as bps for {name}"
+    if f.max_drawdown_bps is not None and drawdown > f.max_drawdown_bps:
+        what = f"max drawdown {drawdown} bps" if typed else (
+            f"no --max-drawdown-bps: the CLI default {drawdown} bps"
+        )
+        return (
+            f"fund propose blocked (exceeds_max_drawdown): {what} is above the fund ceiling "
+            f"{f.max_drawdown_bps} bps for {name}"
+        )
+    return None
 
 
 def make_fund_guard(rt: FundRuntime) -> FundGuard:
@@ -113,10 +186,49 @@ def make_fund_guard(rt: FundRuntime) -> FundGuard:
             return f"fund action blocked ({verdict.code}): {verdict.reason}"
         return authz.approve_directive(tool_name, fund, args or {})
 
-    def guard(tool_name: str, args: dict[str, Any]) -> str | dict | None:
+    def terminal_propose(args: dict[str, Any]) -> Any:
+        """A terminal propose on a fund vault: the fund's ceilings, or None (not a fund propose)."""
+        command = str((args or {}).get("command") or "")
+        if not looks_like_propose(command):
+            return None
+        try:
+            states = _fund_states(rt)
+        except GUARD_ERRORS as exc:
+            return f"fund propose blocked: cannot read fund state to check the fund ceilings ({scrub_paths(exc)})"
+        if not states:
+            return None  # no fund on this host: the general advisory check applies
+        invocations = parse_propose_invocations(command)
+        if invocations is None:
+            low = command.lower()
+            if any(st.fund.vault.lower() in low for st in states):
+                return "fund propose blocked (unreadable_command): cannot parse this propose for a fund vault"
+            return None
+        by_vault = {st.fund.vault.lower(): st for st in states}
+        handled = False
+        for inv in invocations:
+            if not inv.vault:
+                names = ", ".join(sorted(st.fund.name for st in states))
+                return (
+                    "fund propose blocked (no_vault): this host runs fund "
+                    f"{names}; name the vault with --vault so the fund ceilings can be checked"
+                )
+            st = by_vault.get(inv.vault.lower())
+            if st is None:
+                continue  # another vault: the general advisory check applies
+            reason = check_propose_ceilings(inv, st)
+            if reason:
+                return reason
+            handled = True
+        if handled and all(inv.vault.lower() in by_vault for inv in invocations):
+            return FUND_RULES_APPLIED
+        return None
+
+    def guard(tool_name: str, args: dict[str, Any]) -> Any:
         blocked = rebind_block(tool_name, args)
         if blocked:
             return blocked
+        if tool_name in TERMINAL_TOOLS:
+            return terminal_propose(args)
         if tool_name not in GUARDED_TOOLS:
             return None
         if tool_name != "fund_draft_proposal":

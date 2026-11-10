@@ -720,7 +720,11 @@ async def test_the_state_fetcher_names_an_address_with_vault(monkeypatch):
         seen.append(argv)
         raise FileNotFoundError(argv[0])
 
+    async def supports_json(sherwood_bin):  # a future CLI whose `vault info --help` lists --json
+        return True
+
     monkeypatch.setattr(state_fetcher.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(state_fetcher, "vault_info_supports_json", supports_json)
     assert await state_fetcher.fetch_vault_info("sherwood", VAULT) is None
     assert await state_fetcher.fetch_vault_info("sherwood", "alpha") is None
     assert seen == [("sherwood", "vault", "info", "--vault", VAULT, "--json"), ("sherwood", "vault", "info", "alpha", "--json")]
