@@ -268,6 +268,7 @@ def parse_legs(raw: Any, decimals: int) -> list[Leg]:
     legs = []
     for item in raw:
         leg = Leg.from_dict(item)
+        leg.symbol = (leg.symbol or "").strip()  # " TSLA" is TSLA, not an unknown symbol
         leg.cap = str(to_base_units(leg.cap or "0", decimals))
         leg.value = str(parse_base_units(leg.value or "0"))
         legs.append(leg)
@@ -294,11 +295,13 @@ def check_leg_symbols(state: FundState, legs: list[Leg], tx_builder_url: str) ->
         )
     missing = [s for s in symbols if s not in covered]
     if missing:
+        listed = sorted(covered)
+        shown = ", ".join(listed[:60]) + (f" and {len(listed) - 60} more" if len(listed) > 60 else "")
         raise RuleViolation(rules.deny(
             "unknown_symbol",
             f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not in the Sherwood prices source for "
             f"chain {state.fund.chain_id} (no token or Chainlink feed there), so a portfolio cannot hold "
-            f"{'it' if len(missing) == 1 else 'them'}. Priced symbols: {', '.join(sorted(covered))}",
+            f"{'it' if len(missing) == 1 else 'them'}. Priced symbols: {shown}",
         ))
     return ""
 
