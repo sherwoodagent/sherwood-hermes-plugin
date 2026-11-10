@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +65,47 @@ async def test_rate_limit_is_retried_next_tick():
     ref = CardRef(CHAT, 7)
     assert await live.edit(ref, "a", KB) is False
     assert await live.edit(ref, "a", KB) is True
+
+
+CLOSED_KB = InlineKeyboardMarkup([
+    [InlineKeyboardButton("🗳 Voting closed", api_kwargs={"disabled": {}})],
+    [InlineKeyboardButton("📊 View fund", url="https://app.sherwood.sh/tg/fund/0x1")],
+])
+
+
+async def test_refused_disabled_buttons_are_dropped_not_left_live():
+    """A server without Bot API 10.3 refuses the disabled button: the card is edited again without it
+    (the closed card as before 10.3), and that identical render is not retried."""
+    bot = fake_bot()
+    bot.edit_message_text.side_effect = [BadRequest("Bad Request: can't parse inline keyboard button"), True]
+    live = LiveCards(bot)
+    ref = CardRef(CHAT, 7)
+    assert await live.edit(ref, "closed", CLOSED_KB) is True
+    first, second = (c.kwargs["reply_markup"] for c in bot.edit_message_text.await_args_list)
+    assert first is CLOSED_KB
+    assert second.to_dict() == {"inline_keyboard": [[{"text": "📊 View fund", "url": "https://app.sherwood.sh/tg/fund/0x1"}]]}
+    assert await live.edit(ref, "closed", CLOSED_KB) is False
+    assert bot.edit_message_text.await_count == 2
+
+
+async def test_other_edit_errors_do_not_retry_and_posts_degrade_too():
+    bot = fake_bot()
+    bot.edit_message_text.side_effect = BadRequest("Bad Request: can't parse entities")
+    assert await LiveCards(bot).edit(CardRef(CHAT, 7), "a", KB) is False  # nothing disabled: no second try
+    assert bot.edit_message_text.await_count == 1
+    bot = fake_bot()
+
+    async def refuse_first(**kwargs):
+        if bot.send_message.await_count == 1:
+            raise BadRequest("Bad Request: can't parse inline keyboard button")
+        return SimpleNamespace(message_id=600)
+
+    bot.send_message.side_effect = refuse_first
+    ref = await LiveCards(bot).post(CHAT, "closed", CLOSED_KB)
+    assert ref.message_id == 600 and bot.send_message.await_count == 2
+    assert bot.send_message.await_args.kwargs["reply_markup"].to_dict()["inline_keyboard"] == [
+        [{"text": "📊 View fund", "url": "https://app.sherwood.sh/tg/fund/0x1"}]
+    ]
 
 
 async def test_media_cards_edit_caption_or_media():

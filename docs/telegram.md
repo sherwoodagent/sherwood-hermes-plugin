@@ -140,7 +140,7 @@ Environment (the profile `.env`; secrets are read through Hermes'
 | `SHERWOOD_TG_LINK_SECRET` | HMAC key for personal and host signing links; shared with the web app (secret). Never sent anywhere |
 | `SHERWOOD_TG_API_TOKEN` | bearer for the app's `GET /api/tg/link` member-wallet lookup; a separate secret shared with the app (secret) |
 | `APP_BASE_URL` | web app base, default `https://app.sherwood.sh` |
-| `SHERWOOD_TG_PERSONAL_LINKS` | `ephemeral` (default) or `dm`, see below |
+| `SHERWOOD_TG_PERSONAL_LINKS` | `ephemeral` (default) or `dm`: `dm` turns off every ephemeral message (personal links and refusals), see below |
 | `TELEGRAM_BOT_USERNAME` | optional; otherwise taken from `getMe` |
 
 Hermes polls with `allowed_updates=Update.ALL_TYPES`, which includes
@@ -215,8 +215,9 @@ unrealized P&L, the read's `asOf`, and the active strategy (`activeProposal`).
 
   It does not show the cash alone as a loss.
 
-`/fund` reads the chain first when the 30 s throttle allows. Authorization,
-the pitch flow and the other cards never trigger a read. When the read fails,
+`/fund` (and its 👤 My position button) reads the chain first when the 30 s
+throttle allows. Authorization, the pitch flow and the other cards never
+trigger a read. When the read fails,
 the card shows the last snapshot and ends with "Last known NAV, as of HH:MM
 UTC." With no usable snapshot (never read, a read without a NAV block, or a
 broken value), it shows "NAV unavailable", never a made-up 0. Members counts chat
@@ -257,6 +258,7 @@ Callback data is `shfund:<action>:<arg>`, at most 64 bytes, routed by one
 | `shfund:deposit:<vault>` | anyone | personal `/tg/deposit` link |
 | `shfund:withdraw:<vault>` | anyone | personal `/tg/withdraw` link |
 | `shfund:join:<vault>` | anyone | records a join request (first tap shows the host an Approve card), then the personal `/tg/join` link. Open deposits: the member is admitted at once (no Approve card) and the same message carries their personal `/tg/deposit` link as a second button |
+| `shfund:position:<vault>` | anyone | 👤 My position: the tapper's position as a widget in their DM with the bot (see below); nothing is posted in the group |
 | `shfund:shipit:<draft>` | host | ship the draft to a vote. `proposal_signer: agent`: the draft card is edited to show the `sherwood strategy propose portfolio ...` or `sherwood strategy propose generic-call ...` command the proposing agent runs (there is no Co-sign button). A Generic Call draft card also says it is an unaudited template whose execute stays blocked until a guardian operator allows it |
 | `shfund:propose:<draft>` | host | pre-GA co-sign: personal link to the host signing page |
 | `shfund:approve_member:<tg_id>` | host | approve a member, then the host's `/tg/sign` link for `approveDepositor`. Open deposits: "nothing to approve" |
@@ -264,8 +266,35 @@ Callback data is `shfund:<action>:<arg>`, at most 64 bytes, routed by one
 | `shfund:remove_agent:<name>` | host | remove an agent |
 
 Host-only callbacks compare the tapper's Telegram id with the fund's host id
-and refuse everyone else with an alert. That check is a chat convenience; the
-contracts still gate anything onchain.
+and refuse everyone else. That check is a chat convenience; the contracts still
+gate anything onchain.
+
+Refusals ("Only the fund host can do that.", a failed 👍 or ship, links not
+configured, a signing page not ready) go to the tapper alone. In a group with
+`SHERWOOD_TG_PERSONAL_LINKS=ephemeral` (the default) the bot sends an
+ephemeral reply to the callback: Bot API 10.4 `ephemeral_message_parameters`
+with `callback_query_id` and no `receiver_user_id`, passed through
+`api_kwargs`, then still answers the callback query. The text is plain (no
+parse mode). If Telegram refuses it, with `SHERWOOD_TG_PERSONAL_LINKS=dm`, or
+outside a group, the refusal is the pop-up alert it was before. Short notes
+("Voting is closed for this proposal.") stay toasts.
+
+Greyed-out buttons (Bot API 10.3 `InlineKeyboardButton.disabled`, an empty
+`DisabledButton`, sent through `api_kwargs` with no other action field):
+
+- A proposal card past voting keeps one disabled button where 👍 / ❌ were:
+  "🗳 Voting closed", "⛔ Vetoed" or "✖️ Cancelled". Before, the row vanished
+  and 📊 View fund moved up under a finger that was reaching for ❌ Object.
+- A draft card after 🚀 Ship it (no CLI command to show) turns that button into
+  a disabled "🚀 Shipped" and keeps ✍️ Co-sign, which the ship toast tells the
+  host to tap next. Before, both buttons were cleared.
+- Cards whose edit already adds a stamp line where the buttons were (the
+  shipped CLI command, "✅ Approved by @host") still drop their buttons.
+  Drafts that are cancelled or never shipped are never edited, so they keep
+  their buttons as before.
+
+If Telegram refuses a disabled button, the card is posted or edited again
+without it, as before 10.3.
 
 ### Live cards
 
@@ -282,6 +311,61 @@ contracts still gate anything onchain.
   veto meter). When the window closes or the status leaves `voting`, one final
   edit lands and the job stops. It uses PTB's `JobQueue` when the `job-queue`
   extra is installed, an asyncio task otherwise.
+
+### 👤 My position (a widget in the member's DM)
+
+The fund card's 👤 My position button sends the tapper a message widget (Bot
+API 10.4 `sendWidget`) in their private chat with the bot. In production
+Telegram shows widgets only in private chats, so a widget never goes to the
+group. PTB 22.8 speaks Bot API 10.0, so the call goes through
+`Bot.do_api_request` (`widget.py`, `cards_live.PositionWidgets`).
+
+What it shows, only from values the plugin already has (a value it lacks is
+left out, never shown as 0 or a placeholder):
+
+- the fund name;
+- NAV, P&L and share price from the last tg-card read, the same read and rules
+  as the fund card (`≥` for a partial NAV and "(at cost)" without P&L, no NAV
+  at all before the first read);
+- the member's role and number ("Host", "Member #N" in deposit order) and
+  join date, or "Not a member yet";
+- up to three open proposals with status, the veto meter, and a countdown the
+  widget keeps live itself, plus the member's own 👍 / ❌ in chat.
+
+The plugin does not read a member's share balance, so there is no shares or
+value row.
+
+The HTML (`WIDGET_HTML`) is one fixed document of about 2.5 KB (1.3 KB after
+zlib level 9; the limits are 32 KB and 4 KB). Every value travels in the
+widget's `chat_data` as JSON of at most 1024 bytes, and the widget draws it
+with `textContent`. A fund name or proposal title is data, never markup or
+script. Signed links, secrets and keys never go into widget data; the one
+button under the widget is the public 📊 View fund page. The widget is sent
+without `allow_queries`: Hermes polls with PTB 22.8's `Update.ALL_TYPES`,
+which has no `widget_query`, so queries would never reach the plugin.
+
+The caption carries the same values as plain text. Clients without widget
+support show it instead of the widget, and the chat list shows it as the
+preview.
+
+Delivery ladder (each step falls back to the next):
+
+1. The widget, in the DM.
+2. If Telegram refuses the widget for any reason other than a refused DM (an
+   older Bot API answers 404, which PTB raises as `InvalidToken`; a widget
+   over a limit), the same text as a plain DM message.
+3. If the bot may not DM the member yet, the start link
+   `t.me/<bot>?start=sfm_<vault hex>`. `/start` then sends the widget in the
+   DM.
+4. An alert asking the member to start the bot.
+
+Refreshes use `editMessageWidgetData` and then `editMessageCaption`, and run
+only when the plugin re-reads the fund anyway: a proposal card refresh (vote,
+tally, status) and `/fund`. There is no timer. Only widgets whose content
+changed are edited. The runtime keeps the latest widget per member, at most 50
+per fund chat, in memory, so after a restart a member's next tap sends a fresh
+one. A widget that can no longer be edited (deleted, the bot blocked) is
+forgotten.
 
 ## Host signing page (contract with the app lane)
 
@@ -462,7 +546,7 @@ produces a link for that person:
 3. **Start link.** If the DM is refused, the callback answer opens
    `https://t.me/sherwoodagentbot?start=<payload>`. The user lands in the bot's
    DM, presses Start, and gets the link there. Payloads: `sf<k>_<vault hex>[_<id>]`
-   with `k` = `d` deposit, `w` withdraw, `j` join, `v` vote, `p` host co-sign.
+   with `k` = `d` deposit, `w` withdraw, `j` join, `v` vote, `p` host co-sign, `m` 👤 My position (no link: the widget).
    An id that would push the payload past 64 characters skips this step; the
    user then gets an alert asking them to start the bot and tap again.
 
@@ -471,7 +555,7 @@ the first-ever DM path. On a fund with open deposits the 🎟 Join message (and
 its `/start` fallback) holds two URL buttons: the join link (link a wallet)
 and the member's deposit link, since there is no approval to wait for. `answerCallbackQuery` cannot open the app directly: the
 Bot API only lets its `url` open a game or a `t.me/<bot>?start=` link. Set
-`SHERWOOD_TG_PERSONAL_LINKS=dm` to skip the ephemeral attempt.
+`SHERWOOD_TG_PERSONAL_LINKS=dm` to skip the ephemeral attempt (refusals then show as alerts too).
 
 ## Pitch → riff → draft
 

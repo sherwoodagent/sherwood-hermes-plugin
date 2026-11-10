@@ -356,6 +356,7 @@ START_KINDS = {
     "withdraw": "w",
     "vote": "v",
     "propose": "p",
+    "position": "m",  # 👤 My position: the widget, no link
 }
 _START_KINDS_REV = {v: k for k, v in START_KINDS.items()}
 _START_RE = re.compile(r"^sf([a-z])_([0-9a-f]{40})(?:_([0-9A-Za-z_-]{1,40}))?$")

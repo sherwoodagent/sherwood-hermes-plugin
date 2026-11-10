@@ -11,6 +11,7 @@ Callback data (``shfund:<action>:<arg>``, at most 64 bytes):
     deposit:<vault>       personal /tg/deposit link (anyone)
     withdraw:<vault>      personal /tg/withdraw link (anyone)
     join:<vault>          personal /tg/join link (anyone); with open deposits the /tg/deposit link too
+    position:<vault>      the tapper's "My position" widget in their DM with the bot (anyone)
     shipit:<draft>        host only (proposal_signer: agent: the card then shows the CLI propose command)
     propose:<draft>       host only: hands back the host signing page link
     approve_member:<tg>   host only (then hands the host a /tg/sign link; open deposits: nothing to approve)
@@ -43,6 +44,19 @@ CALLBACK_PREFIX = "shfund"
 CALLBACK_MAX_BYTES = 64
 HOST_ONLY_ACTIONS = frozenset({"shipit", "propose", "approve_member", "approve_agent", "remove_agent"})
 PERSONAL_LINK_ACTIONS = frozenset({"vote", "deposit", "withdraw", "join"})
+
+# A proposal card past voting keeps one greyed-out button where 👍 / ❌ were (Bot API 10.3
+# DisabledButton), so the row does not vanish and shift 📊 View fund under a tapping finger.
+CLOSED_PROPOSAL_LABELS = {
+    "passed": "🗳 Voting closed",
+    "review": "🗳 Voting closed",
+    "approved": "🗳 Voting closed",
+    "executed": "🗳 Voting closed",
+    "settled": "🗳 Voting closed",
+    "vetoed": "⛔ Vetoed",
+    "cancelled": "✖️ Cancelled",
+}
+SHIPPED_LABEL = "🚀 Shipped"
 
 METER_CELLS = 8
 GOAL_CELLS = 10
@@ -234,8 +248,50 @@ def _kb(rows: Sequence[Sequence[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([list(r) for r in rows if r])
 
 
+def disabled_button(label: str) -> InlineKeyboardButton:
+    """A greyed-out button that does nothing (Bot API 10.3 ``disabled``: an empty DisabledButton).
+
+    It carries no other action field (a button takes exactly one). PTB 22.8 speaks Bot API 10.0,
+    so the field rides in ``api_kwargs``. Callers keep a fallback: :func:`strip_disabled`.
+    """
+    return InlineKeyboardButton(label, api_kwargs={"disabled": {}})
+
+
+def _is_disabled(button: InlineKeyboardButton) -> bool:
+    return "disabled" in (button.api_kwargs or {})
+
+
+def has_disabled(markup: InlineKeyboardMarkup | None) -> bool:
+    return markup is not None and any(_is_disabled(b) for row in markup.inline_keyboard for b in row)
+
+
+def strip_disabled(markup: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup | None:
+    """The keyboard as before Bot API 10.3: disabled buttons dropped (None when nothing is left)."""
+    if markup is None:
+        return None
+    rows = [[b for b in row if not _is_disabled(b)] for row in markup.inline_keyboard]
+    rows = [r for r in rows if r]
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+def shipped_markup(current: InlineKeyboardMarkup | None) -> InlineKeyboardMarkup:
+    """A draft card's keyboard after 🚀 Ship it: that button greyed out as 🚀 Shipped. The rest stays
+    live: under a host co-sign the ship toast says "Tap ✍️ Co-sign", and the draft is still signable."""
+    shipped = disabled_button(SHIPPED_LABEL)
+    rows = [
+        [shipped if str(b.callback_data or "").startswith(f"{CALLBACK_PREFIX}:shipit:") else b for b in row]
+        for row in (current.inline_keyboard if current is not None else ())
+    ]
+    return _kb(rows) if any(b is shipped for row in rows for b in row) else _kb([[shipped]])
+
+
 def _view_button(vault: str, base_url: str | None, label: str = "📊 View fund") -> InlineKeyboardButton:
     return InlineKeyboardButton(label, url=fund_page_url(vault, base_url))
+
+
+def view_fund_markup(vault: str, base_url: str | None) -> InlineKeyboardMarkup:
+    """One 📊 View fund button (the public, unsigned fund page): under the 👤 My position widget."""
+    return _kb([[_view_button(vault, base_url)]])
 
 
 def _date(ts: int | None) -> str:
@@ -326,6 +382,8 @@ def render_proposal_card(
         if status == "voting":
             row.append(InlineKeyboardButton("❌ Object", callback_data=cb("vote", p.id)))
         rows.append(row)
+    elif status in CLOSED_PROPOSAL_LABELS:
+        rows.append([disabled_button(CLOSED_PROPOSAL_LABELS[status])])
     if fund is not None:
         rows.append([_view_button(fund.vault, base_url)])
     return "\n".join(lines).rstrip(), _kb(rows)
@@ -393,7 +451,11 @@ def render_fund_card(
         ],
         # Members join from here (personal /tg/join link): no /join command in
         # groups, /join-fund belongs to guest AGENTS (a Hermes slash command).
-        [InlineKeyboardButton("🎟 Join", callback_data=cb("join", f.vault.lower()))],
+        # 👤 My position: the tapper's own position, as a widget in their DM with the bot.
+        [
+            InlineKeyboardButton("🎟 Join", callback_data=cb("join", f.vault.lower())),
+            InlineKeyboardButton("👤 My position", callback_data=cb("position", f.vault.lower())),
+        ],
     ]
     return "\n".join(lines), _kb(rows)
 

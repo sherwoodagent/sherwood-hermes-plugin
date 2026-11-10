@@ -11,6 +11,11 @@
 * ``ProposalCards`` wires that to fund state: the countdown and veto meter
   refresh while a proposal is voting, one final edit lands when the window
   closes or the status leaves ``voting``, and the job stops.
+* A card with greyed-out buttons (Bot API 10.3 ``disabled``) that Telegram
+  refuses is posted / edited again without them, as before 10.3.
+* ``PositionWidgets`` sends a member's 👤 My position widget (Bot API 10.4)
+  to their DM, falling back to plain text, and rewrites its data when a card
+  re-read changes what it shows.
 """
 from __future__ import annotations
 
@@ -24,15 +29,24 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from telegram import InlineKeyboardMarkup, InputMediaPhoto, LinkPreviewOptions
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, RetryAfter, TelegramError
+from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
 
-from .cards import render_proposal_card
-from .types import FundGateway, Person, ProposalView, maybe_await
+from .cards import has_disabled, render_proposal_card, strip_disabled, view_fund_markup
+from .types import FundGateway, FundView, Person, ProposalView, maybe_await
+from .widget import (
+    WIDGET_HTML,
+    build_position,
+    data_fingerprint,
+    position_text,
+    widget_data,
+)
 
 _log = logging.getLogger(__name__)
 
 CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4096
+# 👤 My position widgets kept per fund chat for refreshes (the latest tappers; older ones stay as sent).
+WIDGETS_PER_CHAT = 50
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 Tick = Callable[[], Awaitable[bool]]  # returns False when the card is final
@@ -111,15 +125,51 @@ class LiveCards:
             kwargs["reply_to_message_id"] = reply_to_message_id
         if message_thread_id is not None:
             kwargs["message_thread_id"] = message_thread_id
-        if image_url:
-            msg = await self.bot.send_photo(photo=image_url, caption=_clip(text, CAPTION_LIMIT), **kwargs)
-        else:
-            msg = await self.bot.send_message(
-                text=_clip(text, TEXT_LIMIT), link_preview_options=NO_PREVIEW, **kwargs
-            )
+        try:
+            msg = await self._send(text, image_url, kwargs)
+        except BadRequest as exc:
+            if not has_disabled(markup):
+                raise
+            # A server that refuses Bot API 10.3 disabled buttons gets the card without them.
+            _log.info("card post with disabled buttons refused (%s); posting without them", exc)
+            msg = await self._send(text, image_url, {**kwargs, "reply_markup": strip_disabled(markup)})
         ref = CardRef(chat_id=int(chat_id), message_id=int(msg.message_id), image_url=image_url)
         self._last[(ref.chat_id, ref.message_id)] = _fingerprint(text, markup, image_url)
         return ref
+
+    async def _send(self, text: str, image_url: str | None, kwargs: dict[str, Any]) -> Any:
+        if image_url:
+            return await self.bot.send_photo(photo=image_url, caption=_clip(text, CAPTION_LIMIT), **kwargs)
+        return await self.bot.send_message(text=_clip(text, TEXT_LIMIT), link_preview_options=NO_PREVIEW, **kwargs)
+
+    async def _edit_once(
+        self, ref: CardRef, text: str, markup: InlineKeyboardMarkup | None, image: str | None
+    ) -> None:
+        if image:
+            if image != ref.image_url:
+                await self.bot.edit_message_media(
+                    chat_id=ref.chat_id,
+                    message_id=ref.message_id,
+                    media=InputMediaPhoto(media=image, caption=_clip(text, CAPTION_LIMIT), parse_mode=ParseMode.HTML),
+                    reply_markup=markup,
+                )
+            else:
+                await self.bot.edit_message_caption(
+                    chat_id=ref.chat_id,
+                    message_id=ref.message_id,
+                    caption=_clip(text, CAPTION_LIMIT),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                )
+        else:
+            await self.bot.edit_message_text(
+                chat_id=ref.chat_id,
+                message_id=ref.message_id,
+                text=_clip(text, TEXT_LIMIT),
+                parse_mode=ParseMode.HTML,
+                reply_markup=markup,
+                link_preview_options=NO_PREVIEW,
+            )
 
     async def edit(
         self,
@@ -138,51 +188,32 @@ class LiveCards:
         fp = _fingerprint(text, markup, image)
         if self._last.get(key) == fp:
             return False
-        try:
-            if image:
-                if image != ref.image_url:
-                    await self.bot.edit_message_media(
-                        chat_id=ref.chat_id,
-                        message_id=ref.message_id,
-                        media=InputMediaPhoto(
-                            media=image, caption=_clip(text, CAPTION_LIMIT), parse_mode=ParseMode.HTML
-                        ),
-                        reply_markup=markup,
-                    )
-                else:
-                    await self.bot.edit_message_caption(
-                        chat_id=ref.chat_id,
-                        message_id=ref.message_id,
-                        caption=_clip(text, CAPTION_LIMIT),
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=markup,
-                    )
-            else:
-                await self.bot.edit_message_text(
-                    chat_id=ref.chat_id,
-                    message_id=ref.message_id,
-                    text=_clip(text, TEXT_LIMIT),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=markup,
-                    link_preview_options=NO_PREVIEW,
-                )
-        except BadRequest as exc:
-            if _is_not_modified(exc):
-                self._last[key] = fp
+        # A server that refuses Bot API 10.3 disabled buttons gets the card without them (as before 10.3).
+        candidates = [markup, strip_disabled(markup)] if has_disabled(markup) else [markup]
+        for i, candidate in enumerate(candidates):
+            try:
+                await self._edit_once(ref, text, candidate, image)
+            except BadRequest as exc:
+                if _is_not_modified(exc):
+                    self._last[key] = fp
+                    return False
+                if _is_gone(exc):
+                    self._last.pop(key, None)
+                    raise CardGone(str(exc)) from exc
+                if i + 1 < len(candidates):
+                    _log.info("card edit for %s with disabled buttons refused (%s); retrying without them", key, exc)
+                    continue
+                _log.warning("card edit failed for %s: %s", key, exc)
                 return False
-            if _is_gone(exc):
-                self._last.pop(key, None)
-                raise CardGone(str(exc)) from exc
-            _log.warning("card edit failed for %s: %s", key, exc)
-            return False
-        except RetryAfter as exc:
-            _log.info("card edit rate-limited for %s; retry in %ss", key, exc.retry_after)
-            return False
-        except TelegramError as exc:
-            _log.warning("card edit failed for %s: %s", key, exc)
-            return False
-        self._last[key] = fp
-        return True
+            except RetryAfter as exc:
+                _log.info("card edit rate-limited for %s; retry in %ss", key, exc.retry_after)
+                return False
+            except TelegramError as exc:
+                _log.warning("card edit failed for %s: %s", key, exc)
+                return False
+            self._last[key] = fp
+            return True
+        return False
 
     def forget(self, ref: CardRef) -> None:
         self._last.pop((int(ref.chat_id), int(ref.message_id)), None)
@@ -336,3 +367,112 @@ class ProposalCards:
 
     def unwatch(self, chat_id: int, proposal_id: str) -> None:
         self.live.stop_refresh(self.key(chat_id, proposal_id))
+
+
+class PositionWidgets:
+    """👤 My position: one member's position as a widget in their DM with the bot.
+
+    ``send`` delivers it; ``refresh`` rewrites the data of the widgets already sent for a fund
+    chat when what they show changed. The latest widget per member is kept in memory
+    (``sent``: fund chat -> member -> (DM message id, data fingerprint)), so after a restart a
+    member's next tap sends a fresh one.
+    """
+
+    def __init__(self, gateway: FundGateway, *, base_url: str | None = None, clock: Callable[[], float] = time.time) -> None:
+        self.gateway = gateway
+        self.base_url = base_url
+        self.clock = clock
+        self.sent: dict[int, dict[int, tuple[int, str]]] = {}
+
+    async def send(self, bot: Any, dm_chat_id: int, fund: FundView, user_id: int) -> str:
+        """Send ``user_id``'s position in ``fund`` to their private chat with the bot.
+
+        A widget first (Bot API 10.4 ``sendWidget`` through ``do_api_request``: PTB 22.8 speaks
+        10.0). Telegram shows widgets only in private chats in production, so ``dm_chat_id`` is
+        always the member's DM. Any refusal of the widget other than a refused DM (an older Bot
+        API answers 404, which PTB raises as ``InvalidToken``; a widget over a limit) sends the
+        same plain text as a DM message instead. Returns ``"widget"`` or ``"text"``; raises
+        ``Forbidden`` when the bot may not write to this user, or the text send's error.
+        """
+        now = self.clock()
+        pos = build_position(fund, user_id)
+        text = position_text(pos, now=now)
+        markup = view_fund_markup(fund.vault, self.base_url)
+        try:
+            sent = await bot.do_api_request(
+                "sendWidget",
+                api_kwargs={
+                    "chat_id": int(dm_chat_id),
+                    "html": WIDGET_HTML,
+                    "chat_data": widget_data(pos, now=now),
+                    "caption": text,  # what clients without widgets show, and the chat-list preview
+                    "reply_markup": markup,
+                },
+            )
+        except Forbidden:
+            raise
+        except Exception as exc:  # noqa: BLE001 - any other refusal of the widget falls back to the text
+            _log.info("sendWidget to %s failed (%s); sending the position as text", dm_chat_id, exc)
+        else:
+            message_id = sent.get("message_id") if isinstance(sent, dict) else getattr(sent, "message_id", None)
+            if message_id is not None and fund.telegram_chat_id is not None:
+                self.note(int(fund.telegram_chat_id), user_id, int(message_id), data_fingerprint(pos))
+            return "widget"
+        await bot.send_message(chat_id=int(dm_chat_id), text=text, reply_markup=markup, link_preview_options=NO_PREVIEW)
+        return "text"
+
+    def note(self, chat_id: int, user_id: int, message_id: int, fingerprint: str) -> None:
+        """Remember a member's latest widget (one per member; the oldest drops past the cap)."""
+        widgets = self.sent.setdefault(int(chat_id), {})
+        widgets.pop(int(user_id), None)
+        widgets[int(user_id)] = (int(message_id), fingerprint)
+        while len(widgets) > WIDGETS_PER_CHAT:
+            widgets.pop(next(iter(widgets)))
+
+    async def refresh(self, bot: Any, chat_id: int, fund: FundView | None = None) -> int:
+        """Rewrite the data of this fund chat's widgets whose content changed.
+
+        Called where the plugin has just re-read the fund anyway (a proposal card refresh, the
+        ``/fund`` card), never on a timer. ``editMessageWidgetData``, then the caption, so clients
+        without widgets see the same numbers. A widget that can no longer be edited (deleted, the
+        bot blocked) is forgotten. Returns how many changed; never raises.
+        """
+        widgets = self.sent.get(int(chat_id))
+        if not widgets:
+            return 0
+        try:
+            fund = fund if fund is not None else await maybe_await(self.gateway.fund_for_chat(chat_id))
+            if fund is None:
+                return 0
+            markup = view_fund_markup(fund.vault, self.base_url)
+            now = self.clock()
+            changed = 0
+            for user_id, (message_id, last) in list(widgets.items()):
+                pos = build_position(fund, user_id)
+                fp = data_fingerprint(pos)
+                if fp == last:
+                    continue
+                try:
+                    await bot.do_api_request(
+                        "editMessageWidgetData",
+                        api_kwargs={"chat_id": user_id, "message_id": message_id, "chat_data": widget_data(pos, now=now)},
+                    )
+                except RetryAfter:
+                    break  # the next refresh moment tries again
+                except TelegramError as exc:
+                    if not _is_not_modified(exc):
+                        _log.debug("position widget %s/%s dropped: %s", user_id, message_id, exc)
+                        widgets.pop(user_id, None)
+                        continue
+                widgets[user_id] = (message_id, fp)
+                changed += 1
+                try:
+                    await bot.edit_message_caption(
+                        chat_id=user_id, message_id=message_id, caption=position_text(pos, now=now), reply_markup=markup
+                    )
+                except TelegramError as exc:
+                    _log.debug("position widget caption %s/%s not edited: %s", user_id, message_id, exc)
+            return changed
+        except Exception as exc:  # noqa: BLE001 - a widget refresh never breaks the card that triggered it
+            _log.warning("position widget refresh for %s failed: %s", chat_id, exc)
+            return 0

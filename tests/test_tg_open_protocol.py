@@ -46,7 +46,7 @@ from tests.test_fund_telegram_integration import (  # noqa: E402
 )
 from tests.test_fund_telegram_integration import tap as itap  # noqa: E402
 from tests.test_tg_handler import make_runtime, start_update, tap  # noqa: E402
-from tests.tg_fakes import CAROL as FAKE_CAROL, HOST, VAULT, make_proposal  # noqa: E402
+from tests.tg_fakes import CAROL as FAKE_CAROL, HOST, VAULT, make_proposal, refusal_text  # noqa: E402
 
 JOIN_URL = "https://app.example/tg/join?fund=0x1&tg=1&ts=1&sig=a"
 DEPOSIT_URL = "https://app.example/tg/deposit?fund=0x1&tg=1&ts=1&sig=b"
@@ -111,11 +111,12 @@ async def test_ship_it_puts_the_command_on_the_draft_card():
     q.edit_message_reply_markup.assert_not_awaited()
 
 
-async def test_ship_it_without_a_command_only_clears_the_buttons():
+async def test_ship_it_without_a_command_only_greys_out_the_button():
     rt, gw, bot = make_runtime()
     gw.proposals["d7"] = make_proposal(id="d7", status="draft")
     q = await tap(rt, bot, "shfund:shipit:d7", HOST)
-    q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    markup = q.edit_message_reply_markup.await_args.kwargs["reply_markup"]
+    assert markup.to_dict() == {"inline_keyboard": [[{"text": "🚀 Shipped", "disabled": {}}]]}
     q.edit_message_text.assert_not_awaited()
 
 
@@ -193,7 +194,7 @@ async def test_open_protocol_loop_in_memory(tmp_path, monkeypatch):
     assert any("🎟 <b>Member</b>" in t for t in texts)  # admitted: the member card, no host step
     # A stale ✅ Approve member button: nothing to approve, no signing link.
     q = await itap(rt, bot, f"shfund:approve_member:{BOB}", HOST_TG)
-    assert "Deposits are open on this fund" in q.answer.await_args.kwargs["text"]
+    assert "Deposits are open on this fund" in refusal_text(q, bot)
     assert bridge.host_action_url("alpha-fund", "approve_member", str(ALICE), HOST_TG) is None
 
     # -- pitch, 3 🔥, the agent drafts: the draft card has no Co-sign button under the agent signer
@@ -295,6 +296,7 @@ async def test_host_signer_and_restricted_deposits_are_unchanged(tmp_path, monke
     await settle_tasks()
     q = await itap(rt, bot, "shfund:shipit:p-1", HOST_TG)
     assert q.answer.await_args.kwargs["text"] == "🚀 Shipped #p-1. Tap ✍️ Co-sign to sign the proposal in your browser."
-    q.edit_message_reply_markup.assert_awaited_once_with(reply_markup=None)
+    markup = q.edit_message_reply_markup.await_args.kwargs["reply_markup"]
+    assert markup.to_dict()["inline_keyboard"][0][0] == {"text": "🚀 Shipped", "disabled": {}}
     q.edit_message_text.assert_not_awaited()
     assert bridge.service.load("alpha-fund").proposal("p-1").propose_command == ""

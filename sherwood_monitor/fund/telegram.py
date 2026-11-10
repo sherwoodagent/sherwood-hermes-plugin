@@ -89,6 +89,14 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _finite_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _ids(values: Iterable[Any] | None) -> tuple[int, ...]:
     out: list[int] = []
     for v in values or ():
@@ -201,6 +209,7 @@ def fund_to_view(fund: Any, proposals: Iterable[Any] | None = None) -> FundView:
         nav_partial=_get(fund, "nav_partial", default=False) is True,
         nav_at_cost=_get(fund, "nav_at_cost", default=False) is True,
         shares_outstanding=_get(fund, "shares_outstanding", default=False) is True,
+        share_price=_finite_or_none(_get(fund, "share_price")),
     )
 
 
@@ -563,6 +572,7 @@ def _snapshot_fields(snap: Any) -> dict[str, Any]:
         "nav_partial": snap.nav_partial,
         "nav_at_cost": snap.at_cost,
         "shares_outstanding": snap.shares_outstanding,
+        "share_price": float(snap.share_price) if snap.share_price is not None else None,
         "positions": _card_rows(rows, nav),
     }
 
@@ -773,8 +783,9 @@ class FundTelegramBridge:
     def get_fund_card_for_chat(self, chat_id: int) -> dict[str, Any] | None:
         """The fund for the fund card (``/fund``): one tg-card read first when the 30 s throttle allows.
 
-        Runs in a worker thread (``_run``). Only the fund card calls it: authorization, the
-        pitch flow and the other cards use ``get_fund_for_chat``, which never reads the chain.
+        Runs in a worker thread (``_run``). Only the fund card and its 👤 My position button call
+        it: authorization, the pitch flow and the other cards use ``get_fund_for_chat``, which
+        never reads the chain.
         When the read fails the card shows the stored snapshot as last known.
         """
         st = self.state_for_chat(chat_id)

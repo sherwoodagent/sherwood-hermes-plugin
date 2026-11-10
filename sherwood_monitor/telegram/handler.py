@@ -50,6 +50,8 @@ from .cards import (
     render_leaderboard,
     render_personal_link,
     render_shipped_command,
+    shipped_markup,
+    strip_disabled,
 )
 from .cards_live import NO_PREVIEW, CardGone, CardRef
 from .flow import IncomingMessage, ReactionChange
@@ -188,6 +190,44 @@ class FundHandlers:
             _log.warning("SHERWOOD_TG_LINK_SECRET is not set; personal links are disabled")
         return secret
 
+    async def _refuse(self, query: Any, context: Any, text: str) -> str:
+        """Tell only the tapper why a button did nothing.
+
+        In a group, with ``personal_link_mode`` ``ephemeral`` (the default): an ephemeral reply to
+        the callback query (Bot API 10.4: ``callback_query_id`` without ``receiver_user_id``, sent
+        through ``api_kwargs``), shown only to the user who pressed the button; the query is still
+        answered. Otherwise, or when Telegram refuses it, today's pop-up alert. Plain text, so a
+        reason quoting a name shows literally. Returns ``"ephemeral"`` or ``"alert"``.
+        """
+        chat = getattr(query.message, "chat", None)
+        if self.settings.personal_link_mode == "ephemeral" and chat is not None and chat.type in GROUP_TYPES:
+            try:
+                await context.bot.send_message(
+                    chat_id=chat.id,
+                    text=text,
+                    link_preview_options=NO_PREVIEW,
+                    api_kwargs={"ephemeral_message_parameters": {"callback_query_id": query.id}},
+                )
+            except TelegramError as exc:
+                _log.info("ephemeral refusal failed (%s); showing the alert", exc)
+            else:
+                await _answer(query)
+                return "ephemeral"
+        await _answer(query, text, show_alert=True)
+        return "alert"
+
+    async def _start_link_or_alert(self, query: Any, username: str, start_payload: str | None) -> str:
+        """The last rungs when the bot cannot write to the user yet: open its DM with a ``/start``
+        payload (the DM then gets what the tap asked for), else ask them to start the bot."""
+        if username and start_payload:
+            try:
+                await query.answer(url=f"https://t.me/{username}?start={start_payload}")
+                return "start_link"
+            except TelegramError as exc:
+                _log.debug("start-link answer failed: %s", exc)
+        await _answer(query, f"Open a chat with @{username} and press Start, then tap again.", show_alert=True)
+        return "failed"
+
     # -- callbacks -----------------------------------------------------------
 
     @_safe
@@ -213,7 +253,7 @@ class FundHandlers:
             await _answer(query, "No Sherwood fund is linked to this chat.")
             return
         if action in HOST_ONLY_ACTIONS and (fund.host_tg_id is None or int(user.id) != int(fund.host_tg_id)):
-            await _answer(query, "Only the fund host can do that.", show_alert=True)
+            await self._refuse(query, context, "Only the fund host can do that.")
             return
 
         handler = {
@@ -222,6 +262,7 @@ class FundHandlers:
             "deposit": self._cb_fund_link,
             "withdraw": self._cb_fund_link,
             "join": self._cb_fund_link,
+            "position": self._cb_position,
             "shipit": self._cb_shipit,
             "propose": self._cb_propose,
             "approve_member": self._cb_host_action,
@@ -238,7 +279,7 @@ class FundHandlers:
         try:
             view = await maybe_await(self.rt.gateway.toggle_backer(chat_id, arg, user_id))
         except FundActionError as exc:
-            await _answer(query, str(exc) or "Couldn't record that.", show_alert=True)
+            await self._refuse(query, context, str(exc) or "Couldn't record that.")
             return
         if view is None:
             await _answer(query, "Proposal not found.")
@@ -271,7 +312,7 @@ class FundHandlers:
             return
         secret = self._secret_or_none()
         if not secret:
-            await _answer(query, "Links are not configured yet. Ask the host.", show_alert=True)
+            await self._refuse(query, context, "Links are not configured yet. Ask the host.")
             return
         url = build_link(
             "vote",
@@ -291,7 +332,7 @@ class FundHandlers:
             return
         secret = self._secret_or_none()
         if not secret:
-            await _answer(query, "Links are not configured yet. Ask the host.", show_alert=True)
+            await self._refuse(query, context, "Links are not configured yet. Ask the host.")
             return
         if action == "join":
             await self._note_join_request(query, chat_id)
@@ -314,6 +355,13 @@ class FundHandlers:
             deposit_url=deposit_url,
         )
 
+    async def _cb_position(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
+        if arg.lower() != fund.vault.lower():
+            await _answer(query, "This button belongs to another fund.")
+            return
+        fresh = await self._fund_for_card(chat_id)  # the /fund card's read (throttled), so NAV is current
+        await self.deliver_position(query, context, fund=fresh or fund)
+
     async def _note_join_request(self, query: Any, chat_id: int) -> None:
         """Record the member's join request in fund state and show the host an Approve card.
 
@@ -335,7 +383,7 @@ class FundHandlers:
         try:
             toast = await maybe_await(self.rt.gateway.ship_draft(chat_id, arg, int(query.from_user.id)))
         except FundActionError as exc:
-            await _answer(query, str(exc) or "Could not ship this draft.", show_alert=True)
+            await self._refuse(query, context, str(exc) or "Could not ship this draft.")
             return
         await _answer(query, toast or "🚀 Shipped.")
         command = ""
@@ -358,15 +406,20 @@ class FundHandlers:
                 return
             except TelegramError as exc:
                 _log.debug("could not show the propose command on the draft card: %s", exc)
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except TelegramError as exc:
-            _log.debug("could not clear draft buttons: %s", exc)
+        # No text change here: 🚀 Ship it turns into a greyed-out 🚀 Shipped (Bot API 10.3) and ✍️ Co-sign,
+        # which the toast points at, stays. A server that refuses disabled buttons gets the rest without it.
+        shipped = shipped_markup(getattr(query.message, "reply_markup", None))
+        for markup in (shipped, strip_disabled(shipped)):
+            try:
+                await query.edit_message_reply_markup(reply_markup=markup)
+                return
+            except TelegramError as exc:
+                _log.debug("draft buttons not updated (%s): %s", "greyed out" if markup is shipped else "fallback", exc)
 
     async def _cb_propose(self, query: Any, context: Any, *, fund: FundView, chat_id: int, action: str, arg: str) -> None:
         url = await maybe_await(self.rt.gateway.host_signing_url(chat_id, arg, int(query.from_user.id)))
         if not url:
-            await _answer(query, "The signing page isn't ready for this draft yet.", show_alert=True)
+            await self._refuse(query, context, "The signing page isn't ready for this draft yet.")
             return
         await self.deliver_personal_link(
             query, context, kind="propose", fund=fund, url=url, start_payload=_start_payload("propose", fund.vault, arg)
@@ -386,7 +439,7 @@ class FundHandlers:
                 toast = await maybe_await(gw.remove_agent(chat_id, arg, by))
                 stamp = "🗑 Agent removed"
         except FundActionError as exc:
-            await _answer(query, str(exc) or "That didn't work.", show_alert=True)
+            await self._refuse(query, context, str(exc) or "That didn't work.")
             return
         except ValueError:
             await _answer(query, "Bad button data.")
@@ -465,14 +518,27 @@ class FundHandlers:
             return "dm"
         except (Forbidden, BadRequest) as exc:
             _log.debug("DM to %s failed: %s", user_id, exc)
-        if username and start_payload:
-            try:
-                await query.answer(url=f"https://t.me/{username}?start={start_payload}")
-                return "start_link"
-            except TelegramError as exc:
-                _log.debug("start-link answer failed: %s", exc)
-        await _answer(query, f"Open a chat with @{username} and press Start, then tap again.", show_alert=True)
-        return "failed"
+        return await self._start_link_or_alert(query, username, start_payload)
+
+    async def deliver_position(self, query: Any, context: Any, *, fund: FundView) -> str:
+        """Send the tapper's 👤 My position to their DM with the bot (never to the group: production
+        Telegram shows widgets in private chats only).
+
+        The personal-link ladder without its group rung: 1. the widget in the DM (a plain text DM when
+        Telegram refuses the widget: ``TelegramRuntime.send_position``); 2. when the bot may not DM
+        them yet, the start link, whose ``/start`` then sends it there; 3. the alert. Returns
+        ``"widget"``, ``"text"``, ``"start_link"`` or ``"failed"``.
+        """
+        user_id = int(query.from_user.id)
+        username = self._bot_username(context)
+        try:
+            how = await self.rt.send_position(context.bot, user_id, fund, user_id)
+        except TelegramError as exc:  # Forbidden (never started the bot) or the text DM failed too
+            _log.debug("position DM to %s failed: %s", user_id, exc)
+        else:
+            await _answer(query, f"Sent your position to our DM chat (@{username}).")
+            return how
+        return await self._start_link_or_alert(query, username, _start_payload("position", fund.vault))
 
     # -- commands ------------------------------------------------------------
 
@@ -500,6 +566,7 @@ class FundHandlers:
         sent = await msg.reply_html(text, reply_markup=markup, link_preview_options=NO_PREVIEW)
         if sent is not None and getattr(sent, "message_id", None) is not None:
             self.rt.flow.note_bot_card(chat_id, int(sent.message_id))
+        await self.rt.refresh_position_widgets(chat_id, fund)  # the read above is fresh: members' widgets follow
 
     @_safe
     async def cmd_leaderboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -533,6 +600,12 @@ class FundHandlers:
         fund = await maybe_await(self.rt.gateway.fund_by_vault(vault))
         if fund is None or (fund.telegram_chat_id is not None and not self.settings.chat_allowed(fund.telegram_chat_id)):
             await msg.reply_text("That fund isn't available here.")
+            return
+        if kind == "position":  # 👤 My position, after the start link: this DM is the member's private chat
+            try:
+                await self.rt.send_position(context.bot, int(msg.chat.id), fund, int(user.id))
+            except TelegramError as exc:
+                _log.debug("position for %s not sent: %s", user.id, exc)
             return
         if kind == "propose":
             if fund.host_tg_id is None or int(user.id) != int(fund.host_tg_id):
