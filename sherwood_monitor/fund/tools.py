@@ -171,6 +171,12 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "onchain_id": {"type": "integer"},
             "tx_hash": {"type": "string"},
             "card_message_id": {"type": "string"},
+            "correct_onchain_id": {
+                "type": "boolean",
+                "description": "Host only, while the vote is open: replace a wrong onchain_id recorded earlier "
+                               "with this onchain_id (repeat the current status). Refused if another proposal "
+                               "already has that id.",
+            },
         },
         ["proposal_id", "status"],
     ),
@@ -569,6 +575,7 @@ def make_fund_tool_handlers(rt: FundRuntime) -> dict[str, ToolHandler]:
             onchain_id=None if onchain in (None, "") else int(onchain),
             tx_hash=str(args.get("tx_hash") or ""),
             card_message_id=str(args.get("card_message_id") or ""),
+            correct_onchain_id=as_bool(args.get("correct_onchain_id", False)),
         )
         return {"proposal": asdict(record)}
 
