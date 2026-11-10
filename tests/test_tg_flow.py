@@ -241,6 +241,9 @@ async def test_bare_host_ship_it_with_one_open_pitch_drafts_it():
     hook = flow.make_pre_llm_call_hook()
     out = hook(platform="telegram", chat_id=str(CHAT), sender_id=str(HOST), user_message="ship it")
     assert out is not None and "<sherwood-fund-draft-requested>" in out["context"]
+    # It defers to the bridge's block (draft it) and to a refusal the plugin already said.
+    assert "Acknowledge in one line" not in out["context"] and "fund_draft_proposal" in out["context"]
+    assert "cannot draft" in out["context"]
 
 
 async def test_bare_host_ship_it_with_two_open_pitches_asks_which():

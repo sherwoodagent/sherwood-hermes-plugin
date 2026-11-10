@@ -353,9 +353,10 @@ class PitchFlow:
                     chat_id,
                     int(msg.user_id),
                     "<sherwood-fund-draft-requested>\n"
-                    f"The host said \"ship it\" on {_quote(pitch.author_name, 64)}'s idea. A draft proposal was "
-                    "requested from fund state; the draft card follows with a 🚀 Ship it button. "
-                    "Acknowledge in one line.\n"
+                    f"The host said \"ship it\" on {_quote(pitch.author_name, 64)}'s idea. Fund state was asked "
+                    "to claim it for you. If a block from fund state with a topic follows, draft it now with "
+                    "fund_draft_proposal; the plugin then posts the draft card with 🚀 Ship it. If the plugin "
+                    "already replied in the group that it cannot draft this idea, add nothing.\n"
                     "</sherwood-fund-draft-requested>",
                 )
             return event
