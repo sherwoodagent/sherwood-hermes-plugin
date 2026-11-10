@@ -546,38 +546,60 @@ It checks the plain Sherwood CLI commands the agent runs in the terminal
 against the fund's ceilings: max capital and max drawdown, read from the local
 fund record.
 
-On a host with a fund, it refuses any command that names the CLI or a fund
-vault address (after quotes, backslashes and line continuations are dropped)
-when it cannot read that command literally. That covers:
+On a host with a fund, a terminal command "names" the CLI or a fund vault when
+it contains `sherwood` (on its own or as the end of a path),
+`sherwoodagent/cli`, or a fund vault address. The check is made after quotes,
+backslashes and line continuations are dropped.
 
-- shell expansions (`$`, backticks, braces, globs, extglob);
+On such a line, every command must be one of these:
+
+- the sherwood CLI;
+- the exact install line `npm i -g @sherwoodagent/cli` (optionally with
+  `@X.Y.Z` or `@latest`);
+- a read-only tool, by bare name: `echo`, `printf` (without `-v`), `grep`,
+  `egrep`, `fgrep`, `cat`, `head`, `tail`, `wc`, `ls`, `jq`, `which`, `type`,
+  `stat`, `cut`, `tr`, `true`, `false`, `cd` or `pwd` (`test` and `[` are not
+  on the list: bash 4.3+ runs a command substitution quoted inside
+  `test -v 'x[…]'`);
+- `cast call`, `cast calldata`, `cast chain-id` or `cast 4byte`;
+- `curl` to an http(s) URL with no option that writes or uploads a file;
+- `hermes sherwood start`, `stop`, `status`, `tail` or `install-cron`.
+
+Shell keywords such as `if`, `then`, `do`, `!`, `{` and `time`, and the
+closers `fi`, `done` and `}`, may wrap these.
+
+Any other command on the line refuses the whole line. That includes `chmod`
+and running a file you just wrote, `xargs`, `tee`, an interpreter, `cast send`,
+and `hermes sherwood fund-bind`, which the host types in their own shell.
+
+The line is also refused if it contains any of these:
+
+- a shell expansion (`$`, backticks, braces, globs, extglob, process
+  substitution);
 - a shell, `eval`, `source`, an alias, a function or a here-doc;
-- environment set for the CLI (an assignment, `export`, `read` or
-  `printf -v`, for example `NODE_OPTIONS` or `PATH`);
-- a launcher that may add arguments (`xargs`, `watch`, `sudo`);
+- environment set by an assignment, `export`, `read` or `printf -v`;
+- a launcher that may add arguments;
 - an unquoted `#`;
-- commands over 32 KB;
-- the CLI name or a vault in any program other than a short list of read-only
-  tools. The list is `echo`, `printf`, `grep`, `cat`, `head`, `tail`, `wc`,
-  `ls`, `jq`, `which`, `type`, `stat`, `uniq`, `cut`, `tr`, `test`, `cd` and
-  `pwd` by bare name, plus `cast call` / `calldata` / `chain-id` / `4byte`,
-  `curl` without a file-writing option, and `hermes sherwood <subcommand>`;
-- such a tool's output when it goes to a file or to anything except another
-  read-only tool or a CLI command that is not a propose.
+- more than 32 KB of text;
+- a read-only tool that carries the CLI name or a vault and sends its output
+  to a file, or to anything except another read-only tool or a sherwood
+  command that is not a propose.
 
-There are two exceptions. A plain variable is allowed as an option value of
-`sherwood vault info` or `sherwood governor info`. The exact install line
-`npm i -g @sherwoodagent/cli[@X.Y.Z|@latest]` is also allowed. Any refused
-command can be run as the sherwood command on its own line with literal
-arguments, which is how `fund_pending_commands` lists it.
+There is one exception: a plain variable is allowed as an option value of
+`sherwood vault info` or `sherwood governor info`.
+
+When a sherwood command is refused, run it on its own line with literal
+arguments, which is how `fund_pending_commands` lists it. `cast send` and
+`hermes sherwood fund-bind` have no such form: the host runs them in their own
+terminal.
 
 It is not a sandbox. Outside it are:
 
-- a command that hides both the CLI name and the vault;
-- a script the agent writes and runs, including one written and run within
-  the same command (the guard refuses only the case where a read-only tool
-  prints the CLI name or a vault into the file);
-- an alias, variable or file set by an earlier terminal call;
+- a line that names neither the CLI nor a fund vault. A script the agent
+  downloads or writes and then runs is outside it, even within one command, as
+  long as that line names neither.
+- anything set in an earlier terminal call: a script or file, a binary planted
+  on PATH, an alias or variable kept by the shell, or the fund record itself;
 - `execute_code`.
 
 The limits that hold regardless are the fund's guardian review and the members'
