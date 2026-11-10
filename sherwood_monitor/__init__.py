@@ -4,6 +4,7 @@ from __future__ import annotations
 import atexit
 import logging
 import threading
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,8 @@ def register(ctx: Any) -> None:
     bg = BackgroundLoop()
     lifecycle = {"streams_started": False, "closed": False}
     lifecycle_lock = threading.Lock()
+    # Extra shutdown steps registered below (the Telegram fund bridge: pending widget refreshes).
+    shutdown_steps: list[Callable[[], None]] = []
 
     def ensure_streams() -> None:
         """Start the auto_start streams once per process (non-blocking)."""
@@ -124,6 +127,11 @@ def register(ctx: Any) -> None:
             if lifecycle["closed"]:
                 return
             lifecycle["closed"] = True
+        for step in shutdown_steps:
+            try:
+                step()
+            except Exception as exc:  # noqa: BLE001 - a failed step never stops the rest of the teardown
+                _log.warning("monitor teardown step failed: %s", exc)
         if bg.closed or not bg.started:
             # Nothing ever ran on the plugin loop (e.g. a short `hermes` CLI command).
             bg.close()
@@ -193,6 +201,7 @@ def register(ctx: Any) -> None:
             bridge = wire_fund_telegram(ctx, fund_rt, push_context=buffer.push)
             if bridge is not None:
                 context_sources.append(bridge.pre_llm_context)
+                shutdown_steps.append(bridge.close)
         except Exception as exc:
             _log.warning("telegram fund cards disabled: %s", exc)
 

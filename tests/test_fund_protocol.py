@@ -126,6 +126,23 @@ def test_chain_card_sets_against_windows_and_guardian_coverage(svc, events):
     assert svc.load("alpha-fund").proposal("2").status == "vetoed"
 
 
+def test_chain_card_ignores_a_window_end_that_is_not_unix_seconds(svc, events):
+    """A millisecond voteEnd / reviewEnd is not stored (the Telegram widget and caption could not
+    date it); a later card with seconds is."""
+    draft(svc)
+    svc.set_proposal_status("alpha-fund", "alpha", "p-1", "proposed", onchain_id=2)
+    svc.set_proposal_status("alpha-fund", "alpha", "p-1", "voting")
+    before = svc.load("alpha-fund").proposal("2").voting_ends_at
+    row = {"id": "2", "state": "Active", "againstBps": 100, "voteEnd": "1800002400000", "reviewEnd": "1e15"}
+    svc.apply_chain_card("alpha-fund", {"success": True, "data": {"proposals": {"open": [row]}}})
+    p = svc.load("alpha-fund").proposal("2")
+    assert p.against_bps == 100 and p.voting_ends_at == before and p.review_ends_at is None  # left as they were
+    row.update(voteEnd="1800002400", reviewEnd="1800003600")
+    svc.apply_chain_card("alpha-fund", {"success": True, "data": {"proposals": {"open": [row]}}})
+    p = svc.load("alpha-fund").proposal("2")
+    assert (p.voting_ends_at, p.review_ends_at) == (1800002400.0, 1800003600.0)
+
+
 # -- (c) agent fee -------------------------------------------------------------------------
 def test_agent_fee_above_15_percent_is_refused(tmp_path, clock):
     s = FundService(LocalJsonBackend(tmp_path / "x"), clock=clock)

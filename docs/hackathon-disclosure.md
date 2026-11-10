@@ -324,7 +324,11 @@ change is logged as a warning.
 - **Telegram limits.** 🔥 reactions reach the bot only when it is a group
   admin; ephemeral link messages are not guaranteed to reach an offline
   client (the bot falls back to a DM, then a start link). Pitches live 6
-  hours in memory and are lost on restart.
+  hours in memory and are lost on restart. The 👤 My position widget (Bot
+  API 10.4) works only in the member's DM, refreshes only when a card is
+  re-read, and is remembered in memory, so after a restart a new tap
+  sends a fresh one. Clients without widgets see its caption. It has not
+  been tried in a live Telegram client.
 
 ## How it was built
 

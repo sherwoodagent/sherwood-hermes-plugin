@@ -85,6 +85,7 @@ class TelegramRuntime:
         self.bot: Any = None
         self.live: Any = None
         self.proposals: Any = None
+        self.widgets: Any = None  # PositionWidgets: 👤 My position in members' DMs
         self.loop: asyncio.AbstractEventLoop | None = None
         self._people: dict[int, dict[int, Person]] = {}
         self._caps: dict[int, ChatCaps] = {}
@@ -98,7 +99,7 @@ class TelegramRuntime:
 
     def attach(self, application: Any) -> None:
         """Bind to the PTB Application (called from the platform-handler factory)."""
-        from .cards_live import LiveCards, ProposalCards
+        from .cards_live import LiveCards, PositionWidgets, ProposalCards
 
         self.app = application
         self.bot = application.bot
@@ -115,6 +116,7 @@ class TelegramRuntime:
             people=self.people_cache,
             clock=self.clock,
         )
+        self.widgets = PositionWidgets(self.gateway, base_url=self.settings.app_base_url, clock=self.clock)
         try:
             self.loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -228,6 +230,25 @@ class TelegramRuntime:
             )
         return caps
 
+    # -- 👤 My position (a widget in the member's DM) -------------------------
+
+    async def send_position(self, bot: Any, dm_chat_id: int, fund: FundView, user_id: int) -> str:
+        """Send ``user_id``'s position in ``fund`` to their DM: ``PositionWidgets.send``."""
+        self._require()
+        return await self.widgets.send(bot, dm_chat_id, fund, user_id)
+
+    def close(self) -> None:
+        """Plugin shutdown: cancel the pending 👤 My position refresh passes (safe from any thread)."""
+        if self.widgets is not None:
+            self.widgets.cancel()
+
+    def request_position_refresh(self, chat_id: int, fund: FundView | None = None) -> asyncio.Task[None] | None:
+        """Ask for a refresh of this fund chat's widgets without waiting (``PositionWidgets.request``):
+        it runs as its own task, so no card lock, vote, ship or ``/fund`` reply waits for it."""
+        if self.widgets is None or not self.connected:
+            return None
+        return self.widgets.request(self.bot, chat_id, fund)
+
     # -- plugin-core API: post / refresh cards ------------------------------
 
     def _require(self) -> None:
@@ -262,6 +283,7 @@ class TelegramRuntime:
             self.proposals.watch(chat_id, proposal_id, view)
         else:
             self.proposals.unwatch(chat_id, proposal_id)
+        self.request_position_refresh(chat_id)  # its own task: this card lock is not held for it
         return changed
 
     async def post_draft_card(
@@ -311,6 +333,7 @@ class TelegramRuntime:
         )
         ref = await self.live.post(chat_id, text, markup)
         self.flow.note_bot_card(chat_id, ref.message_id)
+        self.request_position_refresh(chat_id, fund)
         return ref.message_id
 
     async def post_receipt(self, chat_id: int, receipt: Receipt, *, image_url: str | None = None) -> int | None:

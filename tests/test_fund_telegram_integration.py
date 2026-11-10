@@ -35,7 +35,7 @@ from sherwood_monitor.telegram.handler import FundHandlers  # noqa: E402
 from sherwood_monitor.telegram.links import decode_sign_body, sign_link_message  # noqa: E402
 from tests.fake_ctx import FakeCtx  # noqa: E402
 from tests.fund_helpers import GOVERNOR, HOST_ADDR, MEMBER_ADDR, VAULT  # noqa: E402
-from tests.tg_fakes import FakeJobQueue, fake_bot  # noqa: E402
+from tests.tg_fakes import FakeJobQueue, fake_bot, refusal_text  # noqa: E402
 
 CHAT = -100500
 HOST_TG = 900
@@ -199,8 +199,8 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
 
     # Host approves before the wallet is linked: the app lookup finds nothing, refused with the fallback.
     q = await tap(rt, bot, f"shfund:approve_member:{ALICE}", HOST_TG)
-    assert "linked a wallet" in q.answer.await_args.kwargs["text"]
-    assert f"/fund-approve {ALICE} <address>" in q.answer.await_args.kwargs["text"]
+    assert "linked a wallet" in refusal_text(q, bot)
+    assert f"/fund-approve {ALICE} <address>" in refusal_text(q, bot)  # plain text: shown literally
     # Alice finishes /tg/join; the app now answers GET /api/tg/link for her. The host's
     # ✅ Approve picks the address up (no /fund-approve typing) and hands the host a
     # signed /tg/sign link for approveDepositor.
@@ -222,7 +222,7 @@ async def test_full_loop_in_memory(tmp_path, monkeypatch):
     assert f"Depositor: <code>{MEMBER_ADDR}</code>" in sign_msg and "approve-depositor" in sign_msg
     # A stranger cannot approve.
     q = await tap(rt, bot, f"shfund:approve_member:{BOB}", BOB)
-    assert "Only the fund host" in q.answer.await_args.kwargs["text"]
+    assert "Only the fund host" in refusal_text(q, bot)
 
     # -- a pitch, then 🔥 x3 -> DraftRequested -> the topic is claimed for the agent
     pitch = IncomingMessage(chat_id=CHAT, message_id=41, user_id=ALICE, username="alice",

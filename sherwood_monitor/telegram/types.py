@@ -137,6 +137,8 @@ class FundView:
     nav_at_cost: bool = False
     # The same read says the vault has shares outstanding: someone deposited, joined or not.
     shares_outstanding: bool = False
+    # NAV per whole share from the same read (None: no shares, a partial NAV, or not read).
+    share_price: float | None = None
 
 
 @dataclass(frozen=True)
